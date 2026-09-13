@@ -5,6 +5,16 @@ All notable changes to ESP-KVM are recorded here. The format follows
 semantic versioning while it is pre-1.0 (a new feature bumps the minor, a fix
 bumps the patch).
 
+## [0.47.1] - 2026-09-13
+
+### Fixed
+- **A Telegram alert crashed the device.** The notification task had a 6 KB
+  stack, and the first real send - a TLS handshake with api.telegram.org plus
+  the message buffers - overflowed it. The device panicked, rebooted, and sent
+  the same alert again. 0.47.0 was pulled for it. The task has 12 KB now and
+  builds its messages in PSRAM, which also lets the log tail through whole
+  instead of cut at 280 characters.
+
 ## [0.47.0] - 2026-09-13
 
 ### Added

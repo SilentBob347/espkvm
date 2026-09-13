@@ -30,7 +30,10 @@
 
 static const char *TAG = "notify";
 
-#define TASK_STACK 6144
+/* TLS to Telegram needs room: the handshake alone wants several KB, and the
+   sender keeps its buffers off the stack besides. 6 KB overflowed on the
+   first real send. */
+#define TASK_STACK 12288
 #define TASK_PRIO 3 /* below the video and web tasks on purpose */
 #define POLL_MS 2000
 #define TITLE_MAX 80
@@ -155,10 +158,18 @@ static bool tg_message(const char *token, const char *chat, const char *text)
 {
     char url[128];
     snprintf(url, sizeof(url), "https://api.telegram.org/bot%s/sendMessage", token);
-    char enc[BODY_MAX * 3 + TITLE_MAX * 3];
-    url_encode(text, enc, sizeof(enc));
-    char body[sizeof(enc) + 128];
-    const int n = snprintf(body, sizeof(body), "chat_id=%s&disable_web_page_preview=true&text=%s",
+    /* The text can be a 2 KB log tail, tripled by the encoding: heap, not stack. */
+    const size_t enc_cap = (LOG_TAIL_MAX + TITLE_MAX + BODY_MAX) * 3 + 64;
+    const size_t body_cap = enc_cap + 128;
+    char *enc = heap_caps_malloc(enc_cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    char *body = heap_caps_malloc(body_cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!enc || !body) {
+        free(enc);
+        free(body);
+        return false;
+    }
+    url_encode(text, enc, enc_cap);
+    const int n = snprintf(body, body_cap, "chat_id=%s&disable_web_page_preview=true&text=%s",
                            chat, enc);
 
     esp_http_client_config_t cfg = {
@@ -169,6 +180,8 @@ static bool tg_message(const char *token, const char *chat, const char *text)
     };
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
     if (!c) {
+        free(enc);
+        free(body);
         return false;
     }
     esp_http_client_set_header(c, "Content-Type", "application/x-www-form-urlencoded");
@@ -176,6 +189,8 @@ static bool tg_message(const char *token, const char *chat, const char *text)
     const esp_err_t err = esp_http_client_perform(c);
     const int status = esp_http_client_get_status_code(c);
     esp_http_client_cleanup(c);
+    free(enc);
+    free(body);
     return err == ESP_OK && status >= 200 && status < 300;
 }
 
@@ -285,6 +300,21 @@ static bool webhook(const char *url, const char *title, const char *body, const 
 
 /* --- delivery ------------------------------------------------------------- */
 
+/* A bot token is digits, a colon, then letters, digits, '_' and '-'. Anything
+   else (a pasted sentence, a stray space) would only fail inside the URL
+   parser with a message that names nothing. */
+static bool token_plausible(const char *tok)
+{
+    for (const char *p = tok; *p; p++) {
+        const char c = *p;
+        if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+              c == ':' || c == '_' || c == '-')) {
+            return false;
+        }
+    }
+    return strchr(tok, ':') != NULL;
+}
+
 static void deliver(const event_t *ev)
 {
     char text[TITLE_MAX + BODY_MAX + 4];
@@ -316,7 +346,12 @@ static void deliver(const event_t *ev)
         }
     }
 
-    if (token[0] && chat[0]) {
+    const bool token_bad = token[0] && !token_plausible(token);
+    if (token_bad) {
+        any = true;
+        ESP_LOGE(TAG, "telegram: the bot token has characters a token cannot have - paste it again");
+    }
+    if (token[0] && chat[0] && !token_bad) {
         any = true;
         const bool sent = (photo && photo_len)
                               ? tg_photo(token, chat, text, photo, photo_len)
@@ -329,9 +364,12 @@ static void deliver(const event_t *ev)
         /* The log goes as its own message: a photo caption is capped at 1024
            characters and a tail does not fit there. */
         if (logtail && logtail[0]) {
-            char msg[LOG_TAIL_MAX + 16];
-            snprintf(msg, sizeof(msg), "log:\n%s", logtail);
-            (void)tg_message(token, chat, msg);
+            char *msg = heap_caps_malloc(LOG_TAIL_MAX + 16, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (msg) {
+                snprintf(msg, LOG_TAIL_MAX + 16, "log:\n%s", logtail);
+                (void)tg_message(token, chat, msg);
+                free(msg);
+            }
         }
         ESP_LOGI(TAG, "telegram: %s%s", ok ? "sent" : "failed",
                  photo && photo_len ? " (with photo)" : "");
@@ -348,6 +386,8 @@ static void deliver(const event_t *ev)
 
     if (!any) {
         set_result("no channel configured (set a Telegram bot or a webhook URL)");
+    } else if (token_bad) {
+        set_result("the Telegram token is not a bot token - paste it again");
     } else {
         set_result(ok ? "ok" : "the last send failed - check the token, chat id or URL");
     }
