@@ -5,6 +5,38 @@ All notable changes to ESP-KVM are recorded here. The format follows
 semantic versioning while it is pre-1.0 (a new feature bumps the minor, a fix
 bumps the patch).
 
+## [0.46.2] - 2026-09-13
+
+### Changed
+- **Built for speed.** The firmware had been compiled at -Og - the debugger
+  setting, and ESP-IDF's default - all along, capture path and TLS included. It
+  is -O2 now.
+- **Small allocations go to PSRAM.** The default sent anything up to 16 KB to
+  internal RAM first, and 16 KB is exactly a TLS record buffer: every
+  connection the browser opened carved 20 KB out of internal RAM and handed it
+  back later, leaving holes. The H.264 encoder needs 155 KB of internal RAM in
+  one piece, and a device with 314 KB free but no run longer than 132 could not
+  rebuild it. The threshold is 4 KB now. Diagnostics reports both numbers -
+  `internalFree` and `internalLargest` - because the second one is the one that
+  mattered and nothing showed it.
+- **A hung task reboots the device.** The task watchdog was enabled but watched
+  only the idle tasks, and on firing it wrote a warning and carried on. The
+  capture loop, the encoder and the USB worker are under it now, and a hang is
+  a restart with a core dump rather than a black screen until somebody pulls
+  the plug.
+
+### Fixed
+- **The Home Assistant state message could be cut off.** Its buffer was sized
+  for a short screen alert; the alert now names every matched phrase at once,
+  and with a long one the JSON would have ended mid-field and been thrown away
+  by the broker's consumer. The compiler found it the moment the build went to
+  -O2. The buffer fits the worst case now, and a payload that still did not fit
+  is not sent at all.
+- **A failed H.264 start at boot no longer rewrites the codec setting.** It fell
+  back to MJPEG and saved that as the preference, so H.264 was never tried
+  again - the one place that did this, when the runtime fallback deliberately
+  does not. It falls back for that boot only.
+
 ## [0.46.1] - 2026-09-12
 
 ### Fixed
