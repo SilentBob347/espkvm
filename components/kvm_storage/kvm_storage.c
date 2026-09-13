@@ -615,6 +615,11 @@ esp_err_t kvm_storage_init(void)
     slot_power_claim();
 
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+#if defined(CONFIG_KVM_BOARD_WAVESHARE_NANO) && CONFIG_KVM_BOARD_WAVESHARE_NANO
+    /* P4-NANO: reserve the dedicated SDMMC slot 0 for the onboard microSD.
+     * ESP-Hosted keeps slot 1 for the ESP32-C6 SDIO transport. */
+    host.slot = SDMMC_HOST_SLOT_0;
+#endif
     /*
      * Stay on 3.3 V high-speed; never negotiate UHS-I.
      *
@@ -663,12 +668,29 @@ esp_err_t kvm_storage_init(void)
 
     sdmmc_slot_config_t slot = SDMMC_SLOT_CONFIG_DEFAULT();
     slot.width = 4;
+#if defined(CONFIG_KVM_BOARD_WAVESHARE_NANO) && CONFIG_KVM_BOARD_WAVESHARE_NANO
+    /* Slot 0 is on the P4's dedicated IO_MUX pins: CLK43, CMD44, D0..D3 39..42.
+     * For the dedicated slot the driver selects those pins from the slot number;
+     * leaving the configurable GPIO fields at zero avoids routing slot 0 through
+     * the GPIO matrix. */
+    slot.clk = GPIO_NUM_0;
+    slot.cmd = GPIO_NUM_0;
+    slot.d0 = GPIO_NUM_0;
+    slot.d1 = GPIO_NUM_0;
+    slot.d2 = GPIO_NUM_0;
+    slot.d3 = GPIO_NUM_0;
+    slot.d4 = GPIO_NUM_0;
+    slot.d5 = GPIO_NUM_0;
+    slot.d6 = GPIO_NUM_0;
+    slot.d7 = GPIO_NUM_0;
+#else
     slot.clk = KVM_BOARD_SD_CLK_GPIO;
     slot.cmd = KVM_BOARD_SD_CMD_GPIO;
     slot.d0 = KVM_BOARD_SD_D0_GPIO;
     slot.d1 = KVM_BOARD_SD_D1_GPIO;
     slot.d2 = KVM_BOARD_SD_D2_GPIO;
     slot.d3 = KVM_BOARD_SD_D3_GPIO;
+#endif
     /* The board carries external pull-ups; the internal ones are enabled too as
      * a belt-and-suspenders, harmless where the externals already hold. */
     slot.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
