@@ -12,6 +12,7 @@
 
 #include "capture_priv.h"
 #include "screentext_store.h"
+#include "esp_task_wdt.h"
 
 /*
  * Telemetry lives here rather than in the capture task so the HTTP layer can
@@ -159,7 +160,10 @@ static void camera_task(void *arg)
     capture_ctx_t *ctx = capture_hw_init_start();
     if (ctx) {
         capture_monitor_start(ctx);
+        /* The loop feeds the dog once per pass; every wait in it is bounded. */
+        (void)esp_task_wdt_add(NULL);
         capture_loop_run(ctx);
+        (void)esp_task_wdt_delete(NULL);
     }
     /* Falling off the end of a FreeRTOS task function aborts; the capture path
      * now gives up gracefully when there is no capture card. */

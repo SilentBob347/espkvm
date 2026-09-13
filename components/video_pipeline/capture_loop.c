@@ -17,6 +17,7 @@
 
 #include "esp_cache.h"
 #include "esp_log.h"
+#include "esp_task_wdt.h"
 #include "esp_timer.h"
 #include "freertos/task.h"
 
@@ -60,11 +61,14 @@ static const capture_codec_t *codec_switch(const capture_codec_t *from, const ca
     ESP_LOGE(CAPTURE_LOG_TAG, "%s codec failed to start (%s)", to->name, esp_err_to_name(err));
     if (to != capture_codec_mjpeg()) {
         /* Falling back is better than a black screen, and the reason is
-         * already in the log. */
+         * already in the log. The setting is left alone, for the same reason
+         * the runtime fallback below leaves it alone: this is one boot's
+         * failure, not a new preference, and a persisted "MJPEG" is exactly
+         * what would stop H.264 being tried on the next boot when the memory
+         * is back. */
         const capture_codec_t *mjpeg = capture_codec_mjpeg();
         if (mjpeg->open() == ESP_OK) {
             ESP_LOGW(CAPTURE_LOG_TAG, "codec: %s (fallback)", mjpeg->name);
-            (void)kvm_setting_set_int("vid_codec", CODEC_CHOICE_MJPEG);
             return mjpeg;
         }
     }
@@ -88,6 +92,7 @@ void capture_loop_run(capture_ctx_t *c)
     bool force_publish = true;
 
     while (1) {
+        esp_task_wdt_reset();
         /*
          * No codec is open: every path out of here closed one and could not
          * open another, which on this device means memory. Keep the loop alive

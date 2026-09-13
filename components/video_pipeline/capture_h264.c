@@ -27,6 +27,7 @@
 #include "esp_h264_enc_single_hw.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_task_wdt.h"
 #include "esp_private/esp_cache_private.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -708,7 +709,12 @@ static void h264_encode_task(void *arg)
 {
     (void)arg;
     h264_job_t job;
-    while (xQueueReceive(s_jobs, &job, portMAX_DELAY) == pdTRUE) {
+    (void)esp_task_wdt_add(NULL);
+    for (;;) {
+        esp_task_wdt_reset();
+        if (xQueueReceive(s_jobs, &job, pdMS_TO_TICKS(1000)) != pdTRUE) {
+            continue; /* nothing to encode; the dog still gets fed */
+        }
         if (job.slot < 0) {
             break; /* shutdown sentinel from h264_close() */
         }
@@ -716,6 +722,7 @@ static void h264_encode_task(void *arg)
         /* Hand the YUV buffer back so the PPA stage can fill it again. */
         xQueueSend(s_free_slots, &job.slot, 0);
     }
+    (void)esp_task_wdt_delete(NULL);
     xSemaphoreGive(s_enc_done);
     vTaskDelete(NULL);
 }

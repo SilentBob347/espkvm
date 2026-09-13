@@ -59,6 +59,25 @@ CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_HEX=y
 CONFIG_SPIRAM_SPEED_200M=y
 
+# Small allocations go to PSRAM too. IDF's default sends everything up to 16 KB
+# to internal RAM first, and that is exactly the size of a TLS record buffer -
+# so every connection the browser opens carves 20 KB out of internal RAM and
+# hands it back later, leaving holes. The H.264 encoder needs 155 KB of internal
+# RAM in ONE piece, and a device with 314 KB free but no run longer than 132 KB
+# could not rebuild it. Anything that needs DMA-capable memory asks for
+# MALLOC_CAP_DMA explicitly, so it is unaffected by this threshold.
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
+
+# Optimise for speed. The default is -Og, which left the capture and encode
+# path, the frame conversions and TLS all compiled for a debugger.
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# A hung task is a black screen until someone pulls the plug. With the watchdog
+# set to panic, it is a reboot with a core dump instead (the dump goes to flash).
+# Ten seconds because a codec switch may wait five for a slow viewer to let go.
+CONFIG_ESP_TASK_WDT_PANIC=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
+
 # The device generates its own certificate on first boot: a KVM ships without
 # anyone to issue it one, and asking the operator for a PEM before the web
 # interface works at all is not a usable first run.

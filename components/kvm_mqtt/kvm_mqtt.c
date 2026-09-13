@@ -130,7 +130,8 @@ static const char *boot_reason(void)
     }
 }
 
-static void build_state(char *b, size_t n)
+/* Returns what snprintf would have written; the caller checks it fit. */
+static int build_state(char *b, size_t n)
 {
     const int32_t jiggle_s = kvm_setting_int("jiggle_s");
     kvm_video_status_t v;
@@ -159,7 +160,7 @@ static void build_state(char *b, size_t n)
     const bool alerting = screentext_alert_get(alert, sizeof(alert), NULL);
     json_escape(alert_json, sizeof(alert_json), alerting ? alert : "");
 
-    snprintf(b, n,
+    return snprintf(b, n,
              "{\"tempC\":%d.%u,\"thermal\":\"%s\",\"viewers\":%d,\"signal\":\"%s\","
              "\"resolution\":\"%s\",\"fps\":%u.%02u,\"codec\":\"%s\",\"kbps\":%u,"
              "\"usb\":\"%s\",\"usbBus\":\"%s\",\"power\":\"%s\",\"uptime\":%llu,"
@@ -204,9 +205,12 @@ static void build_state(char *b, size_t n)
  * hold every phrase on screen at once (SCREENTEXT_ALERT_MAX), and escaping can
  * double it. It used to be 576, which was right when an alert was one short
  * phrase and became too small when the watch started naming all of them - a
- * long list would have been published as truncated, unparseable JSON.
+ * long list would have been published as truncated, unparseable JSON. The
+ * 640 is the rest of the payload with every number at its widest, with room to
+ * spare; the compiler checks the arithmetic at -O2 (format-truncation) and the
+ * caller checks the result at runtime, because a truncated payload is not JSON.
  */
-#define STATE_JSON_MAX (SCREENTEXT_ALERT_MAX * 2 + 384)
+#define STATE_JSON_MAX (SCREENTEXT_ALERT_MAX * 2 + 640)
 static void publish_snapshot(void);      /* defined with the discovery helpers below */
 static void publish_update_state(bool force);
 
@@ -217,7 +221,12 @@ static void publish_state(void)
     }
     static char body[STATE_JSON_MAX];
     xSemaphoreTake(s_mtx, portMAX_DELAY);
-    build_state(body, sizeof(body));
+    if (build_state(body, sizeof(body)) >= (int)sizeof(body)) {
+        /* Should not happen - the buffer is sized for the worst case - but a
+         * cut-off payload is worse than none, so say so instead of sending it. */
+        ESP_LOGW(TAG, "state payload did not fit; not published");
+        return;
+    }
     if (s_client) {
         esp_mqtt_client_publish(s_client, s_state_topic, body, 0, 1, 1);
     }

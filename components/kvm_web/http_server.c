@@ -803,12 +803,20 @@ static esp_err_t api_system_info_get(httpd_req_t *req)
 
     const unsigned dump_bytes = crash_dump_bytes();
 
-    char body[2304];
+    /*
+     * Internal RAM twice: how much is free, and the longest run of it. The
+     * second is the one that decides whether the H.264 encoder can be built -
+     * it wants ~155 KB in one piece - and a device can have 300 KB free with no
+     * run longer than 130. Nothing else reported it, and it took a log line in
+     * the encoder to find out.
+     */
+    char body[2816];
     int n = snprintf(body, sizeof(body),
                      "{\"project\":\"%s\",\"version\":\"%s\",\"built\":\"%s %s\","
                      "\"boardId\":\"%s\","
                      "\"idf\":\"%s\",\"partition\":\"%s\",\"updatable\":%s,\"ota\":%s,"
                      "\"uptimeSeconds\":%llu,\"heapFree\":%u,\"psramFree\":%u,"
+                     "\"internalFree\":%u,\"internalLargest\":%u,"
                      "\"tempC\":%d.%01u,\"thermal\":\"%s\","
                      "\"net\":{\"up\":%s,\"mbps\":%d,\"mode\":\"%s\",\"wifiUp\":%s,"
                      "\"rssi\":%d,\"ssid\":\"%s\",\"apClients\":%d,"
@@ -824,7 +832,9 @@ static esp_err_t api_system_info_get(httpd_req_t *req)
                      running ? running->label : "?", next ? "true" : "false", ota_json,
                      (unsigned long long)(esp_timer_get_time() / 1000000),
                      (unsigned)esp_get_free_heap_size(),
-                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM), (int)temp_c,
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL), (int)temp_c,
                      (unsigned)((temp_c < 0 ? -temp_c : temp_c) * 10.0f) % 10u,
                      kvm_thermal_state_name(kvm_thermal_state()),
                      net_up ? "true" : "false", net_mbps, net_mode,

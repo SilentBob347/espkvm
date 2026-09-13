@@ -12,6 +12,7 @@
 #include "driver/gpio.h"
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_task_wdt.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -1011,8 +1012,13 @@ static void hid_worker(void *arg)
 {
     (void)arg;
     q_msg_t msg;
+    /* Under the task watchdog: a worker stuck in a USB transfer would otherwise
+     * leave the keyboard dead with nothing in the log. The wait is bounded so
+     * an idle queue still feeds the dog. */
+    (void)esp_task_wdt_add(NULL);
     for (;;) {
-        if (xQueueReceive(s_hid_q, &msg, portMAX_DELAY) != pdTRUE) {
+        esp_task_wdt_reset();
+        if (xQueueReceive(s_hid_q, &msg, pdMS_TO_TICKS(1000)) != pdTRUE) {
             continue;
         }
         if (!tud_mounted()) {
