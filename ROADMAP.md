@@ -10,6 +10,9 @@ and use [Discussions](https://github.com/espkvm/espkvm/discussions) for ideas.
 - MJPEG and hardware H.264 streaming
 - Absolute and relative USB pointer, full keyboard, media keys, text paste
 - User-defined key macros
+- Runbooks: a macro that waits for words on the screen, run on the device so it survives a closed tab
+- A scheduler: cron lines that fire Wake-on-LAN, a runbook or a power action on a timetable, on a clock the device sets over the network
+- Push notifications to Telegram (with a screenshot) or a webhook when a watched phrase appears or the screen goes blank
 - Virtual media: boot the target from a microSD image or an on-flash rescue image
 - Target-OS detection, with OS-specific shortcuts
 - Wake-on-LAN

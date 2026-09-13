@@ -29,6 +29,12 @@ if [ "$what" = all ] || [ "$what" = host ]; then
     echo "== two things on one pin =="
     sh "$here/components/kvm_config/test/run.sh"
     echo
+    echo "== reading a runbook =="
+    sh "$here/components/kvm_runbook/test/run.sh"
+    echo
+    echo "== a cron schedule =="
+    sh "$here/components/kvm_sched/test/run.sh"
+    echo
 fi
 
 if [ "$what" = all ] || [ "$what" = web ]; then

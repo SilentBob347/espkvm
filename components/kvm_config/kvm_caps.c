@@ -85,6 +85,9 @@ static const cap_desc_t s_desc[KVM_CAP_COUNT] = {
                          false,
 #endif
                          "disp_enable"},
+    [KVM_CAP_RUNBOOK] = {"runbooks", true, NULL},
+    [KVM_CAP_SCHED] = {"scheduler", true, NULL},
+    [KVM_CAP_NOTIFY] = {"notify", true, NULL},
 };
 
 typedef struct {

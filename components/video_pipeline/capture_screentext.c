@@ -139,26 +139,6 @@ void capture_screentext_init(void)
 /* ---- watching for words ------------------------------------------------- */
 
 /**
- * Does @p row read as @p needle anywhere along it?
- *
- * Matched over the row rather than the whole screen, because a screen has no
- * wrapping: a phrase split across two lines was two phrases. Case is ignored,
- * and anything outside ASCII cannot be in a phrase the operator typed, so it
- * simply never matches.
- */
-static bool row_contains(const screentext_grid_t *g, uint16_t r, const char *needle)
-{
-    char line[SCREENTEXT_MAX_COLS + 1];
-    uint16_t n = 0;
-    for (uint16_t col = 0; col < g->cols && n < sizeof(line) - 1; col++) {
-        const uint16_t cp = g->cells[(size_t)r * g->cols + col];
-        line[n++] = (cp < 0x80) ? (char)tolower((int)cp) : '\x01';
-    }
-    line[n] = '\0';
-    return strstr(line, needle) != NULL;
-}
-
-/**
  * Compare a reading against the phrases the operator asked about and record
  * every one that is on screen. Raising and clearing are both edges the store
  * reports once, so a phrase that stays on screen does not re-alert every second.
@@ -211,7 +191,7 @@ static void check_watch(const screentext_grid_t *g)
         }
 
         for (uint16_t r = 0; r < g->rows; r++) {
-            if (row_contains(g, r, lower)) {
+            if (screentext_row_contains(g, r, lower)) {
                 /* Whole phrases only - half of one would read as a different
                    alert, and would flap against the next reading. */
                 const size_t sep = used ? 2 : 0;

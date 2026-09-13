@@ -60,6 +60,9 @@
 #include "kvm_wg.h"
 #include "kvm_auth.h"
 #include "fw_install.h"
+#include "kvm_notify.h"
+#include "kvm_sched.h"
+#include "runbook.h"
 #include "kvm_board_header.h"
 #include "kvm_caps.h"
 #include "kvm_display.h"
@@ -1904,64 +1907,6 @@ static uint8_t parse_button(const cJSON *j)
     return MOUSE_BTN_LEFT;
 }
 
-/* Map a printable ASCII byte to a US-layout HID usage + whether Shift is held.
- * False for anything not on a US keyboard; the caller skips those. */
-static bool ascii_to_hid(char c, uint8_t *usage, bool *shift)
-{
-    *shift = false;
-    if (c >= 'a' && c <= 'z') {
-        *usage = (uint8_t)(0x04 + (c - 'a'));
-        return true;
-    }
-    if (c >= 'A' && c <= 'Z') {
-        *usage = (uint8_t)(0x04 + (c - 'A'));
-        *shift = true;
-        return true;
-    }
-    if (c >= '1' && c <= '9') {
-        *usage = (uint8_t)(0x1E + (c - '1'));
-        return true;
-    }
-    switch (c) {
-    case '0': *usage = 0x27; return true;
-    case ' ': *usage = 0x2C; return true;
-    case '\n': *usage = 0x28; return true; /* Enter */
-    case '\t': *usage = 0x2B; return true; /* Tab */
-    case '-': *usage = 0x2D; return true;
-    case '_': *usage = 0x2D; *shift = true; return true;
-    case '=': *usage = 0x2E; return true;
-    case '+': *usage = 0x2E; *shift = true; return true;
-    case '[': *usage = 0x2F; return true;
-    case '{': *usage = 0x2F; *shift = true; return true;
-    case ']': *usage = 0x30; return true;
-    case '}': *usage = 0x30; *shift = true; return true;
-    case '\\': *usage = 0x31; return true;
-    case '|': *usage = 0x31; *shift = true; return true;
-    case ';': *usage = 0x33; return true;
-    case ':': *usage = 0x33; *shift = true; return true;
-    case '\'': *usage = 0x34; return true;
-    case '"': *usage = 0x34; *shift = true; return true;
-    case '`': *usage = 0x35; return true;
-    case '~': *usage = 0x35; *shift = true; return true;
-    case ',': *usage = 0x36; return true;
-    case '<': *usage = 0x36; *shift = true; return true;
-    case '.': *usage = 0x37; return true;
-    case '>': *usage = 0x37; *shift = true; return true;
-    case '/': *usage = 0x38; return true;
-    case '?': *usage = 0x38; *shift = true; return true;
-    case '!': *usage = 0x1E; *shift = true; return true;
-    case '@': *usage = 0x1F; *shift = true; return true;
-    case '#': *usage = 0x20; *shift = true; return true;
-    case '$': *usage = 0x21; *shift = true; return true;
-    case '%': *usage = 0x22; *shift = true; return true;
-    case '^': *usage = 0x23; *shift = true; return true;
-    case '&': *usage = 0x24; *shift = true; return true;
-    case '*': *usage = 0x25; *shift = true; return true;
-    case '(': *usage = 0x26; *shift = true; return true;
-    case ')': *usage = 0x27; *shift = true; return true;
-    default: return false;
-    }
-}
 
 /* Shared gate for the agent endpoints: a valid session AND the agent API turned
  * on. The toggle is off by default because these hand full keyboard/mouse/screen
@@ -2178,7 +2123,7 @@ static esp_err_t api_hid_type_post(httpd_req_t *req)
     for (size_t i = 0; i < len; i++) {
         uint8_t usage;
         bool shift;
-        if (!ascii_to_hid(text[i], &usage, &shift)) {
+        if (!rb_ascii_usage(text[i], &usage, &shift)) {
             continue; /* silently skip characters the US layout can't type */
         }
         const uint8_t kc[6] = {usage, 0, 0, 0, 0, 0};
@@ -2187,6 +2132,175 @@ static esp_err_t api_hid_type_post(httpd_req_t *req)
     }
     cJSON_Delete(j);
     return send_ok(req);
+}
+
+/* --- runbooks: scripted keys and screen waits, run on the device --------- */
+
+static esp_err_t api_runbooks_status_get(httpd_req_t *req)
+{
+    if (!kvm_auth_check(req)) {
+        return kvm_auth_challenge(req);
+    }
+    runbook_status_t st;
+    runbook_get_status(&st);
+    static const char *const k_states[] = {"idle", "running", "done", "failed", "stopped"};
+    cJSON *j = cJSON_CreateObject();
+    cJSON_AddStringToObject(j, "state", k_states[st.state]);
+    cJSON_AddStringToObject(j, "name", st.name);
+    cJSON_AddNumberToObject(j, "step", st.step);
+    cJSON_AddNumberToObject(j, "steps", st.steps);
+    cJSON_AddStringToObject(j, "line", st.line);
+    cJSON_AddStringToObject(j, "message", st.message);
+    cJSON_AddNumberToObject(j, "elapsedMs", st.elapsed_ms);
+    char *body = cJSON_PrintUnformatted(j);
+    cJSON_Delete(j);
+    if (!body) {
+        return send_json_error(req, "500 Internal Server Error", "out of memory");
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    const esp_err_t r = httpd_resp_sendstr(req, body);
+    free(body);
+    return r;
+}
+
+static esp_err_t api_runbooks_run_post(httpd_req_t *req)
+{
+    if (!kvm_auth_check(req)) {
+        return kvm_auth_challenge(req);
+    }
+    cJSON *j = read_json_body(req);
+    const cJSON *jn = j ? cJSON_GetObjectItem(j, "name") : NULL;
+    char name[RUNBOOK_NAME_MAX] = {0};
+    if (cJSON_IsString(jn) && jn->valuestring) {
+        snprintf(name, sizeof(name), "%s", jn->valuestring);
+    }
+    cJSON_Delete(j);
+    if (!name[0]) {
+        return send_json_error(req, "400 Bad Request", "expected JSON {name:\"...\"}");
+    }
+    char why[RB_ERR_MAX];
+    const esp_err_t err = runbook_start(name, "console", why, sizeof(why));
+    if (err == ESP_ERR_NOT_FOUND) {
+        return send_json_error(req, "404 Not Found", "no runbook of that name");
+    }
+    if (err == ESP_ERR_INVALID_STATE) {
+        return send_json_error(req, "409 Conflict", "a runbook is already running");
+    }
+    if (err == ESP_ERR_NOT_SUPPORTED) {
+        return send_json_error(req, "409 Conflict", "no USB target attached");
+    }
+    if (err == ESP_ERR_INVALID_ARG) {
+        return send_json_error(req, "400 Bad Request", why);
+    }
+    if (err != ESP_OK) {
+        return send_json_error(req, "500 Internal Server Error", esp_err_to_name(err));
+    }
+    httpd_resp_set_status(req, "202 Accepted");
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"status\":\"started\"}");
+}
+
+static esp_err_t api_runbooks_stop_post(httpd_req_t *req)
+{
+    if (!kvm_auth_check(req)) {
+        return kvm_auth_challenge(req);
+    }
+    if (runbook_stop() != ESP_OK) {
+        return send_json_error(req, "409 Conflict", "no runbook is running");
+    }
+    return send_ok(req);
+}
+
+/* --- scheduler: cron lines that fire actions on the device --------------- */
+
+static esp_err_t api_schedules_status_get(httpd_req_t *req)
+{
+    if (!kvm_auth_check(req)) {
+        return kvm_auth_challenge(req);
+    }
+    kvm_sched_status_t st;
+    kvm_sched_status(&st);
+    cJSON *j = cJSON_CreateObject();
+    cJSON_AddBoolToObject(j, "enabled", st.enabled);
+    cJSON_AddBoolToObject(j, "clockValid", st.clock_valid);
+    cJSON_AddStringToObject(j, "now", st.now);
+    cJSON_AddStringToObject(j, "tz", st.tz);
+    cJSON_AddNumberToObject(j, "count", st.count);
+    cJSON_AddStringToObject(j, "lastName", st.last_name);
+    cJSON_AddStringToObject(j, "lastAction", st.last_action);
+    cJSON_AddStringToObject(j, "lastAt", st.last_at);
+    char *body = cJSON_PrintUnformatted(j);
+    cJSON_Delete(j);
+    if (!body) {
+        return send_json_error(req, "500 Internal Server Error", "out of memory");
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    const esp_err_t r = httpd_resp_sendstr(req, body);
+    free(body);
+    return r;
+}
+
+static esp_err_t api_schedules_run_post(httpd_req_t *req)
+{
+    if (!kvm_auth_check(req)) {
+        return kvm_auth_challenge(req);
+    }
+    cJSON *j = read_json_body(req);
+    const cJSON *jn = j ? cJSON_GetObjectItem(j, "name") : NULL;
+    char name[KVM_SCHED_NAME_MAX] = {0};
+    if (cJSON_IsString(jn) && jn->valuestring) {
+        snprintf(name, sizeof(name), "%s", jn->valuestring);
+    }
+    cJSON_Delete(j);
+    if (!name[0]) {
+        return send_json_error(req, "400 Bad Request", "expected JSON {name:\"...\"}");
+    }
+    if (kvm_sched_run(name) != ESP_OK) {
+        return send_json_error(req, "404 Not Found", "no schedule of that name");
+    }
+    httpd_resp_set_status(req, "202 Accepted");
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"status\":\"fired\"}");
+}
+
+/* --- notifications ------------------------------------------------------- */
+
+static esp_err_t api_notify_status_get(httpd_req_t *req)
+{
+    if (!kvm_auth_check(req)) {
+        return kvm_auth_challenge(req);
+    }
+    kvm_notify_status_t st;
+    kvm_notify_status(&st);
+    char res[96 * 2];
+    char body[sizeof(res) + 96];
+    /* last_result may hold a URL or a quote; keep the JSON valid. */
+    size_t o = 0;
+    for (const char *p = st.last_result; *p && o + 2 < sizeof(res); p++) {
+        if (*p == '"' || *p == '\\') {
+            res[o++] = '\\';
+        }
+        res[o++] = *p;
+    }
+    res[o] = '\0';
+    snprintf(body, sizeof(body), "{\"enabled\":%s,\"lastResult\":\"%s\",\"lastAt\":\"%s\"}",
+             st.enabled ? "true" : "false", res, st.last_at);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_sendstr(req, body);
+}
+
+static esp_err_t api_notify_test_post(httpd_req_t *req)
+{
+    if (!kvm_auth_check(req)) {
+        return kvm_auth_challenge(req);
+    }
+    kvm_notify_send("ESP-KVM test", "If you can read this, notifications work.", true);
+    httpd_resp_set_status(req, "202 Accepted");
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"status\":\"queued\"}");
 }
 
 /* Long MJPEG response must not run on the httpd select() thread; see httpd_req_async_handler_begin(). */
@@ -3970,7 +4084,7 @@ httpd_handle_t http_server_start(void)
      * The check below now logs a failed registration rather than swallowing it, so
      * the next person gets a line instead of a mystery - but keep headroom anyway.
      */
-    cfg.max_uri_handlers = 60;
+    cfg.max_uri_handlers = 64;
 
     if (kvm_auth_init() != ESP_OK) {
         /* Without a working password store the only safe answer is not to
@@ -4145,6 +4259,13 @@ httpd_handle_t http_server_start(void)
         {.uri = "/api/v1/hid/key", .method = HTTP_POST, .handler = api_hid_key_post},
         {.uri = "/api/v1/hid/type", .method = HTTP_POST, .handler = api_hid_type_post},
         {.uri = "/api/v1/hid/reattach", .method = HTTP_POST, .handler = api_hid_reattach_post},
+        {.uri = "/api/v1/runbooks/status", .method = HTTP_GET, .handler = api_runbooks_status_get},
+        {.uri = "/api/v1/runbooks/run", .method = HTTP_POST, .handler = api_runbooks_run_post},
+        {.uri = "/api/v1/runbooks/stop", .method = HTTP_POST, .handler = api_runbooks_stop_post},
+        {.uri = "/api/v1/schedules/status", .method = HTTP_GET, .handler = api_schedules_status_get},
+        {.uri = "/api/v1/schedules/run", .method = HTTP_POST, .handler = api_schedules_run_post},
+        {.uri = "/api/v1/notify/status", .method = HTTP_GET, .handler = api_notify_status_get},
+        {.uri = "/api/v1/notify/test", .method = HTTP_POST, .handler = api_notify_test_post},
     };
     for (size_t i = 0; i < sizeof(api_uris) / sizeof(api_uris[0]); i++) {
         register_route(h, &api_uris[i]);

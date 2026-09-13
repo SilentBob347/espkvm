@@ -8,6 +8,7 @@
 #include "screentext.h"
 #include "screentext_font.h"
 
+#include <ctype.h>
 #include <string.h>
 
 /*
@@ -444,4 +445,38 @@ size_t screentext_to_utf8(const screentext_grid_t *grid, char *buf, size_t cap)
     }
     buf[n] = '\0';
     return n;
+}
+
+bool screentext_row_contains(const screentext_grid_t *g, uint16_t row, const char *needle)
+{
+    char line[SCREENTEXT_MAX_COLS + 1];
+    uint16_t n = 0;
+    for (uint16_t col = 0; col < g->cols && n < sizeof(line) - 1; col++) {
+        const uint16_t cp = g->cells[(size_t)row * g->cols + col];
+        line[n++] = (cp < 0x80) ? (char)tolower((int)cp) : '\x01';
+    }
+    line[n] = '\0';
+    return strstr(line, needle) != NULL;
+}
+
+bool screentext_has(const screentext_grid_t *g, const char *phrase)
+{
+    char lower[SCREENTEXT_PHRASE_MAX];
+    size_t i = 0;
+    for (; phrase[i]; i++) {
+        if (i >= sizeof(lower) - 1) {
+            return false;
+        }
+        lower[i] = (char)tolower((unsigned char)phrase[i]);
+    }
+    lower[i] = '\0';
+    if (!i) {
+        return false;
+    }
+    for (uint16_t r = 0; r < g->rows; r++) {
+        if (screentext_row_contains(g, r, lower)) {
+            return true;
+        }
+    }
+    return false;
 }

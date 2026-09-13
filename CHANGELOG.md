@@ -5,6 +5,42 @@ All notable changes to ESP-KVM are recorded here. The format follows
 semantic versioning while it is pre-1.0 (a new feature bumps the minor, a fix
 bumps the patch).
 
+## [Unreleased]
+
+### Added
+- **Runbooks.** A macro that can wait. A runbook is the macro script plus two
+  new lines - `wait Press F2` holds until a row of the screen says so, `gone
+  Loading` until it stops saying so - and it runs on the device, so it carries
+  on with the browser closed. Enter the setup, pick the boot device, answer an
+  installer: the sort of thing that used to need somebody watching. It fails
+  with the line it was on when a phrase does not turn up in time (`timeout 120`
+  sets how long), and it can be stopped. Waits only ever see a text screen; on
+  a picture they wait out their timeout. They live in the console's new
+  Automation panel, and each one is a button in Home Assistant, with a sensor
+  saying how the last run went. `GET /api/v1/runbooks/status`,
+  `POST /api/v1/runbooks/run`, `POST /api/v1/runbooks/stop`.
+- **DuckyScript runs too.** Paste a Hak5 DuckyScript into a macro or a runbook
+  and it runs as-is - `REM`, `STRING`, `STRINGLN`, `DELAY`, `DEFAULT_DELAY`,
+  `REPEAT`, and chords like `GUI r` or `CTRL ALT DELETE`. It is recognised by
+  its upper-case verbs, so nothing has to be switched. Keyboard only, and its
+  `STRING` is US ASCII like `type`.
+- **A scheduler.** Cron lines that fire an action on a timetable - Wake-on-LAN
+  in the morning, a runbook overnight, a reset on a schedule. Five-field cron in
+  the Automation panel, one of Wake-on-LAN, the ATX buttons, a runbook or a
+  device restart. It needs a wall clock, so it sets one over SNTP (a server on
+  the local network works with no internet) and does nothing, and says so, until
+  the clock is set. A time zone is a POSIX TZ string. `GET
+  /api/v1/schedules/status`, `POST /api/v1/schedules/run`.
+- **Push notifications.** When a watched phrase appears on the screen, or the
+  screen goes blank, the device can send a message - to Telegram, with a
+  screenshot attached where the codec is MJPEG, or to a webhook as JSON. It is
+  off by default, on its own low-priority task; the TLS session and the copied
+  screenshot both come from PSRAM, so the encoder's internal RAM is untouched.
+  It can also attach the tail of the device log, so an alert carries the
+  context that explains it. There is a Send-a-test button, and the panel shows
+  whether the last one got through. `GET /api/v1/notify/status`, `POST
+  /api/v1/notify/test`.
+
 ## [0.46.2] - 2026-09-13
 
 ### Changed
@@ -26,6 +62,11 @@ bumps the patch).
   the plug.
 
 ### Fixed
+- **The device log is readable again with the VPN on.** The Tailscale client
+  logged a line per relay heartbeat and per periodic tick, which filled the log
+  ring in under a minute and pushed out anything worth reading - a boot that
+  rolled back, a failed notification. Those lines are at debug level now, and
+  the client's tags are held at warning unless the log setting is at debug.
 - **The Home Assistant state message could be cut off.** Its buffer was sized
   for a short screen alert; the alert now names every matched phrase at once,
   and with a long one the JSON would have ended mid-field and been thrown away

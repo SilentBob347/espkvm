@@ -229,6 +229,90 @@ static const kvm_setting_t s_settings[] = {
         .help = "Saved macros, edited from the Input panel.",
         .def_str = "[]", .max_len = 2000, .requires_cap = KVM_CAP_HID,
     },
+    {
+        /* Runbooks, the same shape as the macros: a JSON array of {name, script}
+         * the console edits, in a section the settings panel does not render.
+         * The size is what one PUT of the settings can carry. */
+        .key = "runbooks_json", .section = "runbooks", .type = KVM_VT_STR,
+        .title = "Runbooks",
+        .help = "Saved runbooks, edited from the Runbooks panel.",
+        .def_str = "[]", .max_len = 3000, .requires_cap = KVM_CAP_RUNBOOK,
+    },
+    {
+        .key = "sched_enable", .section = "schedules", .type = KVM_VT_BOOL,
+        .title = "Run schedules",
+        .help = "Let the device fire scheduled actions. It needs the clock set over the network.",
+        .def = 0, .requires_cap = KVM_CAP_SCHED,
+    },
+    {
+        .key = "sched_ntp", .section = "schedules", .type = KVM_VT_STR,
+        .title = "Time server (NTP)",
+        .help = "Where the clock is set from. A name on the local network works with no internet.",
+        .def_str = "pool.ntp.org", .max_len = 64, .requires_cap = KVM_CAP_SCHED,
+    },
+    {
+        .key = "sched_tz", .section = "schedules", .type = KVM_VT_STR,
+        .title = "Time zone (POSIX TZ)",
+        .help = "A POSIX TZ string, e.g. UTC0, GMT0BST,M3.5.0/1,M10.5.0 or MSK-3. Schedules run in this zone.",
+        .def_str = "UTC0", .max_len = 48, .requires_cap = KVM_CAP_SCHED,
+    },
+    {
+        /* The schedules themselves, the same shape as macros and runbooks: a
+         * JSON array the console edits, in a section the settings panel does
+         * not render. */
+        .key = "schedules_json", .section = "schedules", .type = KVM_VT_STR,
+        .title = "Schedules",
+        .help = "Saved schedules, edited from the Automation panel.",
+        .def_str = "[]", .max_len = 3000, .requires_cap = KVM_CAP_SCHED,
+    },
+    {
+        .key = "notify_enable", .section = "notify", .type = KVM_VT_BOOL,
+        .title = "Send notifications",
+        .help = "Push a message when a watched phrase appears or the screen goes blank.",
+        .def = 0, .requires_cap = KVM_CAP_NOTIFY,
+    },
+    {
+        .key = "notify_watch", .section = "notify", .type = KVM_VT_BOOL,
+        .title = "On a screen-watch phrase",
+        .help = "Notify when one of the phrases the screen is watched for appears.",
+        .def = 1, .requires_cap = KVM_CAP_NOTIFY,
+    },
+    {
+        .key = "notify_flat", .section = "notify", .type = KVM_VT_BOOL,
+        .title = "On a blank screen",
+        .help = "Notify when the output stays one flat colour - a stop screen, a blanked display.",
+        .def = 0, .requires_cap = KVM_CAP_NOTIFY,
+    },
+    {
+        .key = "notify_snap", .section = "notify", .type = KVM_VT_BOOL,
+        .title = "Attach a screenshot",
+        .help = "Send the screen with the message. Needs the MJPEG codec; skipped on H.264.",
+        .def = 1, .requires_cap = KVM_CAP_NOTIFY,
+    },
+    {
+        .key = "notify_log", .section = "notify", .type = KVM_VT_BOOL,
+        .title = "Attach recent log",
+        .help = "Include the tail of the device log with the message - the context around an alert.",
+        .def = 0, .requires_cap = KVM_CAP_NOTIFY,
+    },
+    {
+        .key = "notify_tg_token", .section = "notify", .type = KVM_VT_STR,
+        .title = "Telegram bot token",
+        .help = "From @BotFather, like 123456:AA... . Message the bot once so it may write to you.",
+        .def_str = "", .max_len = 64, .requires_cap = KVM_CAP_NOTIFY, .flags = KVM_SF_SECRET,
+    },
+    {
+        .key = "notify_tg_chat", .section = "notify", .type = KVM_VT_STR,
+        .title = "Telegram chat id",
+        .help = "The chat to message - your user id, or a group/channel id.",
+        .def_str = "", .max_len = 32, .requires_cap = KVM_CAP_NOTIFY,
+    },
+    {
+        .key = "notify_url", .section = "notify", .type = KVM_VT_STR,
+        .title = "Webhook URL",
+        .help = "A URL to POST a small JSON message to (title, message, device). Optional.",
+        .def_str = "", .max_len = 200, .requires_cap = KVM_CAP_NOTIFY,
+    },
 
     /* ---- storage -------------------------------------------------------- */
     {

@@ -171,6 +171,22 @@ bool screentext_scan(const screentext_frame_t *frame, screentext_grid_t *out);
  */
 size_t screentext_to_utf8(const screentext_grid_t *grid, char *buf, size_t cap);
 
+/**
+ * Does row @p row read as @p needle anywhere along it? @p needle must already
+ * be lower case. Matched over one row rather than the whole screen, because a
+ * screen has no wrapping: a phrase split across two lines was two phrases.
+ * Anything outside ASCII cannot be in a phrase the operator typed, so it
+ * simply never matches.
+ */
+bool screentext_row_contains(const screentext_grid_t *grid, uint16_t row, const char *needle);
+
+/**
+ * Is @p phrase on the screen, on any one row? Case is ignored. A phrase longer
+ * than SCREENTEXT_PHRASE_MAX - 1 is never found rather than matched in part.
+ */
+#define SCREENTEXT_PHRASE_MAX 128
+bool screentext_has(const screentext_grid_t *grid, const char *phrase);
+
 #ifdef __cplusplus
 }
 #endif

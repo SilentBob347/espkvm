@@ -39,7 +39,9 @@
 #include "kvm_settings.h"
 #include "kvm_thermal.h"
 #include "usb_hid.h"
+#include "cJSON.h"
 #include "fw_install.h"
+#include "runbook.h"
 #include "video_frame.h"
 
 #define TAG "mqtt"
@@ -160,6 +162,22 @@ static int build_state(char *b, size_t n)
     const bool alerting = screentext_alert_get(alert, sizeof(alert), NULL);
     json_escape(alert_json, sizeof(alert_json), alerting ? alert : "");
 
+    /* The runbook: its state as a word, and one line saying which, where and
+       why - what an automation reads to know the unattended job is done. */
+    static const char *const k_rb_states[] = {"idle", "running", "done", "failed", "stopped"};
+    /* Static like the buffers around it: this runs on the timer task's stack. */
+    static runbook_status_t rb;
+    runbook_get_status(&rb);
+    static char rb_text[RUNBOOK_NAME_MAX + RB_ERR_MAX + 32];
+    static char rb_json[sizeof(rb_text) * 2];
+    if (rb.state == RUNBOOK_IDLE) {
+        rb_text[0] = '\0';
+    } else {
+        snprintf(rb_text, sizeof(rb_text), "%s: step %u/%u, %s", rb.name, (unsigned)rb.step,
+                 (unsigned)rb.steps, rb.message);
+    }
+    json_escape(rb_json, sizeof(rb_json), rb_text);
+
     return snprintf(b, n,
              "{\"tempC\":%d.%u,\"thermal\":\"%s\",\"viewers\":%d,\"signal\":\"%s\","
              "\"resolution\":\"%s\",\"fps\":%u.%02u,\"codec\":\"%s\",\"kbps\":%u,"
@@ -177,7 +195,8 @@ static int build_state(char *b, size_t n)
                 to start after a spell on MJPEG. */
              "\"internalKb\":%u,\"internalLargestKb\":%u,\"skippedFps\":%u.%02u,"
              "\"slot\":\"%s\",\"bootReason\":\"%s\","
-             "\"jiggler\":\"%s\",\"jigglerSec\":%d,\"jigglerNudges\":%u}",
+             "\"jiggler\":\"%s\",\"jigglerSec\":%d,\"jigglerNudges\":%u,"
+             "\"runbook\":\"%s\",\"runbookText\":\"%s\"}",
              t_int, t_dec, kvm_thermal_state_name(kvm_thermal_state()), viewers,
              v.signal ? "ON" : "OFF", res, (unsigned)(v.fps_x100 / 100),
              (unsigned)(v.fps_x100 % 100), codec, (unsigned)v.kbps,
@@ -189,7 +208,7 @@ static int build_state(char *b, size_t n)
              (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024),
              (unsigned)(v.skipped_fps_x100 / 100u), (unsigned)(v.skipped_fps_x100 % 100u),
              running_slot(), boot_reason(), jiggle_s > 0 ? "ON" : "OFF", (int)jiggle_s,
-             (unsigned)usb_hid_jiggler_nudges());
+             (unsigned)usb_hid_jiggler_nudges(), k_rb_states[rb.state], rb_json);
 }
 
 /*
@@ -210,7 +229,8 @@ static int build_state(char *b, size_t n)
  * spare; the compiler checks the arithmetic at -O2 (format-truncation) and the
  * caller checks the result at runtime, because a truncated payload is not JSON.
  */
-#define STATE_JSON_MAX (SCREENTEXT_ALERT_MAX * 2 + 640)
+/* The alert and the runbook line, both escaped, plus the fixed fields. */
+#define STATE_JSON_MAX (SCREENTEXT_ALERT_MAX * 2 + (RUNBOOK_NAME_MAX + RB_ERR_MAX + 32) * 2 + 700)
 static void publish_snapshot(void);      /* defined with the discovery helpers below */
 static void publish_update_state(bool force);
 
@@ -243,8 +263,15 @@ static void alert_cb(void *arg)
 {
     (void)arg;
     static uint32_t s_seen;
+    static uint32_t s_rb_seen;
     uint32_t seq = 0;
     screentext_alert_get(NULL, 0, &seq);
+    /* A runbook moving a step is news too. */
+    const uint32_t rb_seq = runbook_seq();
+    if (rb_seq != s_rb_seen) {
+        s_rb_seen = rb_seq;
+        publish_state();
+    }
     if (seq != s_seen) {
         s_seen = seq;
         publish_state();
@@ -304,6 +331,44 @@ static void disco_button(const char *obj, const char *name, const char *cmd, con
     char topic[128];
     snprintf(topic, sizeof(topic), "%s/button/%s/%s/config", s_disco, s_devid, obj);
     pub(topic, j, 1);
+}
+
+/* One button per saved runbook. They all press the same command with the
+ * runbook's name as the payload, so a renamed list never fires the wrong one;
+ * the object ids are by position, and the positions past the end are cleared
+ * so a deleted runbook does not leave a button behind in Home Assistant. */
+#define RUNBOOK_BUTTONS_MAX 16
+
+static void disco_runbooks(void)
+{
+    cJSON *list = cJSON_Parse(kvm_setting_str("runbooks_json"));
+    unsigned i = 0;
+    const cJSON *item;
+    cJSON_ArrayForEach(item, list) {
+        const cJSON *jn = cJSON_GetObjectItem(item, "name");
+        if (!cJSON_IsString(jn) || !jn->valuestring[0] || i >= RUNBOOK_BUTTONS_MAX) {
+            continue;
+        }
+        char name[RUNBOOK_NAME_MAX * 2];
+        json_escape(name, sizeof(name), jn->valuestring);
+        char j[512];
+        int o = snprintf(j, sizeof(j),
+                         "{\"~\":\"%s\",\"name\":\"Runbook: %s\",\"cmd_t\":\"~/cmd/runbook\","
+                         "\"pl_prs\":\"%s\",\"avty_t\":\"~/availability\","
+                         "\"ic\":\"mdi:script-text-play\",\"uniq_id\":\"%s_rb%u\"",
+                         s_base_topic, name, name, s_devid, i);
+        o += snprintf(j + o, sizeof(j) - o, ",\"dev\":%s}", s_dev_json);
+        char topic[128];
+        snprintf(topic, sizeof(topic), "%s/button/%s/rb%u/config", s_disco, s_devid, i);
+        pub(topic, j, 1);
+        i++;
+    }
+    cJSON_Delete(list);
+    for (; i < RUNBOOK_BUTTONS_MAX; i++) {
+        char topic[128];
+        snprintf(topic, sizeof(topic), "%s/button/%s/rb%u/config", s_disco, s_devid, i);
+        pub(topic, "", 1);
+    }
 }
 
 /* A switch: state comes from the shared JSON, commands go to <base>/cmd/<cmd>
@@ -465,6 +530,15 @@ static void publish_discovery(void)
     disco_sensor("sensor", "bootreason", "Last boot", "{{ value_json.bootReason }}", NULL, NULL,
                  "mdi:restart", "diagnostic");
 
+    /* Runbooks: a button each, and what the last run came to. */
+    if (kvm_cap_available(KVM_CAP_RUNBOOK)) {
+        disco_runbooks();
+        disco_sensor("sensor", "runbook", "Runbook", "{{ value_json.runbook }}", NULL, NULL,
+                     "mdi:script-text-play", NULL);
+        disco_sensor("sensor", "runbooktext", "Runbook progress", "{{ value_json.runbookText }}",
+                     NULL, NULL, "mdi:script-text", NULL);
+    }
+
     /* A still of the target's screen, and the button that asks for one. The
      * picture is what makes a "kernel panic" notification worth opening. */
     disco_camera("screen", "Target screen", "mdi:monitor-screenshot");
@@ -570,6 +644,17 @@ static void handle_command(esp_mqtt_event_handle_t e)
         }
     } else if (strcmp(action, "snapshot") == 0) {
         publish_snapshot();
+    } else if (strcmp(action, "runbook") == 0) {
+        /* The payload is the runbook's name, as the button was told to send. */
+        char name[RUNBOOK_NAME_MAX];
+        const int n = e->data_len < (int)sizeof(name) - 1 ? e->data_len : (int)sizeof(name) - 1;
+        memcpy(name, e->data, n);
+        name[n] = '\0';
+        const esp_err_t err = runbook_start(name, "mqtt", NULL, 0);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "runbook \"%s\" from Home Assistant: %s", name, esp_err_to_name(err));
+        }
+        publish_state();
     } else if (strcmp(action, "jiggler") == 0) {
         /* The switch carries no interval, so turning it on restores the last one
          * the operator set - or a minute, which is under every screen lock we

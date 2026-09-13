@@ -75,7 +75,10 @@ Useful for what it does today, and honest about the rest.
 | Pasting text with a keyboard layout | works; US English, Russian, Czech, Ukrainian, Lithuanian |
 | Use from a phone or tablet | works; touch trackpad and on-screen keyboard |
 | Multiple viewers, one in control at a time with takeover | works |
-| User-defined key macros | works |
+| User-defined key macros | works; the commands are in [docs/SCRIPTS.md](docs/SCRIPTS.md) |
+| Runbooks: a macro that waits for words on the screen, run on the device | works; `wait Press F2`, then `key f2`. Carries on with the browser closed, and each one is a button in Home Assistant. Text screens only. [docs/SCRIPTS.md](docs/SCRIPTS.md) |
+| Scheduler: fire an action on a cron timetable | works; Wake-on-LAN in the morning, a runbook overnight, a reset on a schedule. Needs the clock, set over the network |
+| Push notifications, with a screenshot | works; to Telegram (with the screen on the MJPEG codec) or a webhook, when a watched phrase appears or the screen goes blank |
 | Settings, capability reporting, diagnostics | works |
 | Settings to a file, and back | works; no secrets in the file, and a device's own identity is left alone |
 | Firmware update over the network, with rollback | works |
@@ -879,6 +882,14 @@ state a KVM is bought for, because the machine that falls over does it at three
 in the morning. The alert is raised when the phrase appears and cleared when it
 goes. Both edges reach the log, and Home Assistant if MQTT is on.
 
+A runbook takes that one step further: a script of keys to send and phrases to
+wait for, run on the device itself. `wait Press F2 to enter setup`, `key f2`,
+`wait Boot`, `type` a password - a macro with patience, for the BIOS work that
+used to need somebody watching the screen. It fails at the line whose phrase
+never turned up, and it stops when told to. Like the reading it is built on, a
+wait only sees a text screen. The language, the key names and the limits are
+in [docs/SCRIPTS.md](docs/SCRIPTS.md).
+
 **Security.** The device serves HTTPS with a certificate it issues itself on
 first boot, and asks for a password before it will do anything. The password is
 stored as a salted PBKDF2 hash, sessions are HttpOnly cookies held in memory -
@@ -937,6 +948,9 @@ Everything the console does is available over HTTP.
 | `GET /api/v1/video/frame.jpg` | one frame as a JPEG; 409 while H.264 is selected |
 | `POST /api/v1/hid/key`, `/type`, `/move`, `/click` | the keyboard and pointer, for automation. Off until the agent API is enabled in Settings &rarr; Security |
 | `POST /api/v1/hid/reattach` | present the keyboard and mouse to the target again, as if the cable had been pulled and put back |
+| `POST /api/v1/runbooks/run`, `/stop`, `GET /api/v1/runbooks/status` | run a saved runbook by name, stop it, see which step it is on |
+| `POST /api/v1/schedules/run`, `GET /api/v1/schedules/status` | fire a saved schedule now, or see the device clock and what last fired |
+| `POST /api/v1/notify/test`, `GET /api/v1/notify/status` | send a test notification, or see whether the last one got through |
 | `GET /api/v1/system/info` | version, uptime, free memory, chip temperature, thermal state, Ethernet link, ATX power state |
 | `GET /api/v1/system/log` | the device's own log, as a file |
 | `GET /api/v1/system/coredump`, `DELETE` | the crash dump a panic left in flash, as a file, or throw it away |
@@ -964,6 +978,9 @@ components/
   kvm_storage/    microSD and on-flash rescue image, virtual media
   kvm_config/     settings registry and capability registry
   kvm_screentext/ reading a text-mode screen back as characters
+  kvm_runbook/    runbooks: scripted keys and screen waits, run on the device
+  kvm_sched/      scheduler: cron lines that fire actions on the device
+  kvm_notify/     push notifications to Telegram and a webhook
   kvm_web/        HTTP/HTTPS server, REST API, WebSockets, TLS identity
   kvm_net/        Ethernet, WiFi (station/AP + rescue hotspot, captive portal),
                   IPv6, mDNS, Wake-on-LAN, and the VPN clients (WireGuard,

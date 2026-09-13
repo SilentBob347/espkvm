@@ -36,6 +36,9 @@
 #include "kvm_wg.h"
 #include "kvm_thermal.h"
 #include "kvm_settings.h"
+#include "kvm_notify.h"
+#include "kvm_sched.h"
+#include "runbook.h"
 #include "usb_hid.h"
 #include "video_frame.h"
 
@@ -75,6 +78,20 @@ static void apply_log_level(void)
     if (level == ESP_LOG_INFO) {
         esp_log_level_set("esp_https_server", ESP_LOG_WARN);
         esp_log_level_set("httpd_uri", ESP_LOG_ERROR);
+
+        /*
+         * The Tailscale client (microlink) logs a line per probe, per relay
+         * heartbeat and per periodic tick - at INFO it fills the whole ring in
+         * under a minute, so a real fault, a boot that rolls back, a
+         * notification failure, is gone before anyone reads it. Held at WARN
+         * unless the setting is at DEBUG, where someone is chasing the tunnel
+         * and wants exactly these.
+         */
+        static const char *const ml_tags[] = {"ml_wg_mgr", "ml_derp", "ml_net_io",
+                                              "ml_coord",  "ml_stun", "ml_h2"};
+        for (size_t i = 0; i < sizeof(ml_tags) / sizeof(ml_tags[0]); i++) {
+            esp_log_level_set(ml_tags[i], ESP_LOG_WARN);
+        }
     }
 }
 
@@ -112,7 +129,8 @@ static void on_setting_changed(const char *key, void *user)
     /* ATX or WoL availability changing alters which Home Assistant entities
      * should exist; refresh discovery (kvm_atx_apply above already ran, so the
      * capability is current by now). */
-    if (strncmp(key, "atx_", 4) == 0 || strcmp(key, "pwr_wol_mac") == 0) {
+    if (strncmp(key, "atx_", 4) == 0 || strcmp(key, "pwr_wol_mac") == 0 ||
+        strcmp(key, "runbooks_json") == 0) {
         kvm_mqtt_notify();
     }
 }
@@ -659,6 +677,15 @@ void app_main(void)
     } else {
         usb_hid_jiggler_start();
     }
+    /* Runbooks send keys, so they need the HID stack; the parser is there either way. */
+    runbook_init();
+    if (hid_err != ESP_OK) {
+        kvm_cap_report(KVM_CAP_RUNBOOK, false, "no USB stack");
+    }
+    /* The scheduler fires runbooks and power actions on a clock it sets itself. */
+    kvm_sched_init();
+    /* Push notifications, on their own low-priority task. */
+    kvm_notify_init();
 
     ESP_LOGI(TAG, "boot: capture");
     capture_start();

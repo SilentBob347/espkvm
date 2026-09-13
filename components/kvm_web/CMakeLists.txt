@@ -20,6 +20,9 @@ idf_component_register(
         kvm_log
         kvm_mqtt
         espressif__cjson
+        kvm_runbook
+        kvm_sched
+        kvm_notify
         app_update
         esp_app_format
         espcoredump

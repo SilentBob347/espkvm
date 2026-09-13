@@ -44,6 +44,9 @@ typedef enum {
                              available at runtime once the co-processor answers */
     KVM_CAP_DISPLAY,    /**< status display present: an I2C OLED that answered on the
                              shared bus, or a configured SPI LCD that came up */
+    KVM_CAP_RUNBOOK,    /**< runbooks: scripted keys and screen waits run on the device */
+    KVM_CAP_SCHED,      /**< scheduler: cron lines that fire actions on the device */
+    KVM_CAP_NOTIFY,     /**< push notifications to Telegram / a webhook */
     KVM_CAP_COUNT,
 } kvm_cap_t;
 

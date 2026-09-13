@@ -3,5 +3,6 @@ idf_component_register(
     INCLUDE_DIRS "include"
     REQUIRES kvm_config
     PRIV_REQUIRES mqtt mbedtls esp_timer esp_hw_support esp_app_format esp_system app_update
-                  kvm_atx kvm_net video_pipeline kvm_hid kvm_screentext kvm_web
+                  kvm_atx kvm_net video_pipeline kvm_hid kvm_screentext kvm_web kvm_runbook
+                  espressif__cjson
 )
