@@ -5,7 +5,7 @@ All notable changes to ESP-KVM are recorded here. The format follows
 semantic versioning while it is pre-1.0 (a new feature bumps the minor, a fix
 bumps the patch).
 
-## [Unreleased]
+## [0.47.0] - 2026-09-13
 
 ### Added
 - **Runbooks.** A macro that can wait. A runbook is the macro script plus two
@@ -40,6 +40,11 @@ bumps the patch).
   context that explains it. There is a Send-a-test button, and the panel shows
   whether the last one got through. `GET /api/v1/notify/status`, `POST
   /api/v1/notify/test`.
+
+### Fixed
+- **The VPN client's periodic lines are at debug level now.** 0.46.2 said so a
+  release early: the firmware held the tags at warning, but the client itself
+  still logged its heartbeat and its ticks at info. Both halves are in now.
 
 ## [0.46.2] - 2026-09-13
 
