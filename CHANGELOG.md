@@ -5,6 +5,13 @@ All notable changes to ESP-KVM are recorded here. The format follows
 semantic versioning while it is pre-1.0 (a new feature bumps the minor, a fix
 bumps the patch).
 
+## [Unreleased]
+
+### Added
+- **A Sign out button.** Settings > Security opens with who is signed in and a
+  button to end the session. The device had the endpoint since the login
+  arrived; the console never offered it.
+
 ## [0.47.1] - 2026-09-13
 
 ### Fixed
