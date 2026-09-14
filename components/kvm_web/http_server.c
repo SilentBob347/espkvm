@@ -858,8 +858,8 @@ static esp_err_t api_system_info_get(httpd_req_t *req)
     return httpd_resp_send(req, body, n);
 }
 
-/* Start a WiFi scan (async - it can take several seconds and borrow the SD bus,
- * so it runs on a worker and the client polls the GET below). */
+/* Start a WiFi scan (async - it can take several seconds, so it runs on a
+ * worker and the client polls the GET below). */
 static esp_err_t api_wifi_scan_post(httpd_req_t *req)
 {
     if (!kvm_auth_check(req)) {

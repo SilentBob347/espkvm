@@ -644,8 +644,7 @@ because the password it would otherwise invent is printed to a serial console
 and a display, and some of these boards have neither. Nothing is handed over
 with it: until a real password is set, the only thing that answers is the page
 that sets one. It stops happening as soon as one exists, and there is a switch
-in **Settings -> Network** to turn it off. Note that the co-processor and the
-card slot share one bus, so while that hotspot is up the microSD is not.
+in **Settings -> Network** to turn it off.
 
 After that the cable is only needed if something goes badly wrong - updates are
 installed from the console itself.

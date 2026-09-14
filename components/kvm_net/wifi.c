@@ -50,8 +50,7 @@ static volatile int s_rssi;
 static kvm_net_mode_t s_mode = KVM_NET_ETHERNET;
 static char s_ssid[33];
 static unsigned s_retries;
-/* True once esp_wifi is up (a WiFi mode is running), so a scan can reuse it
- * instead of borrowing the SD bus to bring the co-processor up. */
+/* True once esp_wifi is up (a WiFi mode is running); only then can a scan run. */
 static bool s_wifi_running;
 static bool s_setup_ap; /* the open hotspot for a device with no password and no cable */
 
@@ -493,13 +492,13 @@ static void sdio_add_internal_pullups(void)
 }
 
 /*
- * Bring the co-processor and the WiFi driver up. Everything below this line
- * needs the SD bus, so whoever calls it has already given the bus away.
+ * Bring the co-processor and the WiFi driver up. Needs the co-processor's SD
+ * slot, so where the card shares it the caller has already unmounted the card.
  */
 static esp_err_t coproc_wifi_up(void)
 {
     /* The co-processor's eager constructor init is disabled (see the note above and
-     * the board overlay) so Ethernet mode keeps the SD bus; bring it up now, which is
+     * the board overlay) so it never races the card for the SD host; bring it up now, which is
      * the point a WiFi mode needs it. esp-hosted 3.0 split the bring-up: esp_hosted_init
      * opens the transport, esp_hosted_connect_to_slave completes the handshake with the
      * C6 (older versions did both from esp_hosted_init). */
@@ -561,8 +560,8 @@ esp_err_t kvm_wifi_init(void)
  * cannot be driven through it (see kvm_auth_check).
  *
  * One-way trip: esp_hosted cannot be torn down (esp_hosted_deinit races its own
- * async transport init and asserts), so the co-processor keeps the shared SD bus
- * until the next restart, and the microSD stays unmounted. That is the right
+ * async transport init and asserts). Where the card shares the co-processor's
+ * SD slot, the microSD stays unmounted until the next restart. That is the right
  * trade on a device nobody has claimed yet - there is nothing on the card to
  * serve while there is no way in.
  */
@@ -571,8 +570,10 @@ esp_err_t kvm_wifi_setup_ap_start(void)
     if (s_wifi_running) {
         return ESP_ERR_INVALID_STATE; /* the radio is already somebody else's */
     }
-    bool was_mounted = false;
-    (void)kvm_storage_bus_suspend(&was_mounted); /* usually nothing to give up */
+    if (kvm_storage_shares_wifi_slot()) {
+        bool was_mounted = false;
+        (void)kvm_storage_bus_suspend(&was_mounted); /* usually nothing to give up */
+    }
 
     s_mode = KVM_NET_WIFI_AP;
     esp_err_t err = coproc_wifi_up();
@@ -647,10 +648,10 @@ static void wifi_scan_task(void *arg)
         err = scan_collect();
     } else {
         /*
-         * Not scannable here. In Ethernet mode the co-processor is down and the
-         * microSD holds the shared SD bus; borrowing it would mean bringing the C6
-         * up and tearing it back down, but esp_hosted_deinit() cannot be called
-         * safely (it races the async transport init and asserts). In AP mode the
+         * Not scannable here. In Ethernet mode the co-processor is down; a scan
+         * would mean bringing the C6 up and tearing it back down, but
+         * esp_hosted_deinit() cannot be called safely (it races the async
+         * transport init and asserts). In AP mode the
          * radio is a hotspot, not a scanner. Either way, switch to WiFi (station)
          * to scan.
          */

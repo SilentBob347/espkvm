@@ -38,8 +38,8 @@ void kvm_wifi_announce(void);
 
 /**
  * Start the open setup hotspot: the way in for a device with no password and no
- * cable. Takes the shared SD bus for the co-processor and keeps it until the
- * next restart. Only the auth endpoints answer until a password is set.
+ * cable. Where the card shares the co-processor's SD slot, the card is unmounted
+ * until the next restart. Only the auth endpoints answer until a password is set.
  */
 esp_err_t kvm_wifi_setup_ap_start(void);
 
@@ -61,9 +61,8 @@ void kvm_wifi_status(kvm_wifi_status_t *out);
 
 /**
  * Start an asynchronous scan for nearby WiFi networks. Non-blocking: it runs on
- * a worker that, in Ethernet mode, briefly borrows the shared SD bus to bring
- * the co-processor up for the scan (the microSD blips out for a few seconds).
- * Returns ESP_ERR_INVALID_STATE if a scan is already running. Poll
+ * a worker, and only a running WiFi station can scan; other modes finish with
+ * an error. Returns ESP_ERR_INVALID_STATE if a scan is already running. Poll
  * kvm_wifi_scan_json() for the result. A no-op without a co-processor.
  */
 esp_err_t kvm_wifi_scan_start(void);

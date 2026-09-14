@@ -625,21 +625,17 @@ void app_main(void)
     /* The microSD card, if any. A KVM without one is still a KVM, so a missing
      * or unreadable card never holds up start-up.
      *
-     * On the Waveshare ESP32-P4-NANO the microSD card uses SDMMC slot 0 while
-     * the ESP32-C6 WiFi co-processor uses slot 1 for its SDIO transport. The two
-     * devices can therefore operate concurrently. Other boards retain the
-     * existing behavior and only mount storage in Ethernet mode. */
-#if defined(CONFIG_KVM_BOARD_WAVESHARE_NANO) && CONFIG_KVM_BOARD_WAVESHARE_NANO
-    ESP_LOGI(TAG, "boot: storage (SDMMC slot 0; WiFi SDIO uses slot 1)");
-    ESP_ERROR_CHECK(kvm_storage_init());
-#else
-    if (net_mode == KVM_NET_ETHERNET) {
-        ESP_LOGI(TAG, "boot: storage");
+     * On most boards the card sits on SDMMC slot 0 and the WiFi co-processor on
+     * slot 1, so both run. Where they need the same slot, a WiFi mode gives it to
+     * the co-processor - mounting the card first would make its SDIO init assert -
+     * and Ethernet mode mounts the card. (esp-hosted's own eager constructor init
+     * is blocked so it never races for the bus; see wifi.c.) */
+    if (net_mode == KVM_NET_ETHERNET || !kvm_storage_shares_wifi_slot()) {
+        ESP_LOGI(TAG, "boot: storage (SDMMC slot %d)", kvm_storage_sd_slot());
         ESP_ERROR_CHECK(kvm_storage_init());
     } else {
-        ESP_LOGI(TAG, "boot: storage skipped (WiFi mode; the co-processor holds the SD bus)");
+        ESP_LOGI(TAG, "boot: storage skipped (WiFi mode; the co-processor holds the SD slot)");
     }
-#endif
 
     /*
      * The recovery path first: bring up the network and the web server, then

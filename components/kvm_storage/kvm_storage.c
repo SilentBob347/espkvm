@@ -13,6 +13,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "driver/sdmmc_host.h"
+#include "soc/sdmmc_pins.h"
 #include "esp_log.h"
 #include "esp_partition.h"
 #include "esp_vfs_fat.h"
@@ -598,6 +599,38 @@ void kvm_storage_reread(void)
  * genuinely empty slot just costs a few power-cycles and a short delay. */
 #define SD_MOUNT_ATTEMPTS 10
 
+/*
+ * The P4 has one SDMMC controller with two slots. Slot 0 has dedicated pins;
+ * slot 1 goes through the GPIO matrix, and it is the slot esp-hosted uses for a
+ * WiFi co-processor. The driver's default is slot 1, so the card and the C6
+ * used to fight over it. A card on the slot 0 pins takes slot 0 and the two
+ * work side by side. The driver picks the dedicated pins by itself when the
+ * numbers match.
+ */
+int kvm_storage_sd_slot(void)
+{
+#if SOC_SDMMC_USE_IOMUX
+    if (KVM_BOARD_SD_CLK_GPIO == SDMMC_SLOT0_IOMUX_PIN_NUM_CLK &&
+        KVM_BOARD_SD_CMD_GPIO == SDMMC_SLOT0_IOMUX_PIN_NUM_CMD &&
+        KVM_BOARD_SD_D0_GPIO == SDMMC_SLOT0_IOMUX_PIN_NUM_D0 &&
+        KVM_BOARD_SD_D1_GPIO == SDMMC_SLOT0_IOMUX_PIN_NUM_D1 &&
+        KVM_BOARD_SD_D2_GPIO == SDMMC_SLOT0_IOMUX_PIN_NUM_D2 &&
+        KVM_BOARD_SD_D3_GPIO == SDMMC_SLOT0_IOMUX_PIN_NUM_D3) {
+        return SDMMC_HOST_SLOT_0;
+    }
+#endif
+    return SDMMC_HOST_SLOT_1;
+}
+
+bool kvm_storage_shares_wifi_slot(void)
+{
+#if CONFIG_KVM_WIFI && defined(CONFIG_ESP_HOSTED_HOST_SDIO_SLOT)
+    return kvm_storage_sd_slot() == CONFIG_ESP_HOSTED_HOST_SDIO_SLOT;
+#else
+    return false;
+#endif
+}
+
 esp_err_t kvm_storage_init(void)
 {
     if (!s_media_lock) {
@@ -615,11 +648,7 @@ esp_err_t kvm_storage_init(void)
     slot_power_claim();
 
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
-#if defined(CONFIG_KVM_BOARD_WAVESHARE_NANO) && CONFIG_KVM_BOARD_WAVESHARE_NANO
-    /* P4-NANO: reserve the dedicated SDMMC slot 0 for the onboard microSD.
-     * ESP-Hosted keeps slot 1 for the ESP32-C6 SDIO transport. */
-    host.slot = SDMMC_HOST_SLOT_0;
-#endif
+    host.slot = kvm_storage_sd_slot();
     /*
      * Stay on 3.3 V high-speed; never negotiate UHS-I.
      *
@@ -668,29 +697,12 @@ esp_err_t kvm_storage_init(void)
 
     sdmmc_slot_config_t slot = SDMMC_SLOT_CONFIG_DEFAULT();
     slot.width = 4;
-#if defined(CONFIG_KVM_BOARD_WAVESHARE_NANO) && CONFIG_KVM_BOARD_WAVESHARE_NANO
-    /* Slot 0 is on the P4's dedicated IO_MUX pins: CLK43, CMD44, D0..D3 39..42.
-     * For the dedicated slot the driver selects those pins from the slot number;
-     * leaving the configurable GPIO fields at zero avoids routing slot 0 through
-     * the GPIO matrix. */
-    slot.clk = GPIO_NUM_0;
-    slot.cmd = GPIO_NUM_0;
-    slot.d0 = GPIO_NUM_0;
-    slot.d1 = GPIO_NUM_0;
-    slot.d2 = GPIO_NUM_0;
-    slot.d3 = GPIO_NUM_0;
-    slot.d4 = GPIO_NUM_0;
-    slot.d5 = GPIO_NUM_0;
-    slot.d6 = GPIO_NUM_0;
-    slot.d7 = GPIO_NUM_0;
-#else
     slot.clk = KVM_BOARD_SD_CLK_GPIO;
     slot.cmd = KVM_BOARD_SD_CMD_GPIO;
     slot.d0 = KVM_BOARD_SD_D0_GPIO;
     slot.d1 = KVM_BOARD_SD_D1_GPIO;
     slot.d2 = KVM_BOARD_SD_D2_GPIO;
     slot.d3 = KVM_BOARD_SD_D3_GPIO;
-#endif
     /* The board carries external pull-ups; the internal ones are enabled too as
      * a belt-and-suspenders, harmless where the externals already hold. */
     slot.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;

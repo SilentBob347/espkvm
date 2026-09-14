@@ -7,6 +7,8 @@ bumps the patch).
 
 ## [Unreleased]
 
+## [0.48.0] - 2026-09-14
+
 ### Added
 - **A Sign out button.** Settings > Security opens with who is signed in and a
   button to end the session. The device had the endpoint since the login
@@ -31,6 +33,11 @@ bumps the patch).
   PSRAM had fragmented, that request failed and capture stayed dead until a
   reboot. The spare buffer is now allocated once at boot, beside the frame
   ring. Seen on a P4-ETH after its target's screen went to sleep.
+- **The microSD card works in WiFi mode.** The card and the WiFi co-processor
+  both used SDMMC slot 1, so WiFi mode left the card unmounted. The card now
+  takes slot 0 when it is on the slot 0 pins, which is every board with WiFi,
+  and the two run side by side. Found and first fixed for the NANO by
+  @Crisspii in #46.
 
 ## [0.47.1] - 2026-09-13
 
