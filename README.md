@@ -202,9 +202,11 @@ tested were pre-3.0 silicon, so the overlays build for that by default and a rev
 **[Waveshare ESP32-P4-NANO](https://www.waveshare.com/esp32-p4-nano.htm)**
 
 Same IP101 Ethernet and onboard ESP32-C6 as the boards above; 32 MB PSRAM, 16 MB
-flash. A contributor confirmed capture, USB and Ethernet. Build overlay:
-`boards/nano_p4.defaults`, or `boards/nano_p4_rev3.defaults` on rev 3.x silicon -
-it ships as either revision under one product code.
+flash. Contributors confirmed capture, USB and Ethernet on both revisions, and
+WiFi on rev 3.1. Its OTG-HS port is a USB-A socket that drives its own 5 V, so
+the lead to the target must be an A-to-A cable with the 5 V wire cut. Build
+overlay: `boards/nano_p4.defaults`, or `boards/nano_p4_rev3.defaults` on rev 3.x
+silicon - it ships as either revision under one product code.
 
 </td>
 <td valign="top">
@@ -527,8 +529,8 @@ tested them.
 and a cable from the board's USB 2.0 OTG-HS port to the target. Add a microSD
 card if you want boot-from-image.
 
-Which connector the OTG-HS port is depends on the board. The Function EV, NANO
-and Guition put it on USB-C, and the PoE board on a full-size USB-A. On the
+Which connector the OTG-HS port is depends on the board. The Function EV and
+Guition put it on USB-C, and the NANO and the PoE board on a full-size USB-A. On the
 Waveshare ESP32-P4-ETH it is not a USB socket at all but the **MX1.25 header**,
 so that one needs an MX1.25-to-USB-A cable. The other USB-C on any of these
 boards is the serial bridge, for flashing.

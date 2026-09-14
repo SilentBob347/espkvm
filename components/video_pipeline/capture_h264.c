@@ -35,6 +35,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
+#include "kvm_caps.h"
 #include "kvm_settings.h"
 #include "video_frame.h"
 
@@ -174,6 +175,32 @@ bool capture_h264_encoder_failed(void)
 {
     return s_enc_broken;
 }
+
+static esp_err_t encoder_open(uint32_t w, uint32_t h);
+
+/*
+ * Take the encoder's internal RAM at boot, before the network cuts it up.
+ *
+ * The reference frame is one internal block of 135 KB at 1920 wide. On a
+ * pre-3.0 P4-ETH the longest run was 139 KB when capture started and 132 KB on
+ * the next boot, and 86 KB a minute after a browser connected. So a device that
+ * booted on MJPEG could not switch to H.264. Built before the network and
+ * parked, the switch takes it back.
+ */
+void capture_h264_reserve(uint32_t w, uint32_t h)
+{
+    if (s_enc || !kvm_cap_available(KVM_CAP_H264)) {
+        return;
+    }
+    if (w == 0 || h == 0) {
+        w = CAPTURE_MAX_H_RES;
+        h = CAPTURE_MAX_V_RES;
+    }
+    if (encoder_open(w, h) != ESP_OK) {
+        ESP_LOGW(CAPTURE_LOG_TAG, "h264 encoder not reserved; it will be built on first use");
+    }
+}
+
 /** Last values pushed into the encoder, so a setting change is noticed. */
 static uint8_t s_gop;
 static uint32_t s_bitrate;
@@ -651,6 +678,9 @@ static void follow_settings(void)
  * overlaps the PPA conversion of the following frame. */
 static void h264_encode_job(const h264_job_t *job)
 {
+    if (s_enc_broken) {
+        return; /* the capture loop is already switching to MJPEG */
+    }
     if (s_enc_w != job->hres || s_enc_h != job->vres) {
         if (encoder_open(job->hres, job->vres) != ESP_OK) {
             s_enc_broken = true; /* the loop reads this and falls back to MJPEG */
@@ -796,6 +826,12 @@ static esp_err_t h264_encode(capture_ctx_t *c, const void *src, bool force_publi
     capture_status_add_frame(out.length);
     return ESP_OK;
 #else
+    /* The encoder is built on the encode task, so its failure only reaches the
+     * capture loop through here. Without this the loop never fell back and
+     * the encode task retried the build on every frame. */
+    if (s_enc_broken) {
+        return ESP_ERR_NO_MEM;
+    }
     if (!s_ppa || !s_yuv[0] || !s_free_slots || !s_jobs) {
         return ESP_ERR_INVALID_STATE;
     }

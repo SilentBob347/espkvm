@@ -11,6 +11,26 @@ bumps the patch).
 - **A Sign out button.** Settings > Security opens with who is signed in and a
   button to end the session. The device had the endpoint since the login
   arrived; the console never offered it.
+- **The boot line says more after a crash.** It now carries the raw reset code
+  from the ROM (the IDF folds every watchdog into one), and after a watchdog or
+  panic a second line says how far the previous run got: into app_main, past
+  the confirmation, or a full minute up. For the OTA rollback hunt; costs
+  eight bytes of RTC memory.
+
+### Fixed
+- **H.264 could not be switched on after boot.** Its encoder needs one 135 KB
+  block of internal RAM at 1080p. A board that booted on MJPEG had that block
+  at start, but a minute of browser TLS cut it into pieces, and the switch
+  failed. The encoder is now built early in boot, before the network starts,
+  and kept whatever codec runs. Seen on a pre-3.0 P4-ETH.
+- **That failure also filled the log.** On pre-3.0 chips the encoder is built
+  on its own task, and the error never reached the capture loop. So there was
+  no fall back to MJPEG, and the build was retried ten times a second.
+- **Video died for good when the HDMI signal came back.** Every capture restart
+  freed the CSI driver's 6 MB spare frame buffer and asked for it again. Once
+  PSRAM had fragmented, that request failed and capture stayed dead until a
+  reboot. The spare buffer is now allocated once at boot, beside the frame
+  ring. Seen on a P4-ETH after its target's screen went to sleep.
 
 ## [0.47.1] - 2026-09-13
 

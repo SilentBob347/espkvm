@@ -22,7 +22,7 @@
 /*
  * Frame-buffer ring depth. With a synchronous encode the encoder holds one
  * buffer for the whole encode; two buffers then leave the free-running CSI just
- * one to fill, so it stalls (drops to the backup buffer) and the encoder has to
+ * one to fill, so it stalls (drops to drop_fb) and the encoder has to
  * wait a full source period for a fresh frame - measured ~24 ms idle per frame
  * at 1080p. A third buffer keeps the CSI running so a just-completed frame is
  * always ready the instant the encoder finishes, making the encode time the true
@@ -67,6 +67,10 @@ typedef struct {
     uint32_t vres;
     size_t frame_bytes;
     void *fb[CAPTURE_FB_COUNT];
+    /** Where the DMA writes a frame that is being dropped. Ours, allocated once:
+     *  the driver's own backup buffer is 6 MB freed and asked for again on every
+     *  capture restart, and fragmented PSRAM stops handing it out. */
+    void *drop_fb;
     void *volatile done_fb;
     volatile int ping_fb_idx;
     /*
@@ -76,12 +80,12 @@ typedef struct {
      * frame mid-read and tear it. The producer therefore only ever writes a buffer
      * that is none of: the one it is already filling, the newest completed one a
      * consumer may be about to take, or the one a consumer holds. When none is
-     * free it writes the driver's backup buffer and that frame is simply dropped -
+     * free it writes drop_fb and that frame is simply dropped -
      * exactly the "keep the latest, skip the rest" behaviour we want under load.
      * fb_lock guards the three indices; it is taken from the DMA ISR and the loop.
      */
     portMUX_TYPE fb_lock;
-    volatile int write_fb_idx; /* buffer the DMA is filling now, -1 = backup */
+    volatile int write_fb_idx; /* buffer the DMA is filling now, -1 = drop_fb */
     volatile int ready_fb_idx; /* newest completed buffer, -1 = none yet */
     volatile int held_fb_idx;  /* buffer the encode is reading, -1 = none */
     SemaphoreHandle_t csi_done_sem;
@@ -200,6 +204,10 @@ const capture_codec_t *capture_codec_h264(void);
 /** True once the H.264 encoder has failed to build and retrying cannot help
  *  (it could not get its memory). The capture loop then falls back to MJPEG. */
 bool capture_h264_encoder_failed(void);
+
+/** Build the H.264 encoder for @p w x @p h and park it, whatever codec runs.
+ *  Call from the capture task before the first codec opens. */
+void capture_h264_reserve(uint32_t w, uint32_t h);
 
 /** Follow `jpg_quality` from the settings registry. Call once at start-up. */
 void capture_mjpeg_bind_settings(void);

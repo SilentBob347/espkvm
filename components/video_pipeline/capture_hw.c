@@ -237,8 +237,8 @@ static bool IRAM_ATTR cam_on_get_new(esp_cam_ctlr_handle_t h, esp_cam_ctlr_trans
     (void)__sync_add_and_fetch(&c->csi_get_new_irqs, 1);
     /* Pick a buffer that is not the one we are already filling, not the newest
      * completed one (a consumer may be about to take it), and not one a consumer
-     * holds. If none qualifies, leave trans->buffer NULL: the driver writes its
-     * backup buffer and drops the frame. See capture_priv.h. */
+     * holds. If none qualifies, the frame goes to drop_fb and is lost. See
+     * capture_priv.h. */
     portENTER_CRITICAL_ISR(&c->fb_lock);
     int pick = -1;
     for (int k = 0; k < CAPTURE_FB_COUNT; k++) {
@@ -249,10 +249,8 @@ static bool IRAM_ATTR cam_on_get_new(esp_cam_ctlr_handle_t h, esp_cam_ctlr_trans
     }
     c->write_fb_idx = pick;
     portEXIT_CRITICAL_ISR(&c->fb_lock);
-    if (pick >= 0) {
-        trans->buffer = c->fb[pick];
-        trans->buflen = c->frame_bytes;
-    }
+    trans->buffer = pick >= 0 ? c->fb[pick] : c->drop_fb;
+    trans->buflen = c->frame_bytes;
     return false;
 }
 
@@ -261,8 +259,7 @@ static bool IRAM_ATTR cam_on_done(esp_cam_ctlr_handle_t h, esp_cam_ctlr_trans_t 
     (void)h;
     capture_ctx_t *c = (capture_ctx_t *)ud;
     (void)__sync_add_and_fetch(&c->csi_dma_done_irqs, 1);
-    /* on_trans_finished never fires for the backup buffer (the driver guards it),
-     * so trans->buffer is always one of ours: mark it the newest completed frame. */
+    /* A frame written to drop_fb matches no ring slot and is ignored here. */
     if (trans && trans->buffer) {
         int idx = -1;
         for (int k = 0; k < CAPTURE_FB_COUNT; k++) {
@@ -302,11 +299,11 @@ static esp_err_t csi_create(capture_ctx_t *c, uint32_t hres, uint32_t vres)
         .lane_bit_rate_mbps = KVM_BOARD_MIPI_LANE_MBPS,
         .queue_items = CAPTURE_FB_COUNT,
         .byte_swap_en = false,
-        /* Keep the driver's backup buffer: cam_on_get_new hands back no buffer
-         * when every frame buffer is spoken for (one filling, one just completed,
-         * one held by the encoder), and the DMA then lands the dropped frame here
-         * instead of asserting. */
-        .bk_buffer_dis = false,
+        /* No driver backup buffer: cam_on_get_new always hands one back, drop_fb
+         * when every ring slot is spoken for. The driver's would be 6 MB freed
+         * and allocated again on every restart - seen failing on a P4-ETH once
+         * PSRAM had fragmented, which left capture dead until a reboot. */
+        .bk_buffer_dis = true,
     };
     esp_isp_processor_cfg_t isp_cfg = {
         .clk_src = ISP_CLK_SRC_DEFAULT,
@@ -425,10 +422,12 @@ capture_ctx_t *capture_hw_init_start(void)
     size_t align = 0;
     ESP_ERROR_CHECK(esp_cache_get_alignment(MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA, &align));
     const uint32_t caps = MALLOC_CAP_DMA | MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
-    uint8_t *blk = heap_caps_aligned_calloc(align, CAPTURE_FB_COUNT, CAPTURE_MAX_FRAME_BYTES, caps);
+    /* One slot more than the ring: the last is drop_fb. */
+    uint8_t *blk =
+        heap_caps_aligned_calloc(align, CAPTURE_FB_COUNT + 1u, CAPTURE_MAX_FRAME_BYTES, caps);
     if (!blk) {
         ESP_LOGE(CAPTURE_LOG_TAG, "CSI frame buffer alloc failed (%ux%zu bytes) - PSRAM exhausted",
-                 CAPTURE_FB_COUNT, CAPTURE_MAX_FRAME_BYTES);
+                 CAPTURE_FB_COUNT + 1u, CAPTURE_MAX_FRAME_BYTES);
         kvm_cap_report(KVM_CAP_VIDEO, false, "no PSRAM for %ux%u frame buffers", CAPTURE_MAX_H_RES,
                        CAPTURE_MAX_V_RES);
         return NULL;
@@ -436,6 +435,7 @@ capture_ctx_t *capture_hw_init_start(void)
     for (int i = 0; i < CAPTURE_FB_COUNT; i++) {
         s_cap.fb[i] = blk + ((size_t)i * CAPTURE_MAX_FRAME_BYTES);
     }
+    s_cap.drop_fb = blk + ((size_t)CAPTURE_FB_COUNT * CAPTURE_MAX_FRAME_BYTES);
     s_cap.ping_fb_idx = 0;
     s_cap.done_fb = NULL;
     s_cap.fb_lock = (portMUX_TYPE)portMUX_INITIALIZER_UNLOCKED;

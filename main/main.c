@@ -17,6 +17,7 @@
 #include "esp_ota_ops.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "esp_rom_sys.h"
 #include "nvs_flash.h"
 
 #include "capture.h"
@@ -297,6 +298,37 @@ static void reset_button_notice(int pct, const char *done)
 }
 
 /*
+ * How far the previous run got. An update whose first boot dies before its
+ * first log line leaves nothing in the ring, so the ring cannot say whether
+ * it hung in the bootloader, in the system start-up, or in app_main. This
+ * word can: app_main writes it on entry, and later stages overwrite it, so
+ * the next boot reads where the last one stopped. RTC memory survives every
+ * reset short of a power cut, hence the magic.
+ */
+#define BOOT_STAGE_MAGIC 0x42533031u /* "BS01" */
+enum { BOOT_STAGE_NONE = 0, BOOT_STAGE_APP_MAIN, BOOT_STAGE_CONFIRMED, BOOT_STAGE_UP };
+static RTC_NOINIT_ATTR struct {
+    uint32_t magic;
+    uint32_t stage;
+} s_boot_stage;
+
+static void boot_stage_set(uint32_t stage)
+{
+    s_boot_stage.magic = BOOT_STAGE_MAGIC;
+    s_boot_stage.stage = stage;
+}
+
+static const char *boot_stage_name(uint32_t stage)
+{
+    switch (stage) {
+    case BOOT_STAGE_APP_MAIN: return "app_main, before its first line";
+    case BOOT_STAGE_CONFIRMED: return "the web server, image confirmed";
+    case BOOT_STAGE_UP: return "a full minute up";
+    default: return "nowhere anyone recorded";
+    }
+}
+
+/*
  * How the last run ended, and what we are running now.
  *
  * Two lines that cost nothing and answer the question the log alone cannot. An
@@ -339,8 +371,18 @@ static void log_boot_reason(void)
         default: break;
         }
     }
-    ESP_LOGW(TAG, "boot: after %s; running %s (%s)", why, running ? running->label : "?",
-             state_name);
+    /* The raw code from the ROM: the ESP-IDF reason folds every watchdog into
+       one, and which one it was is the whole question on a boot that died. */
+    ESP_LOGW(TAG, "boot: after %s (rst 0x%02x); running %s (%s)", why,
+             (unsigned)esp_rom_get_reset_reason(0), running ? running->label : "?", state_name);
+    const bool crashed = esp_reset_reason() == ESP_RST_PANIC || esp_reset_reason() == ESP_RST_INT_WDT ||
+                         esp_reset_reason() == ESP_RST_TASK_WDT || esp_reset_reason() == ESP_RST_WDT;
+    if (crashed) {
+        ESP_LOGW(TAG, "boot: the previous run got as far as %s",
+                 boot_stage_name(s_boot_stage.magic == BOOT_STAGE_MAGIC ? s_boot_stage.stage
+                                                                          : BOOT_STAGE_NONE));
+    }
+    boot_stage_set(BOOT_STAGE_APP_MAIN);
 
 #if CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH
     /*
@@ -404,6 +446,7 @@ static void boot_guard_healthy(void *arg)
     }
     s_boot_guard.tries = 0;
     s_boot_guard.swapped = 0;
+    boot_stage_set(BOOT_STAGE_UP);
 }
 
 static void boot_guard_check(void)
@@ -564,6 +607,8 @@ void app_main(void)
      * after the button window below had closed. The bus itself needs nothing from
      * the capture chip, so it is made here and capture takes the same handle. */
     (void)capture_i2c_bus_init();
+    /* Before the network: the H.264 encoder needs one large internal block. */
+    capture_reserve_early();
     kvm_display_init();
 
     kvm_auth_check_reset_button(reset_button_notice);
@@ -641,6 +686,7 @@ void app_main(void)
     httpd_handle_t httpd = http_server_start();
     if (httpd) {
         confirm_ota_image();
+        boot_stage_set(BOOT_STAGE_CONFIRMED);
     } else {
         /* No console means no way to replace a bad image except a cable. Leave
          * it unconfirmed so the bootloader can still roll back to what worked. */

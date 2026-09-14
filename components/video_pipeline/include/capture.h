@@ -38,6 +38,13 @@ typedef struct {
     uint32_t flat_ms;
 } kvm_video_status_t;
 
+/**
+ * Probe the codecs and build the H.264 encoder while internal RAM is still in
+ * one piece. Call early in boot, before the network starts. capture_start()
+ * does it itself when this was not called.
+ */
+void capture_reserve_early(void);
+
 void capture_start(void);
 
 void capture_status_get(kvm_video_status_t *out);

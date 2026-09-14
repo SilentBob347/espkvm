@@ -6,8 +6,10 @@
 
 #include <string.h>
 
+#include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 #include "capture_priv.h"
@@ -150,12 +152,43 @@ void capture_status_get(kvm_video_status_t *out)
     out->flat_ms = capture_flat_ms();
 }
 
-static void camera_task(void *arg)
+static bool s_probed;
+
+static void reserve_task(void *arg)
 {
-    (void)arg;
     /* Before the capture pipeline claims memory and the encoder engines. */
     capture_h264_probe();
     capture_mjpeg_probe();
+    /* The encoder's reference frame wants one internal block of ~135 KB. At
+     * this point the block is there; a few seconds of network and TLS later it
+     * is often not. Sized for the largest mode, which is what sources send. */
+    capture_h264_reserve(0, 0);
+    xSemaphoreGive((SemaphoreHandle_t)arg);
+    vTaskDelete(NULL);
+}
+
+void capture_reserve_early(void)
+{
+    if (s_probed) {
+        return;
+    }
+    s_probed = true;
+    /* Its own task: app_main's stack is 3.5 KB, too small for the encoders. */
+    SemaphoreHandle_t done = xSemaphoreCreateBinary();
+    if (done && xTaskCreatePinnedToCore(reserve_task, "codecs", 8192, done, 5, NULL, 0) == pdPASS) {
+        (void)xSemaphoreTake(done, portMAX_DELAY);
+    } else {
+        ESP_LOGE(CAPTURE_LOG_TAG, "codec probe task could not start");
+    }
+    if (done) {
+        vSemaphoreDelete(done);
+    }
+}
+
+static void camera_task(void *arg)
+{
+    (void)arg;
+    capture_reserve_early();
 
     capture_ctx_t *ctx = capture_hw_init_start();
     if (ctx) {
