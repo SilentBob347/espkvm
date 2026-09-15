@@ -354,8 +354,27 @@ void kvm_storage_status(kvm_storage_status_t *out)
 
 /* ---- virtual media API ---------------------------------------------------- */
 
+/*
+ * Read-ahead for the target's reads. USB hands them over 4 KB at a time, and a
+ * card command per 4 KB costs more than the data: 5.6 MB/s where the card reads
+ * 9. So a read that follows the last one takes 256 KB from the card in one
+ * command, into PSRAM, and the next reads are served from there. A bigger USB
+ * buffer does the same from the other side, but it lives in internal RAM, which
+ * WiFi needs, and moved to PSRAM the USB transfers get slower instead. A read that
+ * jumps elsewhere - a file system looking at its tables - goes straight to the
+ * card at its own size, so random access does not pay for data it never uses.
+ * Any write to the medium drops the buffer.
+ */
+#define MEDIA_RA_BYTES (256u * 1024u)
+static uint8_t *s_ra_buf;
+static uint64_t s_ra_off;  /* medium offset of s_ra_buf[0] */
+static uint32_t s_ra_len;  /* valid bytes, 0 when empty */
+static uint64_t s_ra_next; /* where a sequential read would start */
+
 static void media_close_locked(void)
 {
+    s_ra_len = 0;
+    s_ra_next = 0;
     if (s_media_src == MEDIA_SRC_SD && s_media_open) {
         f_close(&s_media_file);
     }
@@ -614,7 +633,51 @@ int32_t kvm_storage_media_read(uint64_t offset, void *buf, uint32_t len)
     }
 
     int32_t got = -1;
-    if (s_media_src == MEDIA_SRC_WHOLE_SD) {
+    const bool sequential = offset == s_ra_next;
+    s_ra_next = offset + len;
+    if (s_media_src != MEDIA_SRC_FLASH && s_ra_len && offset >= s_ra_off &&
+        offset + len <= s_ra_off + s_ra_len) {
+        memcpy(buf, s_ra_buf + (offset - s_ra_off), len);
+        got = (int32_t)len;
+    } else if (s_media_src != MEDIA_SRC_FLASH && sequential && len <= MEDIA_RA_BYTES &&
+               (s_ra_buf || (s_ra_buf = heap_caps_aligned_alloc(64, MEDIA_RA_BYTES,
+                                                               MALLOC_CAP_SPIRAM)) != NULL)) {
+        s_ra_len = 0;
+        if (s_media_src == MEDIA_SRC_WHOLE_SD) {
+            if (s_card && (offset % MEDIA_BLOCK_SIZE) == 0 && (len % MEDIA_BLOCK_SIZE) == 0) {
+                const uint64_t first = offset / MEDIA_BLOCK_SIZE;
+                const uint64_t left = s_card->csd.capacity > first ? s_card->csd.capacity - first : 0;
+                const uint32_t sectors = (uint32_t)(left < MEDIA_RA_BYTES / MEDIA_BLOCK_SIZE
+                                                        ? left
+                                                        : MEDIA_RA_BYTES / MEDIA_BLOCK_SIZE);
+                if (sectors * MEDIA_BLOCK_SIZE >= len &&
+                    sdmmc_read_sectors(s_card, s_ra_buf, (size_t)first, sectors) == ESP_OK) {
+                    s_ra_len = sectors * MEDIA_BLOCK_SIZE;
+                }
+            }
+        } else {
+            UINT br = 0;
+            if (f_lseek(&s_media_file, (FSIZE_t)offset) == FR_OK &&
+                f_read(&s_media_file, s_ra_buf, MEDIA_RA_BYTES, &br) == FR_OK) {
+                s_ra_len = br;
+                if (br < len) {
+                    /* The end of the file: hand over what there is, zero-filled,
+                     * and keep nothing - a partial block is not worth serving. */
+                    memcpy(buf, s_ra_buf, br);
+                    s_ra_len = 0;
+                    got = (int32_t)len;
+                }
+            }
+        }
+        if (s_ra_len) {
+            s_ra_off = offset;
+            memcpy(buf, s_ra_buf, len);
+            got = (int32_t)len;
+        }
+    }
+
+    /* Not served from the read-ahead, or it failed: the read itself. */
+    if (got < 0 && s_media_src == MEDIA_SRC_WHOLE_SD) {
         /* Raw whole-card passthrough. USB reads are always whole 512-byte blocks,
          * so the offset and length are sector-aligned; sdmmc_read_sectors goes
          * straight to the card, bypassing the filesystem. */
@@ -623,7 +686,7 @@ int32_t kvm_storage_media_read(uint64_t offset, void *buf, uint32_t len)
                                len / MEDIA_BLOCK_SIZE) == ESP_OK) {
             got = (int32_t)len;
         }
-    } else if (s_media_src == MEDIA_SRC_FLASH) {
+    } else if (got < 0 && s_media_src == MEDIA_SRC_FLASH) {
         /* Memory-mapped flash: fast and reliable, no retry needed. A read past
          * the end of the partition keeps the zero fill from the memset above. */
         uint32_t avail = 0;
@@ -634,7 +697,7 @@ int32_t kvm_storage_media_read(uint64_t offset, void *buf, uint32_t len)
         if (avail == 0 || esp_partition_read(s_rescue, (size_t)offset, buf, avail) == ESP_OK) {
             got = (int32_t)len;
         }
-    } else {
+    } else if (got < 0) {
         /*
          * Retry a failed read: this board occasionally returns a CRC error
          * (0x109) on an SD read at full speed, and such errors are transient -
@@ -684,6 +747,7 @@ int32_t kvm_storage_media_write(uint64_t offset, const void *buf, uint32_t len)
         return -1;
     }
     xSemaphoreTake(s_media_lock, portMAX_DELAY);
+    s_ra_len = 0; /* the read-ahead may hold these sectors */
     int32_t done = -1;
     /* Raw whole-card writes only. USB writes are whole 512-byte blocks, so the
      * offset and length are sector-aligned. */

@@ -861,6 +861,9 @@ read at 4 MHz on both, and did not write at all on the P4-ETH's rev 1.3 chip.
 | Function EV (rev 3.2) | 40 MHz | ~8.5 MB/s | ~4 MB/s | ~3.5 MB/s |
 | P4-ETH (rev 1.3) | 40 MHz | ~9 MB/s | ~4 MB/s | ~1.5 MB/s |
 
+The target reads the virtual drive over USB at ~9 MB/s when the whole card is
+handed over (both boards) and ~7.5 MB/s from an image file (Function EV).
+
 The upload is slower than the card because TLS runs on the chip, and the rev 1.3
 chip is the slower one. **Pause the video while you upload.** The encoder and the
 Ethernet chip share a bus, and at full frame rate the upload drops to a tenth.

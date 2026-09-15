@@ -685,11 +685,30 @@ void tud_msc_inquiry_cb(uint8_t lun, uint8_t vendor_id[8], uint8_t product_id[16
     memcpy(product_rev, "1.0 ", 4);
 }
 
+/* The medium the host was last told about. A swap to another image, or to the
+ * whole card, has to reach the host as a medium change: without it Linux keeps
+ * the old size and partition table, and the new medium does not show up. */
+static kvm_media_t s_msc_seen;
+static bool s_msc_seen_valid;
+
 bool tud_msc_test_unit_ready_cb(uint8_t lun)
 {
     (void)lun;
     kvm_media_t m;
     kvm_storage_media_info(&m);
+    const bool changed = s_msc_seen_valid &&
+                         (m.present != s_msc_seen.present || m.cdrom != s_msc_seen.cdrom ||
+                          m.block_size != s_msc_seen.block_size ||
+                          m.block_count != s_msc_seen.block_count ||
+                          strncmp(m.name, s_msc_seen.name, sizeof(m.name)) != 0);
+    s_msc_seen = m;
+    s_msc_seen_valid = true;
+    if (changed && m.present) {
+        /* Unit attention, "not ready to ready change, medium may have changed":
+         * the host reads the capacity and the partition table again. */
+        tud_msc_set_sense(lun, SCSI_SENSE_UNIT_ATTENTION, 0x28, 0x00);
+        return false;
+    }
     if (!m.present) {
         /* Not ready, no medium - the standard "empty drive" answer (sense
          * 3A). Without setting sense a host may keep polling or error out. */

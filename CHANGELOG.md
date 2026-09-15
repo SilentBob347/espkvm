@@ -7,6 +7,19 @@ bumps the patch).
 
 ## [Unreleased]
 
+### Changed
+- **The target reads the virtual drive faster.** USB asks for 4 KB at a time,
+  and a card command per 4 KB cost more than the data. A read that follows the
+  last one now takes 256 KB from the card at once. The whole card reads at
+  9 MB/s instead of 5.6 on both the Function EV and the P4-ETH, and an image
+  file at 7.5 MB/s instead of 5.7.
+
+### Fixed
+- **Switching the medium did not reach the target.** The drive stayed the old
+  size until it was re-plugged, so a new image or the whole card did not show
+  up. The device now reports a medium change, and the target reads the new
+  size and partitions within a couple of seconds.
+
 ## [0.49.0] - 2026-09-15
 
 ### Added
