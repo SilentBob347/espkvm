@@ -22,6 +22,7 @@
 #include "kvm_log.h"
 #include "kvm_settings.h"
 #include "screentext_store.h"
+#include "tg_chats.h"
 #include "video_frame.h"
 
 #include <stdio.h>
@@ -46,8 +47,18 @@ static const char *TAG = "notify";
 /* How much of the tail of the device log to attach, when asked. Telegram takes
    up to 4096 characters in one message; a webhook takes it as a field. */
 #define LOG_TAIL_MAX 2048
+/* Finding chats: how much of getUpdates to read, and how many chats to offer. */
+#define UPDATES_MAX (256 * 1024)
+#define CHATS_MAX 10
+#define CHATS_JSON_MAX 3072
+
+typedef enum {
+    EV_SEND,
+    EV_FIND_CHATS,
+} ev_kind_t;
 
 typedef struct {
+    ev_kind_t kind;
     char title[TITLE_MAX];
     char body[BODY_MAX];
     bool want_photo;
@@ -57,12 +68,18 @@ static QueueHandle_t s_queue;
 static SemaphoreHandle_t s_lock;
 static kvm_notify_status_t s_status;
 
+/* The last "find chats" run. Guarded by s_lock. */
+static const char *s_find_state = "idle";
+static const char *s_find_error = "";
+static char s_find_bot[64];
+static char *s_find_chats; /* JSON array, PSRAM */
+
 void kvm_notify_send(const char *title, const char *body, bool want_photo)
 {
     if (!s_queue) {
         return;
     }
-    event_t ev = {.want_photo = want_photo};
+    event_t ev = {.kind = EV_SEND, .want_photo = want_photo};
     strlcpy(ev.title, title ? title : "", sizeof(ev.title));
     strlcpy(ev.body, body ? body : "", sizeof(ev.body));
     /* Never block a caller (it might be the capture task): drop if the queue is
@@ -315,6 +332,134 @@ static bool token_plausible(const char *tok)
     return strchr(tok, ':') != NULL;
 }
 
+/* --- finding chats -------------------------------------------------------- */
+
+/* GET a Bot API method into @p buf (NUL-terminated). Returns the HTTP status,
+   or -1 when nothing came back. A reply longer than @p cap is cut. */
+static int tg_get(const char *token, const char *method, char *buf, size_t cap)
+{
+    char url[192];
+    snprintf(url, sizeof(url), "https://api.telegram.org/bot%s/%s", token, method);
+    esp_http_client_config_t cfg = {
+        .url = url,
+        .timeout_ms = HTTP_TIMEOUT_MS,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+    };
+    esp_http_client_handle_t c = esp_http_client_init(&cfg);
+    if (!c) {
+        return -1;
+    }
+    int status = -1;
+    size_t len = 0;
+    if (esp_http_client_open(c, 0) == ESP_OK && esp_http_client_fetch_headers(c) >= 0) {
+        status = esp_http_client_get_status_code(c);
+        while (len + 1 < cap) {
+            const int r = esp_http_client_read(c, buf + len, (int)(cap - 1 - len));
+            if (r <= 0) {
+                break;
+            }
+            len += (size_t)r;
+        }
+    }
+    buf[len] = '\0';
+    esp_http_client_close(c);
+    esp_http_client_cleanup(c);
+    return status;
+}
+
+static void find_done(const char *state, const char *error)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_find_state = state;
+    s_find_error = error;
+    xSemaphoreGive(s_lock);
+}
+
+/* getMe checks the token and names the bot; getUpdates lists who wrote to it.
+   No offset is sent, so nothing is marked as read. */
+static void find_chats(void)
+{
+    const char *token = kvm_setting_str("notify_tg_token");
+    if (!token[0]) {
+        find_done("error", "set the bot token first");
+        return;
+    }
+    if (!token_plausible(token)) {
+        find_done("error", "the Telegram token is not a bot token - paste it again");
+        return;
+    }
+    char *buf = heap_caps_malloc(UPDATES_MAX, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    char *list = heap_caps_malloc(CHATS_JSON_MAX, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf || !list) {
+        free(buf);
+        free(list);
+        find_done("error", "out of memory");
+        return;
+    }
+
+    char bot[sizeof(s_find_bot)] = "";
+    int status = tg_get(token, "getMe", buf, 4096);
+    if (status == 401 || status == 404) {
+        find_done("error", "Telegram did not accept the bot token");
+    } else if (status != 200 || !tg_bot_username(buf, bot, sizeof(bot))) {
+        find_done("error", "could not reach Telegram");
+    } else {
+        status = tg_get(token, "getUpdates?limit=100", buf, UPDATES_MAX);
+        const int n = status == 200 ? tg_chats_from_updates(buf, list, CHATS_JSON_MAX, CHATS_MAX) : -1;
+        xSemaphoreTake(s_lock, portMAX_DELAY);
+        strlcpy(s_find_bot, bot, sizeof(s_find_bot));
+        if (n >= 0) {
+            free(s_find_chats);
+            s_find_chats = list;
+            list = NULL;
+        }
+        xSemaphoreGive(s_lock);
+        if (status == 409) {
+            find_done("error", "the bot has a webhook set, so it cannot list its chats");
+        } else if (n < 0) {
+            find_done("error", "could not read the chats from Telegram");
+        } else {
+            ESP_LOGI(TAG, "telegram: found %d chat(s)", n);
+            find_done("ok", "");
+        }
+    }
+    free(buf);
+    free(list);
+}
+
+esp_err_t kvm_notify_find_chats(void)
+{
+    if (!s_queue) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    const bool busy = strcmp(s_find_state, "running") == 0;
+    if (!busy) {
+        s_find_state = "running";
+        s_find_error = "";
+    }
+    xSemaphoreGive(s_lock);
+    if (busy) {
+        return ESP_OK;
+    }
+    const event_t ev = {.kind = EV_FIND_CHATS};
+    if (xQueueSend(s_queue, &ev, 0) != pdTRUE) {
+        find_done("error", "the device is busy sending - try again");
+        return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
+}
+
+size_t kvm_notify_chats_json(char *out, size_t cap)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    const int n = snprintf(out, cap, "{\"state\":\"%s\",\"error\":\"%s\",\"bot\":\"%s\",\"chats\":%s}",
+                           s_find_state, s_find_error, s_find_bot,
+                           s_find_chats ? s_find_chats : "[]");
+    xSemaphoreGive(s_lock);
+    return n > 0 && (size_t)n < cap ? (size_t)n : 0;
+}
+
 static void deliver(const event_t *ev)
 {
     char text[TITLE_MAX + BODY_MAX + 4];
@@ -430,7 +575,11 @@ static void task(void *arg)
     for (;;) {
         event_t ev;
         /* Wake for a queued event, or every POLL_MS to look for one. */
-        const bool got = xQueueReceive(s_queue, &ev, pdMS_TO_TICKS(POLL_MS)) == pdTRUE;
+        bool got = xQueueReceive(s_queue, &ev, pdMS_TO_TICKS(POLL_MS)) == pdTRUE;
+        if (got && ev.kind == EV_FIND_CHATS) {
+            find_chats(); /* setting up, so it works with sending switched off */
+            got = false;
+        }
         const bool on = kvm_setting_bool("notify_enable");
         xSemaphoreTake(s_lock, portMAX_DELAY);
         s_status.enabled = on;

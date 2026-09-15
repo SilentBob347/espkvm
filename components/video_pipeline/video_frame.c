@@ -296,6 +296,32 @@ void video_frame_viewer_leave(void)
     taskEXIT_CRITICAL(&s_viewer_mu);
 }
 
+static int s_uploads;
+
+void video_frame_upload_begin(void)
+{
+    taskENTER_CRITICAL(&s_viewer_mu);
+    s_uploads++;
+    taskEXIT_CRITICAL(&s_viewer_mu);
+}
+
+void video_frame_upload_end(void)
+{
+    taskENTER_CRITICAL(&s_viewer_mu);
+    if (s_uploads > 0) {
+        s_uploads--;
+    }
+    taskEXIT_CRITICAL(&s_viewer_mu);
+}
+
+bool video_frame_upload_active(void)
+{
+    taskENTER_CRITICAL(&s_viewer_mu);
+    const bool active = s_uploads > 0;
+    taskEXIT_CRITICAL(&s_viewer_mu);
+    return active;
+}
+
 int video_frame_viewer_count(void)
 {
     int n;

@@ -751,6 +751,10 @@ static void h264_encode_task(void *arg)
         h264_encode_job(&job);
         /* Hand the YUV buffer back so the PPA stage can fill it again. */
         xQueueSend(s_free_slots, &job.slot, 0);
+        /* Give the core away for a tick. When a job is always waiting this task
+         * never blocks, the idle task on its core never runs, and the task
+         * watchdog restarts the device - seen on a P4-ETH with the console open. */
+        vTaskDelay(1);
     }
     (void)esp_task_wdt_delete(NULL);
     xSemaphoreGive(s_enc_done);

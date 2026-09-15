@@ -133,8 +133,8 @@ void capture_loop_run(capture_ctx_t *c)
             /* No signal is a normal state, not a fault: the target may simply be
              * off or asleep. Waiting quietly beats hammering the bridge with
              * hotplug cycles it cannot act on. */
-            if (!c->signal_present) {
-                continue;
+            if (!c->signal_present || c->mode_too_fast) {
+                continue; /* too fast was said once, by the monitor */
             }
             ESP_LOGW(CAPTURE_LOG_TAG, "csi frame wait timeout (dma_done_irqs=%lu)",
                      (unsigned long)c->csi_dma_done_irqs);
@@ -206,7 +206,11 @@ void capture_loop_run(capture_ctx_t *c)
          * Dropping before the encode is what saves the time, so this is
          * checked here rather than at publish.
          */
-        const int32_t fps_max = kvm_thermal_fps_limit((int)kvm_setting_int("vid_fps_max"));
+        int32_t fps_max = kvm_thermal_fps_limit((int)kvm_setting_int("vid_fps_max"));
+        if (fps_max != 0 && video_frame_upload_active() &&
+            (fps_max < 0 || fps_max > VIDEO_UPLOAD_FPS)) {
+            fps_max = VIDEO_UPLOAD_FPS; /* see video_frame_upload_begin */
+        }
         if (fps_max == 0) {
             /* Too hot to encode. Input and the web interface carry on; the
              * console reads the reason from the system status. */

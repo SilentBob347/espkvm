@@ -32,6 +32,14 @@ typedef struct {
     uint64_t free_bytes;
     /** Card name as reported over the bus, e.g. "SD32G". Empty when unmounted. */
     char name[24];
+    /** Card clock the bus runs at now, in kHz; it only goes down after errors. */
+    uint32_t bus_khz;
+    /** Failed transfers since the mount (each was retried). */
+    uint32_t bus_errors;
+    /** The clock it started at, and climbs back to after errors. */
+    uint32_t bus_max_khz;
+    /** Seconds until it tries one step faster again; 0 when not slowed. */
+    uint32_t bus_retry_s;
 } kvm_storage_status_t;
 
 /**
@@ -51,6 +59,13 @@ int kvm_storage_sd_slot(void);
 bool kvm_storage_shares_wifi_slot(void);
 
 /**
+ * The controller's other slot is in use (the WiFi co-processor). Speed probes
+ * stop then: a probe that fails resets the controller, which would take that
+ * slot down with it.
+ */
+void kvm_storage_set_other_slot_busy(bool busy);
+
+/**
  * Hand the SD slot back so a WiFi co-processor on the same slot can use it.
  * Ejects any exposed image and unmounts the card. @p was_mounted,
  * if not NULL, is set to whether a card was actually mounted, so the caller
@@ -67,11 +82,10 @@ void kvm_storage_status(kvm_storage_status_t *out);
 const char *kvm_storage_mount_point(void);
 
 /**
- * Whether the device can write to the card. On pre-3.0 silicon this is always
- * false: the SD write path times out at any clock fast enough to serve from, so
- * images are prepared in an external reader and the card is served read-only. On
- * rev >= 3.0 the controller writes reliably, so this is true whenever a card is
- * mounted. The web layer uses it to enable/disable upload and delete.
+ * Whether the device can write to the card: a card is mounted, it is not handed
+ * to the target, and the chip is rev >= 3.0 or the board powers the slot's IO
+ * from its LDO. A pre-3.0 chip without that LDO times out on writes, so its card
+ * stays read-only. The web layer uses this to enable upload and delete.
  */
 bool kvm_storage_writable(void);
 
@@ -169,8 +183,9 @@ int32_t kvm_storage_media_read(uint64_t offset, void *buf, uint32_t len);
 
 /**
  * Whether the target may write to the inserted medium. Only the whole-card
- * passthrough is writable, and only on rev >= 3.0 silicon (where SD writes are
- * reliable); images, the rescue partition and CD-ROM media are always read-only.
+ * passthrough is writable, and only where the card can be written at all (see
+ * kvm_storage_writable); images, the rescue partition and CD-ROM media are always
+ * read-only.
  */
 bool kvm_storage_media_writable(void);
 

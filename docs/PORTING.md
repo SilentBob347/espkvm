@@ -154,11 +154,12 @@ lane rate. Change them only if you know why.
 - **Ethernet PHY type.** The driver brings up an IP101-class RMII PHY. A board
   with a different PHY may need a change in `components/kvm_net/ethernet.c`
   (`esp_eth_phy_new_*`), not just the pins.
-- **microSD is marginal on the reference board.** Reads run at 4 MHz and writes
-  are disabled because the reference board cannot do either reliably at speed -
-  a known ESP32-P4 SD limitation. A board with better SD wiring may tolerate a
-  higher clock; the cap lives in `components/kvm_storage/kvm_storage.c`
-  (`host.max_freq_khz`). See `HARDWARE-NOTES.md`.
+- **microSD needs to know what powers the slot's pins.** If the board feeds the
+  slot's IO from the chip's LDO_VO4 (the P4-ETH and the Function EV do), set
+  `CONFIG_KVM_SD_IO_LDO_CHAN=4`: the card then runs at 40 MHz and writes, even on
+  a pre-3.0 chip. Left at -1 the bus starts at 4 MHz (`CONFIG_KVM_SD_MAX_KHZ`),
+  and a pre-3.0 chip keeps the card read-only. The device steps the clock down
+  by itself when a card fails, so a guess that is too high costs speed, not data.
 - **Strapping pins.** The Waveshare BOOT button doubles as a boot strapping pin
   and shares GPIO 35 with the Ethernet interface, which is why the password
   reset reads it once at start-up and hands the pin back. A different button pin

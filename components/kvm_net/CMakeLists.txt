@@ -34,3 +34,6 @@ idf_component_register(
 # controller, shared with the microSD) is disabled per board via
 # CONFIG_ESP_HOSTED_AUTO_CALL_INIT_BEFORE_APP_MAIN=n; wifi.c brings the co-processor
 # up itself only in a WiFi mode. No linker wrap is needed. See wifi.c.
+
+# ethernet.c resets the EMAC on the way into every restart (esp-idf #19085).
+target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=esp_restart_noos")

@@ -18,6 +18,7 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "sdkconfig.h"
+#include "soc/usb_dwc_struct.h"
 #include "tinyusb.h"
 #include "tinyusb_default_config.h"
 
@@ -215,6 +216,14 @@ static const uint8_t k_hid_ifaces[] = {
     TUD_HID_DESCRIPTOR(ITF_REL_MOUSE, 6, HID_ITF_PROTOCOL_NONE, sizeof(s_rel_report_desc), 0x83,
                        CFG_TUD_HID_EP_BUFSIZE, 10),
 };
+/*
+ * Old BIOS mode: the keyboard alone, with the 8-byte endpoint a boot keyboard
+ * has. Some pre-UEFI BIOSes only drive a keyboard that is the whole device, and
+ * read its endpoint as if it were 8 bytes.
+ */
+static const uint8_t k_hid_kbd_legacy[] = {
+    TUD_HID_DESCRIPTOR(ITF_KEYBOARD, 4, HID_ITF_PROTOCOL_KEYBOARD, sizeof(s_kbd_report_desc), 0x81, 8, 10),
+};
 /* interface, string index, EP out, EP in, EP size */
 static const uint8_t k_msc_iface_fs[] = {
     TUD_MSC_DESCRIPTOR(ITF_MSC, 7, EPNUM_MSC_OUT, EPNUM_MSC_IN, 64),
@@ -228,19 +237,25 @@ static uint8_t s_hs_config_descriptor[CFG_DESC_MAX];
 
 /*
  * Assemble the configuration descriptor for the enabled functions into @p buf
- * and return its length. HID is always included; @p msc_iface (the speed's MSC
+ * and return its length. HID is always included (only the keyboard when
+ * @p kbd_only); @p msc_iface (the speed's MSC
  * block) is appended when @p with_msc. The config header's wTotalLength and
  * bNumInterfaces are then patched to match what was actually emitted.
  */
-static size_t build_config_descriptor(uint8_t *buf, bool with_msc, const uint8_t *msc_iface,
-                                      size_t msc_len)
+static size_t build_config_descriptor(uint8_t *buf, bool kbd_only, bool with_msc,
+                                      const uint8_t *msc_iface, size_t msc_len)
 {
     size_t n = 0;
-    uint8_t ifaces = NUM_HID_ITF;
+    uint8_t ifaces = kbd_only ? 1 : NUM_HID_ITF;
     memcpy(buf + n, k_cfg_header, sizeof(k_cfg_header));
     n += sizeof(k_cfg_header);
-    memcpy(buf + n, k_hid_ifaces, sizeof(k_hid_ifaces));
-    n += sizeof(k_hid_ifaces);
+    if (kbd_only) {
+        memcpy(buf + n, k_hid_kbd_legacy, sizeof(k_hid_kbd_legacy));
+        n += sizeof(k_hid_kbd_legacy);
+    } else {
+        memcpy(buf + n, k_hid_ifaces, sizeof(k_hid_ifaces));
+        n += sizeof(k_hid_ifaces);
+    }
     if (with_msc) {
         memcpy(buf + n, msc_iface, msc_len);
         n += msc_len;
@@ -290,6 +305,8 @@ static TaskHandle_t s_hid_task;
 static uint16_t s_last_abs_x;
 static uint16_t s_last_abs_y;
 static volatile uint8_t s_leds;
+/* Old BIOS mode: the keyboard is the only interface there is. */
+static bool s_kbd_only;
 static usb_hid_led_cb_t s_led_cb;
 static void *s_led_cb_user;
 
@@ -796,6 +813,9 @@ static bool wait_report_sent(void)
  */
 static void hid_emit(uint8_t itf, uint8_t id, const void *data, uint16_t len)
 {
+    if (s_kbd_only && itf != ITF_KEYBOARD) {
+        return; /* no such interface: waiting on it would stall the keyboard */
+    }
     (void)ulTaskNotifyTake(pdTRUE, 0); /* drop any stale completion from a prior timeout */
     for (int attempt = 0; attempt < 2; attempt++) {
         if (tud_hid_n_report(itf, id, data, len)) {
@@ -1197,11 +1217,18 @@ esp_err_t usb_hid_init(void)
      * is a plain keyboard and mouse by default and only claims the extra
      * endpoints when virtual media is actually wanted.
      */
-    const bool with_msc = kvm_setting_bool("msc_enable");
+    s_kbd_only = kvm_setting_bool("usb_legacy");
+    const bool with_msc = !s_kbd_only && kvm_setting_bool("msc_enable");
     s_msc_present = with_msc;
-    build_config_descriptor(s_fs_config_descriptor, with_msc, k_msc_iface_fs, sizeof(k_msc_iface_fs));
-    build_config_descriptor(s_hs_config_descriptor, with_msc, k_msc_iface_hs, sizeof(k_msc_iface_hs));
-    ESP_LOGI(TAG, "USB functions: HID%s", with_msc ? " + mass storage" : " only");
+    build_config_descriptor(s_fs_config_descriptor, s_kbd_only, with_msc, k_msc_iface_fs,
+                            sizeof(k_msc_iface_fs));
+    build_config_descriptor(s_hs_config_descriptor, s_kbd_only, with_msc, k_msc_iface_hs,
+                            sizeof(k_msc_iface_hs));
+    if (s_kbd_only) {
+        ESP_LOGI(TAG, "USB functions: old BIOS mode - keyboard only, full speed");
+    } else {
+        ESP_LOGI(TAG, "USB functions: HID%s", with_msc ? " + mass storage" : " only");
+    }
 
     tinyusb_config_t tusb_cfg = TINYUSB_DEFAULT_CONFIG(tinyusb_on_event);
     tusb_cfg.descriptor.device = NULL;
@@ -1236,6 +1263,14 @@ esp_err_t usb_hid_init(void)
     (void)esp_timer_create(&watch_args, &s_watchdog_timer);
 
     tud_disconnect();
+#if (TUD_OPT_HIGH_SPEED)
+    if (s_kbd_only) {
+        /* Full speed (USB 1.1) on the high-speed port. TinyUSB always asks this
+         * PHY for high speed, so set the controller's device speed ourselves
+         * while detached; nothing rewrites it later. 1 = full speed on a HS PHY. */
+        USB_DWC_HS.dcfg_reg.devspd = 1;
+    }
+#endif
     vTaskDelay(pdMS_TO_TICKS(USB_REATTACH_MS));
     tud_connect();
     ESP_LOGI(TAG, "re-attached to the target so it enumerates this boot");

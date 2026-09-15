@@ -35,6 +35,9 @@ if [ "$what" = all ] || [ "$what" = host ]; then
     echo "== a cron schedule =="
     sh "$here/components/kvm_sched/test/run.sh"
     echo
+    echo "== a Telegram reply =="
+    sh "$here/components/kvm_notify/test/run.sh"
+    echo
 fi
 
 if [ "$what" = all ] || [ "$what" = web ]; then

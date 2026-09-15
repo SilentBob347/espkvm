@@ -7,4 +7,5 @@ idf_component_register(
         esp_driver_sdmmc
         fatfs
         esp_driver_gpio
+        esp_timer
 )

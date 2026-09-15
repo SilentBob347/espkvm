@@ -264,6 +264,27 @@ menu "ESP-KVM"
             bool "microSD power-gate is active-low"
             default y
             depends on KVM_SD_PWR_GPIO >= 0
+
+        config KVM_SD_IO_LDO_CHAN
+            int "On-chip LDO that powers the microSD IO pins (-1 if none)"
+            range -1 4
+            default 4 if KVM_BOARD_WAVESHARE_ETH || KVM_BOARD_FUNCEV
+            default -1
+            help
+                The ESP32-P4 LDO channel wired to the slot's IO supply, if any
+                (the Function EV and the P4-ETH power VDD_IO_5 from LDO_VO4, so
+                4). Without it on, the card only reads at a low clock, and on
+                pre-3.0 chips does not write at all. -1 on boards not checked.
+
+        config KVM_SD_MAX_KHZ
+            int "Fastest microSD clock to try, kHz"
+            range 2000 40000
+            default 40000 if KVM_SD_IO_LDO_CHAN >= 0
+            default 4000
+            help
+                The mount starts here and steps down (40, 20, 10, 4, 2 MHz) when
+                the card fails to mount or to read; transfer errors later step
+                it down again. The "microSD speed" setting overrides this.
     endmenu
 
     menu "Network"

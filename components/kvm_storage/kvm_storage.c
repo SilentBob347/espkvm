@@ -19,9 +19,13 @@
 #include "esp_vfs_fat.h"
 #include "ff.h"
 #include "sdmmc_cmd.h"
+#include "esp_heap_caps.h"
+#include "esp_timer.h"
+#include "sd_pwr_ctrl_by_on_chip_ldo.h"
 
 #include "kvm_board.h"
 #include "kvm_caps.h"
+#include "kvm_settings.h"
 
 #define TAG "storage"
 
@@ -29,22 +33,139 @@
 #define MEDIA_BLOCK_SIZE 512u
 
 /*
- * microSD write is gated on the chip revision. On pre-3.0 silicon this board's SD
- * interface is marginal (a known ESP32-P4 limitation): it reads reliably only at a
- * low clock (see the bus setup below) and cannot write at all - write commands time
- * out getting status at every clock the read path can use, with no software knob for
- * the write-side timing. So there the card is read-only and images are prepared in
- * an external reader, and the web layer disables upload/delete with a plain reason.
- *
- * On rev >= 3.0 silicon (CONFIG_ESP32P4_REV_MIN_300) the SD controller writes
- * reliably - verified on hardware (a full write + read-back on a Function EV board) -
- * so upload and delete are enabled. Both codepaths are already implemented in the web
- * layer; kvm_storage_writable() is the single switch between them.
+ * microSD write needs a bus that carries it. On rev >= 3.0 silicon it does. On
+ * pre-3.0 silicon writes timed out at every clock that was tried, and the card was
+ * read-only - but that was with the slot's IO LDO off. With it on, a P4-ETH on
+ * rev 1.3 writes at 40 MHz (checked with CRC). So a pre-3.0 board writes when it
+ * has that LDO set, and stays read-only otherwise.
  */
+#define SD_CAN_WRITE (CONFIG_ESP32P4_REV_MIN_300 || CONFIG_KVM_SD_IO_LDO_CHAN >= 0)
 #define SD_WRITE_UNAVAILABLE_REASON \
     "this board cannot write the microSD reliably; prepare the card in a reader"
 
 static sdmmc_card_t *s_card;
+
+/* ---- bus speed ------------------------------------------------------------
+ *
+ * The clock steps the bus can run at. The mount starts at the board's fastest
+ * (or the operator's choice) and steps down when the card will not mount or a
+ * test read fails; after that, any failed transfer steps it down again before
+ * the driver retries. Boards and cards differ, so this is found per card, not
+ * promised per board.
+ *
+ * A step down is not for good: while the card is idle, a test read one step up
+ * tries to win the speed back. Each failure soon after a climb doubles the wait
+ * before the next try, so a card that really cannot go faster costs one failed
+ * transfer every few minutes, and a one-off glitch costs half a minute.
+ */
+static const uint32_t k_sd_steps_khz[] = {40000, 20000, 10000, 4000, 2000};
+#define SD_N_STEPS (sizeof(k_sd_steps_khz) / sizeof(k_sd_steps_khz[0]))
+#define SD_FLOOR_KHZ 2000u
+#define SD_PROBE_FIRST_S 30
+#define SD_PROBE_MAX_S 600
+#define SD_PROBE_IDLE_US (5 * 1000 * 1000LL)
+#define SD_PROBE_SECTORS 2048 /* 1 MB: short, a target read may be waiting */
+#define SD_MOUNT_TEST_SECTORS 4096
+
+static volatile uint32_t s_bus_khz;
+static volatile uint32_t s_bus_errors;
+static uint32_t s_start_khz; /* the ceiling a climb stops at */
+static volatile int64_t s_last_io_us;
+static volatile int64_t s_next_probe_us; /* 0: nothing to win back */
+static volatile uint32_t s_probe_wait_s = SD_PROBE_FIRST_S;
+static volatile int64_t s_climbed_us;
+static volatile bool s_other_slot_busy;
+static volatile bool s_probing; /* the probe sets the next wait itself */
+
+static uint32_t sd_step_below(uint32_t khz)
+{
+    for (size_t i = 0; i < SD_N_STEPS; i++) {
+        if (k_sd_steps_khz[i] < khz) {
+            return k_sd_steps_khz[i];
+        }
+    }
+    return SD_FLOOR_KHZ;
+}
+
+static uint32_t sd_step_above(uint32_t khz)
+{
+    for (size_t i = SD_N_STEPS; i-- > 0;) {
+        if (k_sd_steps_khz[i] > khz) {
+            return k_sd_steps_khz[i] < s_start_khz ? k_sd_steps_khz[i] : s_start_khz;
+        }
+    }
+    return s_start_khz;
+}
+
+/* The fastest clock to try: the "sd_speed" setting, or the board's own limit. */
+static uint32_t sd_start_khz(void)
+{
+    const int32_t choice = kvm_setting_int("sd_speed"); /* 0 auto, then the steps */
+    if (choice >= 1 && choice <= (int32_t)SD_N_STEPS) {
+        return k_sd_steps_khz[choice - 1];
+    }
+    return CONFIG_KVM_SD_MAX_KHZ;
+}
+
+void kvm_storage_set_other_slot_busy(bool busy)
+{
+    s_other_slot_busy = busy;
+}
+
+void sdmmc_espkvm_transfer_started(sdmmc_card_t *card)
+{
+    (void)card;
+    s_last_io_us = esp_timer_get_time();
+}
+
+/* Called by the sdmmc driver after each failed DMA read or write, before it retries. */
+void sdmmc_espkvm_transfer_failed(sdmmc_card_t *card, bool write, esp_err_t err)
+{
+    s_bus_errors++;
+    const uint32_t lower = sd_step_below(s_bus_khz);
+    if (lower >= s_bus_khz) {
+        return;
+    }
+    if (s_probing) {
+        ESP_LOGW(TAG, "microSD %s failed at %lu kHz (0x%x); back to %lu kHz",
+                 write ? "write" : "read", (unsigned long)s_bus_khz, err, (unsigned long)lower);
+    } else {
+        const int64_t now = esp_timer_get_time();
+        /* Failing soon after a climb means that speed does not hold: wait longer. */
+        if (s_climbed_us && now - s_climbed_us < (int64_t)SD_PROBE_MAX_S * 1000000) {
+            s_probe_wait_s =
+                s_probe_wait_s * 2 < SD_PROBE_MAX_S ? s_probe_wait_s * 2 : SD_PROBE_MAX_S;
+        }
+        s_climbed_us = 0;
+        s_next_probe_us = now + (int64_t)s_probe_wait_s * 1000000;
+        ESP_LOGW(TAG, "microSD %s failed at %lu kHz (0x%x); slowing the bus to %lu kHz, next try up in %lu s",
+                 write ? "write" : "read", (unsigned long)s_bus_khz, err, (unsigned long)lower,
+                 (unsigned long)s_probe_wait_s);
+    }
+    s_bus_khz = lower;
+    (void)sdmmc_host_set_card_clk(card->host.slot, lower);
+}
+
+/* Read the first sectors in multi-block reads, the kind the target makes. A
+ * failure slows the bus through the hook above, so this reports whether it did. */
+#define SD_TEST_CHUNK 256
+static bool sd_read_test(size_t sectors)
+{
+    const size_t len = SD_TEST_CHUNK * s_card->csd.sector_size;
+    uint8_t *buf = heap_caps_aligned_alloc(64, len, MALLOC_CAP_SPIRAM);
+    if (!buf) {
+        return true; /* no memory to test with; the runtime fallback still guards */
+    }
+    const uint32_t errors = s_bus_errors;
+    for (size_t sec = 0; sec < sectors && sec + SD_TEST_CHUNK <= s_card->csd.capacity;
+         sec += SD_TEST_CHUNK) {
+        if (sdmmc_read_sectors(s_card, buf, sec, SD_TEST_CHUNK) != ESP_OK) {
+            break;
+        }
+    }
+    free(buf);
+    return s_bus_errors == errors;
+}
 
 /* ---- virtual media --------------------------------------------------------
  *
@@ -167,19 +288,19 @@ const char *kvm_storage_mount_point(void)
 
 bool kvm_storage_writable(void)
 {
-#if CONFIG_ESP32P4_REV_MIN_300
+#if SD_CAN_WRITE
     /* rev >= 3.0 writes the microSD reliably; writable once a card is mounted -
      * unless the whole card is handed to the target, which owns it exclusively. */
     return s_card != NULL && !s_handed_over;
 #else
-    /* pre-3.0: SD write times out - card stays read-only regardless of a card. */
+    /* pre-3.0 without the IO LDO: writes time out, the card stays read-only. */
     return false;
 #endif
 }
 
 const char *kvm_storage_write_unavailable_reason(void)
 {
-#if CONFIG_ESP32P4_REV_MIN_300
+#if SD_CAN_WRITE
     if (s_handed_over) {
         return "the whole card is handed to the target; switch the medium to manage files here";
     }
@@ -201,6 +322,17 @@ void kvm_storage_status(kvm_storage_status_t *out)
     }
     out->mounted = true;
     snprintf(out->name, sizeof(out->name), "%s", s_card->cid.name);
+    int real_khz = 0;
+    if (sdmmc_host_get_real_freq(kvm_storage_sd_slot(), &real_khz) == ESP_OK) {
+        out->bus_khz = (uint32_t)real_khz;
+    }
+    out->bus_errors = s_bus_errors;
+    out->bus_max_khz = s_start_khz;
+    const int64_t next = s_next_probe_us;
+    if (next) {
+        const int64_t left = next - esp_timer_get_time();
+        out->bus_retry_s = left > 0 ? (uint32_t)(left / 1000000) + 1 : 1;
+    }
 
     /* Capacity comes from the card; free space from the filesystem. FATFS
      * reports in clusters, so the two multiply back up to bytes. */
@@ -531,7 +663,7 @@ int32_t kvm_storage_media_read(uint64_t offset, void *buf, uint32_t len)
 
 bool kvm_storage_media_writable(void)
 {
-#if CONFIG_ESP32P4_REV_MIN_300
+#if SD_CAN_WRITE
     if (!s_media_lock) {
         return false;
     }
@@ -542,7 +674,7 @@ bool kvm_storage_media_writable(void)
     xSemaphoreGive(s_media_lock);
     return w;
 #else
-    return false; /* pre-3.0 SD writes time out - never writable */
+    return false; /* pre-3.0 without the IO LDO: writes time out */
 #endif
 }
 
@@ -631,6 +763,54 @@ bool kvm_storage_shares_wifi_slot(void)
 #endif
 }
 
+/* Win back a step while the card is idle. Holds the media lock so the card is
+ * not unmounted under the test; a target read waits the second it takes. */
+static void sd_probe_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(5000));
+        const int64_t now = esp_timer_get_time();
+        if (s_climbed_us && now - s_climbed_us > (int64_t)SD_PROBE_MAX_S * 1000000) {
+            s_probe_wait_s = SD_PROBE_FIRST_S; /* that speed held; start patient again */
+            s_climbed_us = 0;
+        }
+        if (!s_next_probe_us || now < s_next_probe_us || now - s_last_io_us < SD_PROBE_IDLE_US ||
+            s_other_slot_busy || !s_media_lock) {
+            continue;
+        }
+        if (xSemaphoreTake(s_media_lock, 0) != pdTRUE) {
+            continue;
+        }
+        if (s_card && !s_handed_over && s_bus_khz < s_start_khz) {
+            const uint32_t from = s_bus_khz;
+            const uint32_t to = sd_step_above(from);
+            s_bus_khz = to;
+            (void)sdmmc_host_set_card_clk(s_card->host.slot, to);
+            s_probing = true;
+            const bool clean = sd_read_test(SD_PROBE_SECTORS);
+            s_probing = false;
+            if (clean) {
+                s_climbed_us = esp_timer_get_time();
+                s_next_probe_us =
+                    to < s_start_khz ? s_climbed_us + (int64_t)SD_PROBE_FIRST_S * 1000000 : 0;
+                ESP_LOGW(TAG, "microSD bus back up to %lu kHz", (unsigned long)to);
+            } else {
+                /* The hook stepped it down; a test that fails is the same as a
+                 * failure right after a climb. */
+                s_probe_wait_s =
+                    s_probe_wait_s * 2 < SD_PROBE_MAX_S ? s_probe_wait_s * 2 : SD_PROBE_MAX_S;
+                s_next_probe_us = esp_timer_get_time() + (int64_t)s_probe_wait_s * 1000000;
+                ESP_LOGW(TAG, "microSD still fails at %lu kHz; next try in %lu s",
+                         (unsigned long)to, (unsigned long)s_probe_wait_s);
+            }
+        } else if (!s_card || s_bus_khz >= s_start_khz) {
+            s_next_probe_us = 0;
+        }
+        xSemaphoreGive(s_media_lock);
+    }
+}
+
 esp_err_t kvm_storage_init(void)
 {
     if (!s_media_lock) {
@@ -650,50 +830,36 @@ esp_err_t kvm_storage_init(void)
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
     host.slot = kvm_storage_sd_slot();
     /*
-     * Stay on 3.3 V high-speed; never negotiate UHS-I.
-     *
-     * UHS-I means switching the bus to 1.8 V (CMD11) and running SDR50/104 - the
-     * most signal-integrity-sensitive part of init, and one this board does not
-     * do reliably: the card would time out on SEND_OP_COND, or answer and then
-     * fail the voltage switch (0x107 / 0x108), intermittently, so the slot
-     * looked empty on most boots. The driver only requests the 1.8 V switch when
-     * this callback says the slot supports it; clearing it keeps init on the
-     * robust 3.3 V path. A KVM serving a boot image does not need UHS speed.
+     * Stay on 3.3 V; never negotiate UHS-I. UHS-I switches the card to 1.8 V and
+     * only removing its power switches it back, so on a board with no power gate
+     * for the card every warm restart (an update, a panic) leaves a 1.8 V card on
+     * a 3.3 V bus. SDR50 ran on the Function EV, and that is where it ended.
      */
     host.is_slot_set_to_uhs1 = NULL;
-    /* No DDR either: double-data-rate clocking is the other speed feature this
-     * slot proved flaky on. High-speed SDR is plenty for boot media. */
+    /* No DDR either: double-data-rate clocking proved flaky on this slot. */
     host.flags &= ~SDMMC_HOST_FLAG_DDR;
     /*
-     * Cap the bus at 4 MHz (40 MHz / 10 - the P4 clock is integer fractions of
-     * 40 MHz). At the 20 MHz default this board reads single sectors (mount,
-     * directory) but fails EVERY multi-block read, which is what a USB host does,
-     * so a target could not read the image at all; 8 MHz still drops some. Input
-     * delay phase tuning did not help at any phase - the ceiling is the board's
-     * SD signal integrity, a known ESP32-P4 limitation. At 4 MHz bulk reads are
-     * clean: verified by a host reading 200 MB with zero errors (~1.5 MB/s).
-     *
-     * This is a P4 limit, NOT specific to the Waveshare: raising it for the
-     * rev >= 3.0 Function EV board was tried and is worse, not better. 40 MHz
-     * drops the upload connection outright; 20 MHz "works" but the controller
-     * retry-thrashes on every multi-block write, collapsing throughput to
-     * ~12 KB/s (each 64 KB write stalling seconds on retries). 4 MHz is the
-     * ceiling on both boards - do not raise it without new silicon.
-     *
-     * What that costs in practice: an upload through the console lands on the
-     * card at about 66 KB/s, measured on the Function EV. Reading is fine at
-     * ~1.5 MB/s, which is what serving an image to the target needs; writing is
-     * the slow direction, so a large image belongs on the card by other means.
-     *
-     * The card matters as much as the bus. A 256 GB SDXC card mounted here,
-     * reported its size correctly and read without a complaint, yet failed
-     * every write immediately - ESP_ERR_INVALID_CRC with the controller
-     * reporting a transmit FIFO underrun (status 0xe00) - while a 32 GB card
-     * wrote normally on the same board and the same build. Two cards is not a
-     * rule, but a card that reads and will not write is a thing that happens
-     * here, and it looks like a firmware fault until the card is swapped.
+     * On some boards the slot's IO pins are powered by one of the chip's LDOs
+     * (VDD_IO_5 from LDO_VO4 on the Function EV). Left off, the card still reads
+     * at a low clock, but writes fail CRC at 4 MHz and reads fail above that.
      */
-    host.max_freq_khz = 4000;
+#if CONFIG_KVM_SD_IO_LDO_CHAN >= 0
+    static sd_pwr_ctrl_handle_t s_io_ldo;
+    if (!s_io_ldo) {
+        const sd_pwr_ctrl_ldo_config_t ldo_cfg = {.ldo_chan_id = CONFIG_KVM_SD_IO_LDO_CHAN};
+        esp_err_t lerr = sd_pwr_ctrl_new_on_chip_ldo(&ldo_cfg, &s_io_ldo);
+        if (lerr != ESP_OK) {
+            ESP_LOGW(TAG, "microSD IO power (LDO %d): %s", CONFIG_KVM_SD_IO_LDO_CHAN,
+                     esp_err_to_name(lerr));
+        }
+    }
+    host.pwr_ctrl_handle = s_io_ldo;
+#endif
+    /*
+     * A card that reads and will not write happens too: a 256 GB SDXC card
+     * mounted and read here but failed every write (ESP_ERR_INVALID_CRC, FIFO
+     * underrun 0xe00) while a 32 GB card wrote fine on the same board.
+     */
 
     sdmmc_slot_config_t slot = SDMMC_SLOT_CONFIG_DEFAULT();
     slot.width = 4;
@@ -717,7 +883,18 @@ esp_err_t kvm_storage_init(void)
     };
 
     esp_err_t err = ESP_FAIL;
+    s_start_khz = sd_start_khz();
+    s_bus_khz = s_start_khz;
+    s_bus_errors = 0;
+    s_next_probe_us = 0;
+    s_climbed_us = 0;
+    s_probe_wait_s = SD_PROBE_FIRST_S;
     for (int attempt = 1; attempt <= SD_MOUNT_ATTEMPTS; attempt++) {
+        /* Two failures at one clock step it down; the floor keeps what is left. */
+        if (attempt > 1 && attempt % 2 == 1 && s_bus_khz > SD_FLOOR_KHZ) {
+            s_bus_khz = sd_step_below(s_bus_khz);
+        }
+        host.max_freq_khz = (int)s_bus_khz;
         /* Let power settle before each attempt; a retry after an intermittent
          * failure gets a fresh settle too. */
         slot_power_settle();
@@ -730,8 +907,8 @@ esp_err_t kvm_storage_init(void)
          * intermittently, so a card that gives an invalid response on one
          * attempt often initialises cleanly on the next. A genuinely absent card
          * simply times out every attempt and is reported empty below. */
-        ESP_LOGI(TAG, "mount attempt %d/%d failed: %s", attempt, SD_MOUNT_ATTEMPTS,
-                 esp_err_to_name(err));
+        ESP_LOGI(TAG, "mount attempt %d/%d at %lu kHz failed: %s", attempt, SD_MOUNT_ATTEMPTS,
+                 (unsigned long)s_bus_khz, esp_err_to_name(err));
     }
 
     if (err != ESP_OK) {
@@ -741,11 +918,20 @@ esp_err_t kvm_storage_init(void)
         return ESP_OK;
     }
 
+    /* The test read steps the bus down on its own when it fails; stop once a
+     * pass is clean or there is nothing slower to try. */
+    while (!sd_read_test(SD_MOUNT_TEST_SECTORS) && s_bus_khz > SD_FLOOR_KHZ) {
+    }
+    static bool s_probe_started;
+    if (!s_probe_started) {
+        s_probe_started =
+            xTaskCreate(sd_probe_task, "sd_probe", 3072, NULL, tskIDLE_PRIORITY + 1, NULL) == pdPASS;
+    }
     kvm_storage_status_t st;
     kvm_storage_status(&st);
-    ESP_LOGI(TAG, "mounted %s: %llu MB total, %llu MB free", st.name,
+    ESP_LOGI(TAG, "mounted %s: %llu MB total, %llu MB free, bus %lu kHz", st.name,
              (unsigned long long)(st.total_bytes / (1024 * 1024)),
-             (unsigned long long)(st.free_bytes / (1024 * 1024)));
+             (unsigned long long)(st.free_bytes / (1024 * 1024)), (unsigned long)st.bus_khz);
     return ESP_OK;
 }
 
@@ -759,9 +945,12 @@ esp_err_t kvm_storage_bus_suspend(bool *was_mounted)
     }
     /* Pull any image the target is reading before the filesystem goes away. */
     kvm_storage_media_eject();
+    xSemaphoreTake(s_media_lock, portMAX_DELAY); /* not under a speed probe */
     s_handed_over = false; /* the card is going away; the remount on resume is fresh */
     esp_err_t err = esp_vfs_fat_sdcard_unmount(MOUNT_POINT, s_card);
     s_card = NULL;
+    s_next_probe_us = 0;
+    xSemaphoreGive(s_media_lock);
     if (was_mounted) {
         *was_mounted = true;
     }

@@ -160,6 +160,9 @@ static const char *TAG = "tc358743";
 #define HTOTAL1 0x858b
 #define VTOTAL0 0x858c
 #define VTOTAL1 0x858d
+/** Frame interval in 100 us steps (Linux tc358743_regs.h, "not in REF_01"). */
+#define FV_CNT_LO 0x85a1
+#define FV_CNT_HI 0x85a2
 #define PHY_EN 0x8534
 #define MASK_ENABLE_PHY 0x01
 #define PHY_CTL0 0x8531
@@ -884,6 +887,11 @@ esp_err_t tc358743_get_timings(tc358743_t *d, tc358743_timings_t *out)
     out->hdmi_mode = (st & TC358743_SYS_HDMI_MODE) != 0u;
     out->sync = (st & TC358743_SYS_SYNC) != 0u;
     out->interlaced = (rd8(d, VI_STATUS1) & MASK_S_V_INTERLACE) != 0u;
+    const uint32_t interval = ((uint32_t)(rd8(d, FV_CNT_HI) & 0x03u) << 8) | rd8(d, FV_CNT_LO);
+    if (out->sync && interval > 0u) {
+        const uint32_t hz = (10000u + interval / 2u) / interval;
+        out->hz = hz <= 255u ? (uint8_t)hz : 0u;
+    }
     return ESP_OK;
 }
 

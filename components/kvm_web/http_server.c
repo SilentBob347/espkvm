@@ -23,6 +23,7 @@
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
@@ -621,9 +622,10 @@ static esp_err_t api_video_status_get(httpd_req_t *req)
      * - that is what /api/v1/screen/text answers - only that asking is worth it. */
     const bool text_mode = st.signal && screentext_mode_supported(st.hres, st.vres);
 
-    char body[464];
+    char body[512];
     int n = snprintf(body, sizeof(body),
                      "{\"signal\":%s,\"width\":%u,\"height\":%u,\"interlaced\":%s,"
+                     "\"inputHz\":%u,\"tooFast\":%s,"
                      "\"fps\":%u.%02u,\"skippedFps\":%u.%02u,\"kbps\":%u,"
                      "\"encodeUs\":%u,\"ppaUs\":%u,\"encoderBusyPct\":%u,"
                      "\"modeChanges\":%u,\"sysStatus\":%u,\"viewers\":%d,"
@@ -633,7 +635,8 @@ static esp_err_t api_video_status_get(httpd_req_t *req)
                         can be read as text. 0 means it is a picture. */
                      "\"textMode\":%s,\"flatMs\":%u}",
                      st.signal ? "true" : "false", (unsigned)st.hres, (unsigned)st.vres,
-                     st.interlaced ? "true" : "false", (unsigned)(st.fps_x100 / 100u),
+                     st.interlaced ? "true" : "false", (unsigned)st.input_hz,
+                     st.too_fast ? "true" : "false", (unsigned)(st.fps_x100 / 100u),
                      (unsigned)(st.fps_x100 % 100u), (unsigned)(st.skipped_fps_x100 / 100u),
                      (unsigned)(st.skipped_fps_x100 % 100u), (unsigned)st.kbps,
                      (unsigned)st.encode_us, (unsigned)st.ppa_us, (unsigned)st.encoder_busy_pct,
@@ -946,7 +949,18 @@ static void restart_soon(uint32_t delay_ms)
  * the bootloader performs when a new image never confirms itself, the worst
  * outcome of a bad upload is one reboot back into what was running before.
  */
+static esp_err_t api_system_update_post_body(httpd_req_t *req);
+
+/* The stream slows down for the length of the upload (video_frame_upload_begin). */
 static esp_err_t api_system_update_post(httpd_req_t *req)
+{
+    video_frame_upload_begin();
+    const esp_err_t ret = api_system_update_post_body(req);
+    video_frame_upload_end();
+    return ret;
+}
+
+static esp_err_t api_system_update_post_body(httpd_req_t *req)
 {
     if (!kvm_auth_check(req)) {
         return kvm_auth_challenge(req);
@@ -1336,6 +1350,12 @@ static esp_err_t api_storage_images_get(httpd_req_t *req)
     cJSON_AddBoolToObject(root, "mounted", sd.mounted);
     cJSON_AddNumberToObject(root, "totalBytes", (double)sd.total_bytes);
     cJSON_AddNumberToObject(root, "freeBytes", (double)sd.free_bytes);
+    if (sd.mounted) {
+        cJSON_AddNumberToObject(root, "busKhz", sd.bus_khz);
+        cJSON_AddNumberToObject(root, "busErrors", sd.bus_errors);
+        cJSON_AddNumberToObject(root, "busMaxKhz", sd.bus_max_khz);
+        cJSON_AddNumberToObject(root, "busRetryS", sd.bus_retry_s);
+    }
     cJSON_AddStringToObject(root, "active", kvm_setting_str("msc_image"));
     /* Whether the console may upload or delete: this board serves the card
      * read-only, so those controls are disabled with the reason below. */
@@ -1427,40 +1447,55 @@ static esp_err_t api_storage_images_get(httpd_req_t *req)
 /* Give up if the sender goes quiet this many receive-timeouts in a row, so a
  * dropped connection leaves neither a zombie task nor a half-written file. */
 #define UPLOAD_MAX_IDLE 3
-/* Staging buffer for the card write. Filled across as many recv() calls as it
- * takes (a TLS record or an lwIP segment at a time) then written in one go, so
- * the SD sees a single multi-block command per 64 KB rather than one per recv -
- * far less per-write overhead. Upload only runs on rev >= 3.0
- * (kvm_storage_writable), so none of this executes on the Waveshare board.
- *
- * In PSRAM, and deliberately, though it looks like the slow choice.
- *
- * PSRAM is not DMA-capable, so the SD driver cannot hand this buffer to the
- * controller: it cuts every write into 8 KB pieces
- * (unaligned_multi_block_rw_max_chunk_size is 16 blocks) and copies each piece
- * through a bounce buffer of its own. That is what an upload measured at
- * 66 KB/s is - three per cent of what a 4 MHz four-line bus could carry - so
- * the obvious thing is to put the buffer in internal RAM and let the DMA have
- * it directly. It was tried, on a Function EV, and it does not work:
- *
- *   64 KB in one multi-block write - ESP_ERR_TIMEOUT on every transaction, and
- *   a card left so wedged that its filesystem did not survive.
- *   8 KB pieces, the size the driver itself uses - ESP_ERR_INVALID_CRC with the
- *   controller reporting a transmit FIFO underrun (status 0xe00): it could not
- *   keep the FIFO fed, so what reached the card was corrupt.
- *
- * So the copy is not the overhead to remove; it is the thing that makes writes
- * land at all. The slow path stays until someone finds what actually starves
- * that FIFO. Keeping the buffer in PSRAM also leaves internal RAM for the TLS
- * session, which was the original reason. Upload only runs on rev >= 3.0
- * (kvm_storage_writable), so none of this executes on the Waveshare board. */
-#define UPLOAD_CHUNK (64 * 1024)
+/*
+ * The body is read into big buffers and a second task writes them to the card,
+ * so the network is not waiting while the card writes (on a Function EV at
+ * 40 MHz each costs about the same). Buffers are PSRAM, cache-line aligned so
+ * the SD driver sends each in one DMA multi-block command. UPLOAD_BUFS bounds
+ * the memory; when all are queued the reader waits, and TCP slows the sender.
+ */
+#define UPLOAD_CHUNK (256 * 1024)
+#define UPLOAD_BUFS 4
+#define UPLOAD_WRITER_STACK (4 * 1024)
 
 typedef struct {
     httpd_req_t *req;
     char name[IMAGE_NAME_MAX + 1];
     size_t content_len;
 } upload_ctx_t;
+
+typedef struct {
+    char *data;
+    size_t len;
+} upload_buf_t;
+
+typedef struct {
+    FILE *f;
+    QueueHandle_t full;  /* reader -> writer; a NULL data pointer ends it */
+    QueueHandle_t empty; /* writer -> reader */
+    SemaphoreHandle_t done;
+    volatile bool failed;
+    int64_t write_us;
+} upload_writer_t;
+
+static void upload_writer_task(void *arg)
+{
+    upload_writer_t *w = (upload_writer_t *)arg;
+    upload_buf_t b;
+    while (xQueueReceive(w->full, &b, portMAX_DELAY) == pdTRUE && b.data) {
+        if (!w->failed) {
+            const int64_t t0 = esp_timer_get_time();
+            if (fwrite(b.data, 1, b.len, w->f) != b.len) {
+                ESP_LOGE(TAG, "write failed: %s", strerror(errno));
+                w->failed = true;
+            }
+            w->write_us += esp_timer_get_time() - t0;
+        }
+        xQueueSend(w->empty, &b, portMAX_DELAY);
+    }
+    xSemaphoreGive(w->done);
+    vTaskDelete(NULL);
+}
 
 static void upload_finish(httpd_req_t *req)
 {
@@ -1481,8 +1516,8 @@ static void upload_worker_task(void *arg)
 
     char path[128];
     image_path(path, sizeof(path), ctx->name);
-    FILE *f = fopen(path, "wb");
-    if (!f) {
+    upload_writer_t w = {.f = fopen(path, "wb")};
+    if (!w.f) {
         ESP_LOGE(TAG, "cannot create '%s': %s", path, strerror(errno));
         send_json_error(req, "500 Internal Server Error", "cannot create file on card");
         upload_finish(req);
@@ -1491,59 +1526,103 @@ static void upload_worker_task(void *arg)
         return;
     }
     ESP_LOGW(TAG, "image upload: %zu bytes -> %s", ctx->content_len, path);
+    video_frame_upload_begin();
 
-    char *chunk = heap_caps_malloc(UPLOAD_CHUNK, MALLOC_CAP_SPIRAM);
+    const char *why = "out of memory";
+    bool ok = true;
+    w.full = xQueueCreate(UPLOAD_BUFS + 1, sizeof(upload_buf_t));
+    w.empty = xQueueCreate(UPLOAD_BUFS, sizeof(upload_buf_t));
+    w.done = xSemaphoreCreateBinary();
+    ok = w.full && w.empty && w.done;
+    for (int i = 0; ok && i < UPLOAD_BUFS; i++) {
+        upload_buf_t b = {.data = heap_caps_aligned_alloc(64, UPLOAD_CHUNK, MALLOC_CAP_SPIRAM)};
+        ok = b.data != NULL;
+        if (ok) {
+            xQueueSend(w.empty, &b, 0);
+        }
+    }
+    const bool writer = ok && xTaskCreate(upload_writer_task, "kvm_upload_wr", UPLOAD_WRITER_STACK,
+                                          &w, UPLOAD_WORKER_PRIO, NULL) == pdPASS;
+    ok = writer;
+
     const int64_t started_us = esp_timer_get_time();
-    bool ok = chunk != NULL;
     size_t received = 0;
     int idle = 0;
     while (ok && received < ctx->content_len) {
-        /* Fill the staging buffer, or take whatever arrived before a lull, then
-         * flush it as one write. recv hands back a record at a time; batching
-         * them turns many small SD writes into a few large ones. */
-        size_t filled = 0;
-        while (filled < UPLOAD_CHUNK && received + filled < ctx->content_len) {
-            const size_t room = UPLOAD_CHUNK - filled;
-            const size_t left = ctx->content_len - received - filled;
-            const int n = httpd_req_recv(req, chunk + filled, room < left ? room : left);
+        upload_buf_t b = {0};
+        xQueueReceive(w.empty, &b, portMAX_DELAY);
+        b.len = 0; /* it comes back holding the length it was written with */
+        /* Fill the buffer, or take whatever arrived before a lull. recv hands
+         * back a TLS record at a time; batching them makes a few large writes. */
+        while (b.len < UPLOAD_CHUNK && received + b.len < ctx->content_len) {
+            const size_t room = UPLOAD_CHUNK - b.len;
+            const size_t left = ctx->content_len - received - b.len;
+            const int n = httpd_req_recv(req, b.data + b.len, room < left ? room : left);
             if (kvm_recv_stalled(n)) {
                 if (++idle >= UPLOAD_MAX_IDLE) {
-                    ESP_LOGE(TAG, "upload stalled after %zu of %zu bytes", received + filled,
+                    ESP_LOGE(TAG, "upload stalled after %zu of %zu bytes", received + b.len,
                              ctx->content_len);
+                    why = "upload stalled; the network is too slow or dropped";
                     ok = false;
                 }
-                break; /* flush what we have, then re-check ok on the outer loop */
+                break; /* hand over what we have, then re-check ok */
             }
             idle = 0;
             if (n <= 0) {
-                ESP_LOGE(TAG, "upload cut short after %zu of %zu bytes", received + filled,
+                ESP_LOGE(TAG, "upload cut short after %zu of %zu bytes", received + b.len,
                          ctx->content_len);
+                why = "upload cut short by the client";
                 ok = false;
                 break;
             }
-            filled += (size_t)n;
+            b.len += (size_t)n;
         }
-        if (filled && fwrite(chunk, 1, filled, f) != filled) {
-            /* Almost always the card filled up. */
-            ESP_LOGE(TAG, "write failed after %zu bytes: %s", received, strerror(errno));
+        received += b.len;
+        if (b.len) {
+            xQueueSend(w.full, &b, portMAX_DELAY);
+        } else {
+            xQueueSend(w.empty, &b, portMAX_DELAY);
+        }
+        if (w.failed) {
+            why = "write to the card failed; it may be full";
             ok = false;
-            break;
         }
-        received += filled;
     }
-    free(chunk);
-    fclose(f);
+
+    if (writer) {
+        const upload_buf_t end = {0};
+        xQueueSend(w.full, &end, portMAX_DELAY);
+        xSemaphoreTake(w.done, portMAX_DELAY);
+        if (w.failed) {
+            why = "write to the card failed; it may be full";
+            ok = false;
+        }
+    }
+    upload_buf_t b;
+    while (w.empty && xQueueReceive(w.empty, &b, 0) == pdTRUE) {
+        free(b.data);
+    }
+    if (w.full) {
+        vQueueDelete(w.full);
+    }
+    if (w.empty) {
+        vQueueDelete(w.empty);
+    }
+    if (w.done) {
+        vSemaphoreDelete(w.done);
+    }
+    fclose(w.f);
+    video_frame_upload_end();
 
     if (!ok) {
         remove(path); /* a half-written image is worse than none */
-        send_json_error(req, "500 Internal Server Error", "upload failed; the card may be full");
+        send_json_error(req, "500 Internal Server Error", why);
     } else {
-        /* The rate is the point of the buffer above: it says at a glance
-         * whether the write went through DMA or through bounce buffers. */
         const int64_t ms = (esp_timer_get_time() - started_us) / 1000;
-        ESP_LOGW(TAG, "image '%s' written, %zu bytes in %lld ms (%llu KB/s)", ctx->name, received,
-                 (long long)ms,
-                 (unsigned long long)(ms > 0 ? (uint64_t)received / (uint64_t)ms : 0));
+        ESP_LOGW(TAG, "image '%s' written, %zu bytes in %lld ms (%llu KB/s), card %lld ms",
+                 ctx->name, received, (long long)ms,
+                 (unsigned long long)(ms > 0 ? (uint64_t)received / (uint64_t)ms : 0),
+                 (long long)(w.write_us / 1000));
         char body[128];
         int bn = snprintf(body, sizeof(body),
                           "{\"status\":\"written\",\"name\":\"%s\",\"size\":%zu}", ctx->name,
@@ -1615,10 +1694,6 @@ static esp_err_t api_storage_delete_post(httpd_req_t *req)
     if (!kvm_auth_check(req)) {
         return kvm_auth_challenge(req);
     }
-    if (!kvm_storage_writable()) {
-        return send_json_error(req, "501 Not Implemented",
-                               kvm_storage_write_unavailable_reason());
-    }
     char name[IMAGE_NAME_MAX + 1];
     if (!image_name_from_query(req, name, sizeof(name))) {
         return send_json_error(req, "400 Bad Request", "missing or invalid ?name=");
@@ -1647,7 +1722,18 @@ static esp_err_t api_storage_delete_post(httpd_req_t *req)
  * the rescue image as the active medium (msc_image = "@rescue") with virtual
  * media enabled.
  */
+static esp_err_t api_storage_rescue_post_body(httpd_req_t *req);
+
+/* The stream slows down for the length of the upload (video_frame_upload_begin). */
 static esp_err_t api_storage_rescue_post(httpd_req_t *req)
+{
+    video_frame_upload_begin();
+    const esp_err_t ret = api_storage_rescue_post_body(req);
+    video_frame_upload_end();
+    return ret;
+}
+
+static esp_err_t api_storage_rescue_post_body(httpd_req_t *req)
 {
     if (!kvm_auth_check(req)) {
         return kvm_auth_challenge(req);
@@ -2275,7 +2361,19 @@ static esp_err_t api_notify_status_get(httpd_req_t *req)
     kvm_notify_status_t st;
     kvm_notify_status(&st);
     char res[96 * 2];
-    char body[sizeof(res) + 96];
+    /* The chat list rides along, so finding chats costs no route of its own. */
+    const size_t chats_cap = 4096;
+    char *chats = heap_caps_malloc(chats_cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    const size_t body_cap = sizeof(res) + 128 + chats_cap;
+    char *body = heap_caps_malloc(body_cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!chats || !body) {
+        free(chats);
+        free(body);
+        return send_json_error(req, "500 Internal Server Error", "out of memory");
+    }
+    if (!kvm_notify_chats_json(chats, chats_cap)) {
+        strlcpy(chats, "{\"state\":\"idle\",\"error\":\"\",\"bot\":\"\",\"chats\":[]}", chats_cap);
+    }
     /* last_result may hold a URL or a quote; keep the JSON valid. */
     size_t o = 0;
     for (const char *p = st.last_result; *p && o + 2 < sizeof(res); p++) {
@@ -2285,11 +2383,25 @@ static esp_err_t api_notify_status_get(httpd_req_t *req)
         res[o++] = *p;
     }
     res[o] = '\0';
-    snprintf(body, sizeof(body), "{\"enabled\":%s,\"lastResult\":\"%s\",\"lastAt\":\"%s\"}",
-             st.enabled ? "true" : "false", res, st.last_at);
+    snprintf(body, body_cap, "{\"enabled\":%s,\"lastResult\":\"%s\",\"lastAt\":\"%s\",\"telegram\":%s}",
+             st.enabled ? "true" : "false", res, st.last_at, chats);
+    free(chats);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    return httpd_resp_sendstr(req, body);
+    const esp_err_t err = httpd_resp_sendstr(req, body);
+    free(body);
+    return err;
+}
+
+static esp_err_t api_notify_chats_post(httpd_req_t *req)
+{
+    if (!kvm_auth_check(req)) {
+        return kvm_auth_challenge(req);
+    }
+    (void)kvm_notify_find_chats();
+    httpd_resp_set_status(req, "202 Accepted");
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"status\":\"queued\"}");
 }
 
 static esp_err_t api_notify_test_post(httpd_req_t *req)
@@ -4266,6 +4378,7 @@ httpd_handle_t http_server_start(void)
         {.uri = "/api/v1/schedules/run", .method = HTTP_POST, .handler = api_schedules_run_post},
         {.uri = "/api/v1/notify/status", .method = HTTP_GET, .handler = api_notify_status_get},
         {.uri = "/api/v1/notify/test", .method = HTTP_POST, .handler = api_notify_test_post},
+        {.uri = "/api/v1/notify/chats", .method = HTTP_POST, .handler = api_notify_chats_post},
     };
     for (size_t i = 0; i < sizeof(api_uris) / sizeof(api_uris[0]); i++) {
         register_route(h, &api_uris[i]);

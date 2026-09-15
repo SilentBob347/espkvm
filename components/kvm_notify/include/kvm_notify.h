@@ -13,6 +13,7 @@
 #include "esp_err.h"
 
 #include <stdbool.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -35,6 +36,20 @@ typedef struct {
 } kvm_notify_status_t;
 
 void kvm_notify_status(kvm_notify_status_t *out);
+
+/**
+ * Ask Telegram, with the saved bot token, which chats have written to the bot,
+ * so the chat id can be picked rather than looked up. Runs on the notify task;
+ * read the result with kvm_notify_chats_json().
+ */
+esp_err_t kvm_notify_find_chats(void);
+
+/**
+ * The last run as JSON: {"state":"idle|running|ok|error","error":"...",
+ * "bot":"username","chats":[{"id":"..","type":"..","name":".."}]}.
+ * Returns the length, or 0 if @p cap is too small.
+ */
+size_t kvm_notify_chats_json(char *out, size_t cap);
 
 #ifdef __cplusplus
 }

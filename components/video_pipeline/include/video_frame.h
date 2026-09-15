@@ -108,6 +108,16 @@ void video_frame_viewer_enter(void);
 void video_frame_viewer_leave(void);
 int video_frame_viewer_count(void);
 
+/*
+ * Uploads. While one runs the stream is encoded at no more than
+ * VIDEO_UPLOAD_FPS. The encoder and the Ethernet MAC share the chip's bus: at
+ * full frame rate the MAC drops frames and a 3.5 MB/s upload falls to 0.3.
+ */
+#define VIDEO_UPLOAD_FPS 2
+void video_frame_upload_begin(void);
+void video_frame_upload_end(void);
+bool video_frame_upload_active(void);
+
 /**
  * Ask for the next frame to be decodable on its own. A viewer that joins
  * mid-stream cannot start on an H.264 P-frame; MJPEG ignores this.

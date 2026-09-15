@@ -89,6 +89,11 @@ CONFIG_MBEDTLS_X509_CRT_WRITE_C=y
 # long as the browser keeps it, and a console holds several at once.
 CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
 
+# TLS buffers and contexts come from PSRAM. Internal RAM is ~500 KB and has
+# ~70 KB free once WiFi and Tailscale run; a large HTTPS upload then failed to
+# get a 4 KB TLS buffer and took the WiFi link down with it.
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+
 # microlink (native Tailscale) calls raw lwIP APIs (udp_*, netif_*, wireguardif_*)
 # from its own tasks. Under the default tcpip-thread model that races the TCP/IP
 # thread and corrupts lwIP (crash in tcp_output once the console serves TLS).
@@ -99,6 +104,10 @@ CONFIG_LWIP_TCPIP_CORE_LOCKING=y
 # MJPEG pushes large JPEG segments; lwIP defaults (~5.8 KiB) cause backpressure/resets on Ethernet.
 CONFIG_LWIP_TCP_SND_BUF_DEFAULT=65535
 CONFIG_LWIP_TCP_WND_DEFAULT=65535
+# The receive queue must hold a whole window (65535 / 1440 + 2). At the default 6
+# a burst overflows it, lwIP drops the rest until its next timer (125 ms), and
+# every upload is stuck at ~64 KB/s per connection whatever the link.
+CONFIG_LWIP_TCP_RECVMBOX_SIZE=48
 CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=6144
 
 # Resumption: a full handshake costs this chip ~330 ms and the console opens

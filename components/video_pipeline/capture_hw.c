@@ -8,6 +8,7 @@
 #include "capture_priv.h"
 
 #include <inttypes.h>
+#include <stdio.h>
 
 #include "kvm_board.h"
 #include "esp_cache.h"
@@ -364,6 +365,35 @@ void capture_tc_unlock(capture_ctx_t *c)
     }
 }
 
+/*
+ * What the CSI link can carry: two lanes at the board's lane rate. CSI sends
+ * active pixels only, so blanking does not count. Over this the receiver gets
+ * no frames at all - not fewer - and the log fills with timeouts that no
+ * recovery can fix.
+ */
+#define CSI_LANES 2u
+
+static uint64_t mode_pixel_rate(const kvm_bridge_timings_t *t)
+{
+    return (uint64_t)t->hact * t->vact * t->hz;
+}
+
+static uint64_t csi_pixel_capacity(void)
+{
+    return (uint64_t)CSI_LANES * KVM_BOARD_MIPI_LANE_MBPS * 1000000u / capture_csi_bpp();
+}
+
+/* "1920x1080p60", or "1920x1080p" when the rate is not known. */
+static void mode_name(char *out, size_t len, uint32_t w, uint32_t h, const kvm_bridge_timings_t *t)
+{
+    if (t->hz) {
+        snprintf(out, len, "%lux%lu%s%u", (unsigned long)w, (unsigned long)h,
+                 t->interlaced ? "i" : "p", t->hz);
+    } else {
+        snprintf(out, len, "%lux%lu%s", (unsigned long)w, (unsigned long)h, t->interlaced ? "i" : "p");
+    }
+}
+
 capture_ctx_t *capture_hw_init_start(void)
 {
     esp_ldo_channel_handle_t ldo = NULL;
@@ -468,8 +498,9 @@ capture_ctx_t *capture_hw_init_start(void)
         vres = t.vact;
         s_cap.signal_present = true;
         capture_status_set_signal(true, t.sys_status);
-        ESP_LOGI(CAPTURE_LOG_TAG, "input %ux%u%s (htotal %u vtotal %u)", t.hact, t.vact,
-                 t.interlaced ? "i" : "p", t.htotal, t.vtotal);
+        char mode[32];
+        mode_name(mode, sizeof(mode), t.hact, t.vact, &t);
+        ESP_LOGI(CAPTURE_LOG_TAG, "input %s (htotal %u vtotal %u)", mode, t.htotal, t.vtotal);
     } else {
         ESP_LOGW(CAPTURE_LOG_TAG, "no HDMI signal yet - starting at %ux%u", hres, vres);
     }
@@ -619,6 +650,7 @@ esp_err_t capture_hw_hdmi_recover(capture_ctx_t *c)
 #define HDMI_NUDGE_FIRST_MS 10000
 #define HDMI_NUDGE_MAX 3
 
+
 /*
  * Polls the bridge rather than using its interrupt line: the INT pin is not
  * wired on this adapter, and 200 ms is fast enough that a mode switch is
@@ -658,6 +690,7 @@ static void capture_monitor_task(void *arg)
         if (!valid) {
             candidate_hits = 0;
             if (had_signal) {
+                c->mode_too_fast = false;
                 ESP_LOGW(CAPTURE_LOG_TAG, "HDMI signal lost (SYS_STATUS=0x%02x)", t.sys_status);
                 had_signal = false;
                 quiet_since_us = (int64_t)esp_timer_get_time();
@@ -723,10 +756,36 @@ static void capture_monitor_task(void *arg)
             continue;
         }
 
+        /*
+         * Over the lane limit the capture task would time out and recover every
+         * few seconds forever. Say it once, per change, and let it wait. A rate
+         * read as 0 keeps the last verdict: the counter drops out for a moment
+         * while a source retrains.
+         */
+        char mode[32];
+        mode_name(mode, sizeof(mode), candidate_h, candidate_v, &t);
+        if (t.hz) {
+            const bool too_fast = !t.interlaced && mode_pixel_rate(&t) > csi_pixel_capacity();
+            if (too_fast && !c->mode_too_fast) {
+                ESP_LOGW(CAPTURE_LOG_TAG,
+                         "HDMI %s is %llu Mpixel/s, CSI carries %llu: no picture. Use 30 Hz, "
+                         "a smaller mode, or EDID 720p",
+                         mode, (unsigned long long)(mode_pixel_rate(&t) / 1000000u),
+                         (unsigned long long)(csi_pixel_capacity() / 1000000u));
+            } else if (!too_fast && c->mode_too_fast && had_signal) {
+                ESP_LOGI(CAPTURE_LOG_TAG, "HDMI %s fits the CSI link; restarting capture", mode);
+                c->pending_hres = candidate_h;
+                c->pending_vres = candidate_v;
+                c->mode_change_pending = true;
+                xSemaphoreGive(c->csi_done_sem);
+            }
+            c->mode_too_fast = too_fast;
+        }
+        capture_status_set_input(t.hz, c->mode_too_fast);
+
         const bool mode_differs = (candidate_h != c->hres || candidate_v != c->vres);
         if (!had_signal) {
-            ESP_LOGI(CAPTURE_LOG_TAG, "HDMI signal back: %ux%u%s", candidate_h, candidate_v,
-                     t.interlaced ? "i" : "p");
+            ESP_LOGI(CAPTURE_LOG_TAG, "HDMI signal back: %s", mode);
             had_signal = true;
             /* Restart the receiver even at an unchanged size: while the source
              * was away the CSI side stopped delivering. */
@@ -735,8 +794,7 @@ static void capture_monitor_task(void *arg)
             c->mode_change_pending = true;
             xSemaphoreGive(c->csi_done_sem);
         } else if (mode_differs && !c->mode_change_pending) {
-            ESP_LOGI(CAPTURE_LOG_TAG, "input mode %ux%u -> %ux%u%s", c->hres, c->vres, candidate_h,
-                     candidate_v, t.interlaced ? "i" : "p");
+            ESP_LOGI(CAPTURE_LOG_TAG, "input mode %ux%u -> %s", c->hres, c->vres, mode);
             c->pending_hres = candidate_h;
             c->pending_vres = candidate_v;
             c->mode_change_pending = true;

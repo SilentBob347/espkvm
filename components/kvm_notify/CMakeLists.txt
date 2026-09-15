@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "kvm_notify.c"
+    SRCS "kvm_notify.c" "tg_chats.c"
     INCLUDE_DIRS "include"
     REQUIRES
         esp_common

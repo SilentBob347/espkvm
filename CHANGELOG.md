@@ -7,6 +7,69 @@ bumps the patch).
 
 ## [Unreleased]
 
+## [0.49.0] - 2026-09-15
+
+### Added
+- **Find the Telegram chat instead of looking up its id.** Settings >
+  Notifications has a Find chats button under the chat id. The device asks
+  Telegram who wrote to the bot lately and lists those chats; a click fills in
+  the id. Write to the bot or add it to a group first.
+- **An old BIOS keyboard mode.** Settings > Input. Some pre-UEFI BIOSes do not
+  see a keyboard that is one part of a bigger USB device, and ours is a
+  keyboard, two mice and a drive. With this on, the target gets one boot
+  keyboard at USB 1.1 speed, like a real one, and nothing else: no mouse, no
+  media keys, no virtual media. Asked for in the comments on opennet; no such
+  board here to try it on.
+- **microSD speed is found per card.** The card starts at the fastest clock the
+  board allows and steps down (40, 20, 10, 4, 2 MHz) when it fails to mount, a
+  test read fails, or a transfer fails later. While the card is idle the device
+  tries one step up again, waiting longer after each miss. The Media panel shows
+  the bus speed; Settings > Storage > microSD speed caps it by hand.
+- **The log and the console say when the input mode is too fast.** Two MIPI
+  lanes carry about 1080p30. A source sending more gave no frames at all, and the
+  log filled with timeouts and recoveries that could not help. The device now
+  reads the refresh rate from the HDMI bridge (`input 1920x1080p30`), and when a
+  mode is over the limit it says so once, in the log and over the picture.
+- **Upload speed chart and a Cancel button.** The Media panel draws the upload's
+  speed across its progress, like a file copy does, and can stop it. Reloading
+  or closing the tab during an upload asks first.
+
+### Fixed
+- **Uploads are 50 times faster.** A card image came in at 64 KB/s whatever the
+  link: the TCP receive queue held 6 packets, and a full queue dropped the rest
+  until a timer ran. Now over Ethernet it is ~3.5 MB/s. The card is also
+  written by a separate task, so the network does not wait for it. While an
+  upload or an update runs, the video drops to 2 frames a second: the encoder
+  and the Ethernet chip share a bus, and at full frame rate the upload fell to
+  0.3 MB/s.
+- **microSD at 40 MHz on the Function EV and the P4-ETH, and the P4-ETH can
+  write it.** On both boards the slot's pins are powered by one of the chip's
+  LDOs, which was never turned on. Without it the card only read at 4 MHz, and
+  on the P4-ETH's rev 1.3 chip writes timed out, so the card was read-only. Now
+  the card reads ~8.5 MB/s and writes ~4 MB/s on both, and the console uploads
+  to it on the P4-ETH too (~1.5 MB/s over Ethernet, with the video paused).
+- **microSD writes in WiFi mode, and no more hangs.** Now and then a write
+  never finished, and the SD host controller then took no command on either
+  slot - with the WiFi chip on the other slot, the device restarted. The SD
+  driver from ESP-IDF 6.1 is now kept in the project with fixes: a failed
+  transfer resets the controller, stops the card and is tried again, and a
+  write with missing blocks no longer reports success. The card is writable in
+  WiFi mode again.
+- **A pre-3.0 board could restart with the console open.** The H.264 encoder
+  task on those chips never gave its core away while frames kept coming, and
+  the task watchdog restarts a core whose idle task has not run for 10 s. After
+  a few such restarts the boot guard swapped to the other firmware slot. Seen on
+  a P4-ETH.
+- **An upload error said "the card may be full" when the network stalled.** It
+  now says what happened.
+- **Switching the network left the restart screen counting.** The device comes
+  back on another address, which the page cannot follow. The screen now says so
+  and offers a link by name and a Reload button.
+- **A big upload over WiFi took the WiFi down.** Internal RAM ran out: TLS
+  buffers lived there, and so did the WiFi chip's transfer buffers. Both now
+  come from PSRAM. A 20 MB upload over WiFi goes through at ~130 KB/s, and
+  internal RAM stays above 90 KB free.
+
 ## [0.48.0] - 2026-09-14
 
 ### Added

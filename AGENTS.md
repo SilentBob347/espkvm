@@ -53,7 +53,7 @@ components/
   tc358743/       HDMI bridge driver (inherited; hard-won register sequence)
   video_pipeline/ CSI capture + MJPEG/H.264 encoders behind one frame store
   kvm_hid/        composite USB HID (kbd/abs+rel mouse/consumer) + MSC
-  kvm_storage/    microSD mount + virtual-media (serves an image read-only)
+  kvm_storage/    microSD mount, bus speed, virtual media (images served read-only)
   kvm_config/     NVS settings, capability registry, thermal guard
   kvm_web/        HTTPS server, REST + WebSocket, auth, self-signed TLS, OTA
   kvm_net/        Ethernet + mDNS + WireGuard (kvm_wg) + native Tailscale (kvm_ts)
@@ -117,12 +117,13 @@ docs/             HARDWARE-NOTES.md (measured facts), PORTING.md
   come from `psa_generate_key` + `mbedtls_pk_copy_from_psa`; the X.509 writer
   takes no RNG callback. PBKDF2 and HMAC are hand-rolled over PSA (not public in
   mbedTLS 4).
-- **microSD is marginal on the reference board.** Reads run at **4 MHz**
-  (`host.max_freq_khz` in `kvm_storage.c`) because every multi-block read fails
-  at 20 MHz; writes are disabled entirely (`kvm_storage_writable()` returns
-  false) and the card is prepared in an external reader. Mount uses a retry
-  loop; it never blocks start-up. A known ESP32-P4 SD limitation - see
-  `HARDWARE-NOTES.md`.
+- **microSD needs the slot's IO LDO.** On the P4-ETH and the Function EV the
+  slot's pins are powered by LDO_VO4 (`CONFIG_KVM_SD_IO_LDO_CHAN`). With it on
+  the bus runs at 40 MHz and writes work, even on rev 1.3; without it reads fail
+  above 4 MHz and rev 1.3 cannot write. The clock is found per card: a ladder
+  40/20/10/4/2 MHz at mount, a step down on any failed transfer, probes back up
+  when idle. `kvm_storage_writable()` is true on rev 3.x or with the LDO set.
+  Mount uses a retry loop; it never blocks start-up.
 - **H.264 needs HTTPS in the browser** (WebCodecs is a secure-context API) and,
   on this chip revision, an ISP colour-convert detour the encoder forces
   (rev < 3.0). It is a bandwidth win, not a frame-rate win.

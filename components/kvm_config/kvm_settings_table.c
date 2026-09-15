@@ -55,6 +55,8 @@ static const char *const s_engage_choices[] = {"click", "hover"};
    the value is stored as an index, so reordering would move everyone's setting. */
 static const char *const s_layout_choices[] = {"en_us", "ru_ru", "cs_cz", "uk_ua", "lt_lt"};
 static const char *const s_media_choices[] = {"auto", "cdrom", "disk"};
+/* Index 1.. must match k_sd_steps_khz[] in kvm_storage.c. */
+static const char *const s_sd_speed_choices[] = {"auto", "40 MHz", "20 MHz", "10 MHz", "4 MHz", "2 MHz"};
 static const char *const s_log_choices[] = {"error", "warn", "info", "debug"};
 static const char *const s_side_choices[] = {"left", "right"};
 /* One line per panel the firmware can drive, controller and size together.
@@ -203,6 +205,15 @@ static const kvm_setting_t s_settings[] = {
     },
 
     {
+        .key = "usb_legacy", .section = "input", .type = KVM_VT_BOOL,
+        .title = "Old BIOS keyboard",
+        .help = "For an old BIOS that does not see the keyboard. The target then gets one "
+                "plain keyboard at USB 1.1 speed, the way a real keyboard looks. The mouse, "
+                "media keys and virtual media are off while this is on. Takes effect after "
+                "a restart.",
+        .def = 0, .requires_cap = KVM_CAP_HID, .flags = KVM_SF_REBOOT,
+    },
+    {
         .key = "scroll_inv", .section = "input", .type = KVM_VT_BOOL,
         .title = "Invert scroll wheel",
         .def = 0, .requires_cap = KVM_CAP_HID,
@@ -304,7 +315,8 @@ static const kvm_setting_t s_settings[] = {
     {
         .key = "notify_tg_chat", .section = "notify", .type = KVM_VT_STR,
         .title = "Telegram chat id",
-        .help = "The chat to message - your user id, or a group/channel id.",
+        .help = "The chat to message. Find chats lists the ones that wrote to the bot lately; "
+                "a group or channel id typed in works too.",
         .def_str = "", .max_len = 32, .requires_cap = KVM_CAP_NOTIFY,
     },
     {
@@ -334,6 +346,16 @@ static const kvm_setting_t s_settings[] = {
                 "\"disk\" only if a file is misnamed. Handing over the whole card is picked "
                 "in the Media panel, not here. Switching the type re-attaches the USB drive.",
         .min = 0, .max = ENUM_MAX(s_media_choices), .def = 0, .choices = s_media_choices, .requires_cap = KVM_CAP_MSC,
+    },
+    {
+        .key = "sd_speed", .section = "storage", .type = KVM_VT_ENUM,
+        .title = "microSD speed",
+        .help = "The fastest clock the card is tried at. \"auto\" starts at what the board "
+                "supports and steps down by itself when the card fails to mount, fails a test "
+                "read, or fails a transfer later. Pick a lower one for a card that keeps "
+                "stepping down. Takes effect after a restart.",
+        .min = 0, .max = ENUM_MAX(s_sd_speed_choices), .def = 0, .choices = s_sd_speed_choices,
+        .requires_cap = KVM_CAP_MSC, .flags = KVM_SF_REBOOT,
     },
     {
         /* The active medium, chosen from the Media panel (a file name, or "@rescue"

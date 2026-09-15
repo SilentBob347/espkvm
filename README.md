@@ -798,6 +798,8 @@ other. The measurements are in
 keyboard, which firmware screens understand. An absolute pointer, so a click
 lands where it was aimed whatever the target's mouse acceleration is doing. A
 relative pointer, for software that captures the cursor. And the consumer keys.
+An old BIOS that does not find the keyboard inside that bundle can be given a
+keyboard alone, at USB 1.1 speed: Settings &rarr; Input &rarr; Old BIOS keyboard.
 Everything is released when the browser goes away, so a dropped connection cannot
 leave a key held down on the target.
 
@@ -834,25 +836,42 @@ A **microSD card** holds the large ones: format it FAT32, up to 4 GB per file,
 and partition it **MBR, not GPT** - the FAT driver here has no 64-bit LBA and so
 cannot read a GPT card at all. Tools default to GPT above 32 GB, which is why a
 large card can be formatted correctly and still not be seen.
-Below chip revision 3.0 the card is read-only - that SD controller reads
-reliably, but its writes time out - so prepare it in an ordinary card reader. On
-revision 3.x the card is writable and the console can upload to it - but check
-the card can be written at all before relying on it. A 256 GB SDXC card here
-mounted, read and served images perfectly and refused every single write (a CRC
-error with the controller reporting a transmit FIFO underrun), while a 32 GB
-card on the same board and firmware wrote normally. One card of each, so not a
-law - but the shape of it is familiar: Flipper Zero tell their users the same
-thing for their own SD slot, which is to pick a well-tested card from a known
-maker rather than the fastest or largest one, and that no-name cards are where
-the trouble is. So if you mean to upload to the card, a small branded SDHC card
-- 16 to 32 GB is more space than this needs - is the safer buy, and a large
-card is still fine as read-only media prepared in a reader.
+The console uploads images to the card and deletes them - but check the card
+can be written at all before relying on it. A 256 GB SDXC card here mounted,
+read and served images perfectly and refused every single write (a CRC error
+with the controller reporting a transmit FIFO underrun), while a 32 GB card on
+the same board and firmware wrote normally. One card of each, so not a law -
+but Flipper Zero tell their users the same thing for their own SD slot: pick a
+well-tested card from a known maker rather than the fastest or largest one. So
+if you mean to upload to the card, a small branded SDHC card - 16 to 32 GB is
+more space than this needs - is the safer buy.
 
-Writing, where it works, is slow:
-the bus runs at 4 MHz on every board (raising it collapses throughput - see
-`kvm_storage.c`), which is ~1.5 MB/s to read and about **66 KB/s** to write. An
-installer image is hours that way, so the card reader stays the sensible route
-for anything large; uploading is for the small images.
+How fast the card runs depends on the board, so the device finds it per card.
+It starts at the fastest clock the board allows and steps down (40, 20, 10, 4,
+2 MHz) when the card fails to mount, fails a test read, or fails a transfer
+later. While the card is idle it tries one step up again. The Media panel shows
+the speed it settled at, and Settings > Storage > microSD speed caps it by hand.
+
+The two boards checked on hardware power the slot's pins from one of the chip's
+LDOs (`CONFIG_KVM_SD_IO_LDO_CHAN`). Until it was switched on, the card only
+read at 4 MHz on both, and did not write at all on the P4-ETH's rev 1.3 chip.
+
+| Board | Bus | Card read | Card write | Upload from the console (Ethernet) |
+|---|---|---|---|---|
+| Function EV (rev 3.2) | 40 MHz | ~8.5 MB/s | ~4 MB/s | ~3.5 MB/s |
+| P4-ETH (rev 1.3) | 40 MHz | ~9 MB/s | ~4 MB/s | ~1.5 MB/s |
+
+The upload is slower than the card because TLS runs on the chip, and the rev 1.3
+chip is the slower one. **Pause the video while you upload.** The encoder and the
+Ethernet chip share a bus, and at full frame rate the upload drops to a tenth.
+So the video goes down to 2 frames a second by itself for the length of an
+upload, which still costs about half; the pause button next to the upload gives
+the full speed back.
+
+The other boards are not checked yet. They start at 4 MHz (~1.5 MB/s read). On
+rev 3.x they write at 2-4 MHz; on a pre-3.0 chip the card stays read-only, so
+prepare it in a reader. If a board has the same LDO wiring, setting
+`CONFIG_KVM_SD_IO_LDO_CHAN` in its board file lets it go faster and write.
 
 The **device's own flash** holds one small image, in a 4 MB partition: enough for
 iPXE, memtest or a DOS floppy, with no card at all. Flash writes work on every

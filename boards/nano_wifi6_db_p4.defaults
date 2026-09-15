@@ -75,6 +75,8 @@ CONFIG_KVM_WIFI=y
 CONFIG_ESP_HOSTED_P4X_C5_DEV_BOARD_FUNC_BOARD=y
 CONFIG_SLAVE_IDF_TARGET_ESP32C5=y
 CONFIG_ESP_HOSTED_CP_TARGET_ESP32C5=y
+# SDIO transport buffers in PSRAM: internal RAM runs out under a large upload.
+CONFIG_EH_HOST_PORT_DMA_PREFER_SPIRAM=y
 # As everywhere else: esp-hosted must not bring the link up from its boot
 # constructor, or it races the microSD for the one SD host controller.
 CONFIG_ESP_HOSTED_AUTO_CALL_INIT_BEFORE_APP_MAIN=n

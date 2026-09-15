@@ -11,6 +11,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "esp_attr.h"
 #include "esp_check.h"
 #include "esp_eth.h"
 #include "esp_event.h"
@@ -19,6 +20,8 @@
 #include "lwip/sockets.h"
 #include "mdns.h"
 #include "sdkconfig.h"
+#include "soc/lp_clkrst_reg.h"
+#include "soc/soc.h"
 
 #include "kvm_caps.h"
 #include "kvm_ipv6.h"
@@ -242,6 +245,26 @@ void kvm_net_advertise(const char *hostname)
         advertised = true;
         ESP_LOGI(TAG, "mDNS: %s://%s.local/", tls ? "https" : "http", hostname);
     }
+}
+
+/*
+ * Reset the Ethernet MAC before every software restart and panic reset.
+ *
+ * IDF resets the SDMMC DMA on the way down but not the EMAC one (esp-idf #19085).
+ * The EMAC keeps writing received frames into the old run's buffers, which are
+ * the next boot's memory. This is not what rolls OTA updates back: those went on
+ * at the same rate with the reset in (2 of 12).
+ * Linked with --wrap=esp_restart_noos, which esp_restart() and the panic handler
+ * both end in. Remove once IDF resets the EMAC in esp_system_reset_modules_on_exit:
+ * https://github.com/espressif/esp-idf/issues/19085
+ */
+void __real_esp_restart_noos(void) __attribute__((noreturn));
+
+IRAM_ATTR void __wrap_esp_restart_noos(void)
+{
+    SET_PERI_REG_MASK(LP_CLKRST_HP_SDMMC_EMAC_RST_CTRL_REG, LP_CLKRST_RST_EN_EMAC);
+    CLEAR_PERI_REG_MASK(LP_CLKRST_HP_SDMMC_EMAC_RST_CTRL_REG, LP_CLKRST_RST_EN_EMAC);
+    __real_esp_restart_noos();
 }
 
 #if CONFIG_KVM_ETH_ENABLE

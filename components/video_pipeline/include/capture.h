@@ -27,6 +27,8 @@ typedef struct {
     uint32_t ppa_us;           /**< mean PPA colour-conversion time per frame (H.264) */
     uint32_t encoder_busy_pct; /**< share of wall clock spent in conversion + encode */
     uint8_t sys_status;    /**< raw TC358743 SYS_STATUS, for diagnostics */
+    uint8_t input_hz;      /**< refresh rate the source sends, 0 when unknown */
+    bool too_fast;         /**< the mode needs more than the CSI lanes carry */
     /**
      * How long the picture has been one flat colour, in ms; 0 when it is not.
      *

@@ -17,7 +17,7 @@ project(espkvm)
 idf_build_get_property(kvm_built_components BUILD_COMPONENTS)
 file(GLOB kvm_component_dirs ${CMAKE_CURRENT_LIST_DIR}/components/*)
 # esp_tinyusb sits in components/ but is vendored, so it is not ours to police.
-set(kvm_vendored_components esp_tinyusb)
+set(kvm_vendored_components esp_tinyusb esp_driver_sdmmc sdmmc)
 set(kvm_own_components main)
 foreach(dir ${kvm_component_dirs})
     if(IS_DIRECTORY ${dir})

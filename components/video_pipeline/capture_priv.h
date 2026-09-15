@@ -104,6 +104,8 @@ typedef struct {
     volatile bool mode_change_pending;
     volatile uint32_t pending_hres;
     volatile uint32_t pending_vres;
+    /** The input mode needs more than the CSI lanes carry: no frames will come. */
+    volatile bool mode_too_fast;
 } capture_ctx_t;
 
 /**
@@ -226,6 +228,8 @@ uint32_t capture_h264_estimated_fps(uint32_t w, uint32_t h);
 
 void capture_status_set_mode(uint32_t hres, uint32_t vres, bool interlaced);
 void capture_status_set_signal(bool present, uint8_t sys_status);
+/** Measured input refresh (0 unknown), and whether the mode is over the lane limit. */
+void capture_status_set_input(uint8_t hz, bool too_fast);
 void capture_status_add_frame(size_t bytes);
 /** An encoded frame identical to the last published one. */
 void capture_status_add_skipped(void);

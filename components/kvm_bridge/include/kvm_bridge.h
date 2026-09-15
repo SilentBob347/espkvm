@@ -50,6 +50,7 @@ typedef struct {
     bool hdmi_mode;  /**< HDMI rather than DVI */
     bool sync;       /**< the bridge has locked to the sync */
     bool interlaced;
+    uint8_t hz;      /**< measured refresh rate, 0 when the bridge cannot tell */
 } kvm_bridge_timings_t;
 
 /**

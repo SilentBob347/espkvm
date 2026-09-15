@@ -503,6 +503,7 @@ static esp_err_t coproc_wifi_up(void)
      * opens the transport, esp_hosted_connect_to_slave completes the handshake with the
      * C6 (older versions did both from esp_hosted_init). */
     sdio_add_internal_pullups();
+    kvm_storage_set_other_slot_busy(true); /* no microSD speed probes from here on */
     int herr = esp_hosted_init();
     if (herr == 0) {
         herr = esp_hosted_connect_to_slave();
