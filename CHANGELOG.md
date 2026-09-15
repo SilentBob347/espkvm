@@ -7,12 +7,24 @@ bumps the patch).
 
 ## [Unreleased]
 
+## [0.49.1] - 2026-09-15
+
 ### Changed
+- **Sign out is on the rail, under Settings.** It was only in Settings >
+  Security. It asks before it signs out.
 - **The target reads the virtual drive faster.** USB asks for 4 KB at a time,
   and a card command per 4 KB cost more than the data. A read that follows the
   last one now takes 256 KB from the card at once. The whole card reads at
   9 MB/s instead of 5.6 on both the Function EV and the P4-ETH, and an image
   file at 7.5 MB/s instead of 5.7.
+
+- **Every board with a microSD slot turns on the slot's LDO.** The schematics of
+  the NANO, NANO-WIFI6-DB, WIFI6, WIFI6-DEV-KIT, Module-DEV-KIT, WIFI6-POE-ETH,
+  Guition M3-Dev, FireBeetle 2 and VIEWE P4-Pi all power the slot's pins from
+  LDO 4, as on the Function EV and the P4-ETH. So they start at 40 MHz too, and
+  the rev 1.3 ones can write the card. Not run on those boards yet; the card
+  steps down by itself if one does not keep up. The M5Stack Unit PoE-P4 is left
+  as it was.
 
 ### Fixed
 - **Switching the medium did not reach the target.** The drive stayed the old

@@ -852,9 +852,11 @@ It starts at the fastest clock the board allows and steps down (40, 20, 10, 4,
 later. While the card is idle it tries one step up again. The Media panel shows
 the speed it settled at, and Settings > Storage > microSD speed caps it by hand.
 
-The two boards checked on hardware power the slot's pins from one of the chip's
-LDOs (`CONFIG_KVM_SD_IO_LDO_CHAN`). Until it was switched on, the card only
-read at 4 MHz on both, and did not write at all on the P4-ETH's rev 1.3 chip.
+Every supported board with a microSD slot powers the slot's pins from one of
+the chip's LDOs, LDO 4 (`CONFIG_KVM_SD_IO_LDO_CHAN`) - read off each vendor's
+schematic. Until it was switched on, the card only read at 4 MHz, and on a
+rev 1.3 chip it did not write at all. The two boards below are the ones checked
+on hardware.
 
 | Board | Bus | Card read | Card write | Upload from the console (Ethernet) |
 |---|---|---|---|---|
@@ -871,10 +873,10 @@ So the video goes down to 2 frames a second by itself for the length of an
 upload, which still costs about half; the pause button next to the upload gives
 the full speed back.
 
-The other boards are not checked yet. They start at 4 MHz (~1.5 MB/s read). On
-rev 3.x they write at 2-4 MHz; on a pre-3.0 chip the card stays read-only, so
-prepare it in a reader. If a board has the same LDO wiring, setting
-`CONFIG_KVM_SD_IO_LDO_CHAN` in its board file lets it go faster and write.
+The other boards with a slot start at 40 MHz as well and write on both chip
+revisions, but nobody has run them on hardware yet - if the card steps down on
+yours, the Media panel says so, and a report helps. The M5Stack Unit PoE-P4 has
+no slot of its own; the card on its add-on is on other pins and stays at 4 MHz.
 
 The **device's own flash** holds one small image, in a 4 MB partition: enough for
 iPXE, memtest or a DOS floppy, with no card at all. Flash writes work on every

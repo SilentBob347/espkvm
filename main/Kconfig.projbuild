@@ -268,13 +268,16 @@ menu "ESP-KVM"
         config KVM_SD_IO_LDO_CHAN
             int "On-chip LDO that powers the microSD IO pins (-1 if none)"
             range -1 4
-            default 4 if KVM_BOARD_WAVESHARE_ETH || KVM_BOARD_FUNCEV
-            default -1
+            default -1 if KVM_BOARD_M5_POE_P4 || KVM_BOARD_OTHER
+            default 4
             help
-                The ESP32-P4 LDO channel wired to the slot's IO supply, if any
-                (the Function EV and the P4-ETH power VDD_IO_5 from LDO_VO4, so
-                4). Without it on, the card only reads at a low clock, and on
-                pre-3.0 chips does not write at all. -1 on boards not checked.
+                The ESP32-P4 LDO channel wired to the slot's IO supply, if any.
+                Every supported board with a microSD slot powers VDD_IO_5 and the
+                card's pull-ups from LDO_VO4, so 4 (read off each vendor's
+                schematic; checked on hardware on the Function EV and the P4-ETH).
+                Without it on, the card only reads at a low clock, and on pre-3.0
+                chips does not write at all. -1 on the M5Stack Unit PoE-P4, whose
+                card is on an add-on wired to other pins, and on unknown boards.
 
         config KVM_SD_MAX_KHZ
             int "Fastest microSD clock to try, kHz"
