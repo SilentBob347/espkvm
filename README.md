@@ -852,6 +852,15 @@ It starts at the fastest clock the board allows and steps down (40, 20, 10, 4,
 later. While the card is idle it tries one step up again. The Media panel shows
 the speed it settled at, and Settings > Storage > microSD speed caps it by hand.
 
+The card can be swapped while the device runs. The slot is checked every five
+seconds, so a card pulled out disappears from the target within about that, and
+one pushed in mounts and is offered again without a restart. Pulling a card the
+target is reading is safe in the sense that the device notices and drops the
+drive; whatever was reading it will report an error, as it would with any USB
+drive yanked mid-read. On a board using WiFi, the ESP32-C6 holds the other slot
+of the same SD host, so there a card put in after boot is picked up only on the
+next restart - a card taken out is still noticed.
+
 Every supported board with a microSD slot powers the slot's pins from one of
 the chip's LDOs, LDO 4 (`CONFIG_KVM_SD_IO_LDO_CHAN`) - read off each vendor's
 schematic. Until it was switched on, the card only read at 4 MHz, and on a

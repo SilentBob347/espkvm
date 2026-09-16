@@ -64,6 +64,8 @@ static const uint32_t k_sd_steps_khz[] = {40000, 20000, 10000, 4000, 2000};
 #define SD_PROBE_FIRST_S 30
 #define SD_PROBE_MAX_S 600
 #define SD_PROBE_IDLE_US (5 * 1000 * 1000LL)
+/* Failures closer together than this are one bad moment, not one rung each. */
+#define SD_STEP_BURST_US (500 * 1000LL)
 #define SD_PROBE_SECTORS 2048 /* 1 MB: short, a target read may be waiting */
 #define SD_MOUNT_TEST_SECTORS 4096
 
@@ -76,6 +78,12 @@ static volatile uint32_t s_probe_wait_s = SD_PROBE_FIRST_S;
 static volatile int64_t s_climbed_us;
 static volatile bool s_other_slot_busy;
 static volatile bool s_probing; /* the probe sets the next wait itself */
+static volatile bool s_presence_poll; /* the slot watcher is asking, not reading data */
+static volatile bool s_slot_recheck;  /* a real transfer failed; look at the slot now */
+static volatile bool s_bus_released;  /* the SD host went to the co-processor */
+static void (*s_slot_cb)(void);       /* told when a card appears or goes away */
+
+static esp_err_t sd_mount(int attempts);
 
 static uint32_t sd_step_below(uint32_t khz)
 {
@@ -112,6 +120,11 @@ void kvm_storage_set_other_slot_busy(bool busy)
     s_other_slot_busy = busy;
 }
 
+void kvm_storage_set_slot_changed_cb(void (*cb)(void))
+{
+    s_slot_cb = cb;
+}
+
 void sdmmc_espkvm_transfer_started(sdmmc_card_t *card)
 {
     (void)card;
@@ -122,10 +135,27 @@ void sdmmc_espkvm_transfer_started(sdmmc_card_t *card)
 void sdmmc_espkvm_transfer_failed(sdmmc_card_t *card, bool write, esp_err_t err)
 {
     s_bus_errors++;
+    if (s_presence_poll) {
+        return; /* only asking whether a card is still there; nothing to slow down */
+    }
+    /* A card the target is reading never goes idle, so the watcher's five idle
+     * seconds never arrive. A read that failed is the other way to find out the
+     * card left: ask the watcher to look on its next tick. */
+    s_slot_recheck = true;
     const uint32_t lower = sd_step_below(s_bus_khz);
     if (lower >= s_bus_khz) {
         return;
     }
+    /* The driver retries a failed transfer at once and the media layer retries
+     * after that, so one bad moment arrives as a burst of failures. Step one rung
+     * per burst: a card pulled out of the slot otherwise walks the bus from
+     * 40 MHz down to the floor in ten milliseconds. */
+    static int64_t s_stepped_us;
+    const int64_t failed_us = esp_timer_get_time();
+    if (s_stepped_us && failed_us - s_stepped_us < SD_STEP_BURST_US) {
+        return;
+    }
+    s_stepped_us = failed_us;
     if (s_probing) {
         ESP_LOGW(TAG, "microSD %s failed at %lu kHz (0x%x); back to %lu kHz",
                  write ? "write" : "read", (unsigned long)s_bus_khz, err, (unsigned long)lower);
@@ -829,12 +859,93 @@ bool kvm_storage_shares_wifi_slot(void)
 
 /* Win back a step while the card is idle. Holds the media lock so the card is
  * not unmounted under the test; a target read waits the second it takes. */
+/*
+ * Is a card still in the slot? A card that was pulled out answers nothing, so
+ * one sector, asked twice, tells them apart. The read is deliberately invisible:
+ * it does not slow the bus on failure and does not count as the card being used,
+ * or every poll would postpone the speed climb that waits for an idle card.
+ */
+static bool sd_present(void)
+{
+    static uint8_t *s_probe_buf;
+    if (!s_probe_buf) {
+        s_probe_buf = heap_caps_aligned_alloc(64, MEDIA_BLOCK_SIZE, MALLOC_CAP_SPIRAM);
+        if (!s_probe_buf) {
+            return true; /* no memory to ask with; assume the card is there */
+        }
+    }
+    const int64_t io = s_last_io_us;
+    s_presence_poll = true;
+    bool here = false;
+    for (int i = 0; !here && i < 2; i++) {
+        here = sdmmc_read_sectors(s_card, s_probe_buf, 0, 1) == ESP_OK;
+    }
+    s_presence_poll = false;
+    s_last_io_us = io;
+    return here;
+}
+
+/* The one line that says a card is up: the boot prints it, so does a card that
+ * appeared in the slot later. */
+static void sd_log_mounted(void)
+{
+    kvm_storage_status_t st;
+    kvm_storage_status(&st);
+    ESP_LOGI(TAG, "mounted %s: %llu MB total, %llu MB free, bus %lu kHz", st.name,
+             (unsigned long long)(st.total_bytes / (1024 * 1024)),
+             (unsigned long long)(st.free_bytes / (1024 * 1024)), (unsigned long)st.bus_khz);
+}
+
 static void sd_probe_task(void *arg)
 {
     (void)arg;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(5000));
         const int64_t now = esp_timer_get_time();
+        /*
+         * The slot, watched. A card pushed in after boot should work without a
+         * restart, and one pulled out should stop being offered to the target.
+         * Only while the SD host is ours and either the card is idle or a real
+         * transfer just failed, so this never lands in the middle of the
+         * target's reads. A card handed to the target whole is still checked -
+         * it is one sector, and a card that left the slot has to disappear from
+         * the target too.
+         */
+        if (!s_bus_released && s_media_lock &&
+            (s_slot_recheck || now - s_last_io_us >= SD_PROBE_IDLE_US) &&
+            xSemaphoreTake(s_media_lock, 0) == pdTRUE) {
+            s_slot_recheck = false;
+            bool changed = false;
+            if (!s_card && !s_handed_over && !s_other_slot_busy) {
+                /*
+                 * One quiet try; the next tick is five seconds away. Not while
+                 * the co-processor holds the other slot: mounting re-initialises
+                 * the SD host both slots share, so on a board running WiFi a card
+                 * put in after boot waits for the next restart. Losing one is
+                 * still noticed - that is a read, not a re-init.
+                 */
+                if (sd_mount(1) == ESP_OK) {
+                    while (!sd_read_test(SD_MOUNT_TEST_SECTORS) && s_bus_khz > SD_FLOOR_KHZ) {
+                    }
+                    sd_log_mounted();
+                    changed = true;
+                }
+            } else if (s_card && !sd_present()) {
+                ESP_LOGW(TAG, "microSD is gone; the slot reads as empty now");
+                media_close_locked();
+                s_handed_over = false; /* nothing left to hand anyone */
+                (void)esp_vfs_fat_sdcard_unmount(MOUNT_POINT, s_card);
+                s_card = NULL;
+                s_ra_len = 0;
+                s_next_probe_us = 0;
+                changed = true;
+            }
+            xSemaphoreGive(s_media_lock);
+            if (changed && s_slot_cb) {
+                /* Re-offers the chosen image, or shows the drive as empty. */
+                s_slot_cb();
+            }
+        }
         if (s_climbed_us && now - s_climbed_us > (int64_t)SD_PROBE_MAX_S * 1000000) {
             s_probe_wait_s = SD_PROBE_FIRST_S; /* that speed held; start patient again */
             s_climbed_us = 0;
@@ -875,22 +986,33 @@ static void sd_probe_task(void *arg)
     }
 }
 
-esp_err_t kvm_storage_init(void)
+/*
+ * Bring the card up: bus, slot, mount, with the clock ladder. @p attempts is how
+ * many tries it gets - the boot gives it ten, the slot watcher one, because it
+ * comes back in five seconds anyway.
+ */
+/*
+ * The sdmmc driver, the FAT layer and the GPIO driver all shout when a mount
+ * finds nothing. That is the normal answer for an empty slot, and the watcher
+ * asks every five seconds, so the shouting is turned off for the length of a
+ * quiet try - about five lines a tick that would otherwise fill the log ring.
+ */
+static void sd_driver_logs(esp_log_level_t level)
 {
-    if (!s_media_lock) {
-        s_media_lock = xSemaphoreCreateMutex();
+    static const char *const tags[] = {"vfs_fat_sdmmc", "sdmmc_common", "sdmmc_sd",
+                                       "sdmmc_io",      "SD_HOST",      "gpio"};
+    for (size_t i = 0; i < sizeof(tags) / sizeof(tags[0]); i++) {
+        esp_log_level_set(tags[i], level);
     }
-    /* The built-in rescue image lives here; independent of the card, so this is
-     * found whether or not a card ever mounts. Absent on an older table. */
-    if (!s_rescue) {
-        s_rescue = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, 0x40, "rescue");
-        if (s_rescue) {
-            ESP_LOGI(TAG, "rescue partition: %lu KB, %s", (unsigned long)(s_rescue->size / 1024),
-                     rescue_has_image() ? "image present" : "empty");
-        }
-    }
-    slot_power_claim();
+}
 
+static esp_err_t sd_mount(int attempts)
+{
+    /* One attempt is the slot watcher; the boot gets its usual noise. */
+    const bool quiet = attempts == 1;
+    if (quiet) {
+        sd_driver_logs(ESP_LOG_NONE);
+    }
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
     host.slot = kvm_storage_sd_slot();
     /*
@@ -953,7 +1075,7 @@ esp_err_t kvm_storage_init(void)
     s_next_probe_us = 0;
     s_climbed_us = 0;
     s_probe_wait_s = SD_PROBE_FIRST_S;
-    for (int attempt = 1; attempt <= SD_MOUNT_ATTEMPTS; attempt++) {
+    for (int attempt = 1; attempt <= attempts; attempt++) {
         /* Two failures at one clock step it down; the floor keeps what is left. */
         if (attempt > 1 && attempt % 2 == 1 && s_bus_khz > SD_FLOOR_KHZ) {
             s_bus_khz = sd_step_below(s_bus_khz);
@@ -971,8 +1093,44 @@ esp_err_t kvm_storage_init(void)
          * intermittently, so a card that gives an invalid response on one
          * attempt often initialises cleanly on the next. A genuinely absent card
          * simply times out every attempt and is reported empty below. */
-        ESP_LOGI(TAG, "mount attempt %d/%d at %lu kHz failed: %s", attempt, SD_MOUNT_ATTEMPTS,
-                 (unsigned long)s_bus_khz, esp_err_to_name(err));
+        if (attempts > 1) {
+            /* A single attempt is the slot watcher asking an empty slot; saying
+             * so every five seconds would fill the log with nothing. */
+            ESP_LOGI(TAG, "mount attempt %d/%d at %lu kHz failed: %s", attempt, attempts,
+                     (unsigned long)s_bus_khz, esp_err_to_name(err));
+        }
+    }
+
+    if (quiet) {
+        sd_driver_logs(CONFIG_LOG_DEFAULT_LEVEL);
+    }
+    return err;
+}
+
+esp_err_t kvm_storage_init(void)
+{
+    if (!s_media_lock) {
+        s_media_lock = xSemaphoreCreateMutex();
+    }
+    /* The built-in rescue image lives here; independent of the card, so this is
+     * found whether or not a card ever mounts. Absent on an older table. */
+    if (!s_rescue) {
+        s_rescue = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, 0x40, "rescue");
+        if (s_rescue) {
+            ESP_LOGI(TAG, "rescue partition: %lu KB, %s", (unsigned long)(s_rescue->size / 1024),
+                     rescue_has_image() ? "image present" : "empty");
+        }
+    }
+    slot_power_claim();
+
+    const esp_err_t err = sd_mount(SD_MOUNT_ATTEMPTS);
+    s_bus_released = false;
+
+    /* Watches the slot whether or not a card is in it right now. */
+    static bool s_probe_started;
+    if (!s_probe_started) {
+        s_probe_started =
+            xTaskCreate(sd_probe_task, "sd_probe", 6144, NULL, tskIDLE_PRIORITY + 1, NULL) == pdPASS;
     }
 
     if (err != ESP_OK) {
@@ -986,16 +1144,7 @@ esp_err_t kvm_storage_init(void)
      * pass is clean or there is nothing slower to try. */
     while (!sd_read_test(SD_MOUNT_TEST_SECTORS) && s_bus_khz > SD_FLOOR_KHZ) {
     }
-    static bool s_probe_started;
-    if (!s_probe_started) {
-        s_probe_started =
-            xTaskCreate(sd_probe_task, "sd_probe", 3072, NULL, tskIDLE_PRIORITY + 1, NULL) == pdPASS;
-    }
-    kvm_storage_status_t st;
-    kvm_storage_status(&st);
-    ESP_LOGI(TAG, "mounted %s: %llu MB total, %llu MB free, bus %lu kHz", st.name,
-             (unsigned long long)(st.total_bytes / (1024 * 1024)),
-             (unsigned long long)(st.free_bytes / (1024 * 1024)), (unsigned long)st.bus_khz);
+    sd_log_mounted();
     return ESP_OK;
 }
 
@@ -1014,6 +1163,7 @@ esp_err_t kvm_storage_bus_suspend(bool *was_mounted)
     esp_err_t err = esp_vfs_fat_sdcard_unmount(MOUNT_POINT, s_card);
     s_card = NULL;
     s_next_probe_us = 0;
+    s_bus_released = true; /* the slot watcher must keep its hands off it now */
     xSemaphoreGive(s_media_lock);
     if (was_mounted) {
         *was_mounted = true;

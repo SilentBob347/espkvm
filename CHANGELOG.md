@@ -7,6 +7,24 @@ bumps the patch).
 
 ## [Unreleased]
 
+### Added
+- **The microSD card can be swapped while the device runs.** The slot is watched
+  every five seconds while the card is idle. Pull the card and the drive goes
+  away from the target; put one in and it mounts and is offered again, no
+  restart. A card pulled while the target is reading it is noticed too - the
+  read that failed wakes the watcher, which is the only way to tell, because a
+  card in use never sits idle for five seconds. On a board running WiFi the
+  co-processor holds the other half of the same SD host, so a card put in after
+  boot still waits for a restart there; losing one is noticed on every board.
+
+### Fixed
+- **A card pulled out of the slot dragged the bus down to 2 MHz.** One yank
+  arrives as a burst of failed reads, and each one stepped the clock down a
+  rung: 40 MHz to the floor in ten milliseconds. A burst now costs one rung.
+- **An empty slot logged an error about the medium it could not offer**, and,
+  once the slot was watched, five lines of driver complaint every five seconds.
+  An empty slot is a normal state and now says nothing.
+
 ## [0.49.1] - 2026-09-15
 
 ### Changed

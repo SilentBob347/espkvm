@@ -98,6 +98,13 @@ static void apply_log_level(void)
 
 static void apply_media_selection(void);
 
+/* A card pushed into the slot, or pulled out of it, changes what can be offered
+   to the target - the same reconciliation a settings change goes through. */
+static void on_slot_changed(void)
+{
+    apply_media_selection();
+}
+
 static void on_setting_changed(const char *key, void *user)
 {
     (void)user;
@@ -196,7 +203,7 @@ static void apply_media_selection(void)
     if (want && strcmp(image, "@rescue") == 0) {
         cdrom = media_is_cdrom(image);
         err = kvm_storage_media_select_rescue(cdrom);
-    } else if (want && strcmp(image, "@wholesd") == 0) {
+    } else if (want && strcmp(image, "@wholesd") == 0 && sd.mounted) {
         err = kvm_storage_media_select_whole_sd();
     } else if (want && sd.mounted) {
         cdrom = media_is_cdrom(image);
@@ -633,6 +640,7 @@ void app_main(void)
     if (net_mode == KVM_NET_ETHERNET || !kvm_storage_shares_wifi_slot()) {
         ESP_LOGI(TAG, "boot: storage (SDMMC slot %d)", kvm_storage_sd_slot());
         ESP_ERROR_CHECK(kvm_storage_init());
+        kvm_storage_set_slot_changed_cb(on_slot_changed);
     } else {
         ESP_LOGI(TAG, "boot: storage skipped (WiFi mode; the co-processor holds the SD slot)");
     }

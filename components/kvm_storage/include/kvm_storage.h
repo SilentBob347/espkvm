@@ -66,6 +66,13 @@ bool kvm_storage_shares_wifi_slot(void);
 void kvm_storage_set_other_slot_busy(bool busy);
 
 /**
+ * Called when a card appears in the slot or stops answering, so the caller can
+ * offer the chosen medium to the target or show the drive as empty. Runs on the
+ * storage task, not in an interrupt.
+ */
+void kvm_storage_set_slot_changed_cb(void (*cb)(void));
+
+/**
  * Hand the SD slot back so a WiFi co-processor on the same slot can use it.
  * Ejects any exposed image and unmounts the card. @p was_mounted,
  * if not NULL, is set to whether a card was actually mounted, so the caller
