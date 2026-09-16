@@ -3072,6 +3072,9 @@ static void stream_worker_task(void *arg)
      * a new viewer would otherwise stare at nothing. The loop below then waits
      * on the sequence number as usual, so this replays the frame only once. */
     uint32_t last_seq = video_frame_seq() - 1u;
+    /* The opening boundary rides with the first part's headers; every part after
+     * that is opened by the boundary the part before it already sent. */
+    bool opened = false;
 
     while (1) {
         if (!video_frame_wait_new(last_seq, 500)) {
@@ -3117,20 +3120,31 @@ static void stream_worker_task(void *arg)
             continue;
         }
 
+        /*
+         * The boundary that ENDS a part goes out with the part, not with the
+         * next one. A browser showing multipart/x-mixed-replace in an <img>
+         * paints a frame when it sees the boundary after it, so leaving that
+         * boundary for the next frame means the picture on screen is always the
+         * frame before the last one sent. That is invisible at 30 fps and very
+         * visible on a still screen, where the encoder publishes only when
+         * something changes: in a BIOS every keystroke showed the screen as it
+         * was before the keystroke, until the 5-second keepalive caught up.
+         */
         int hl = snprintf(hdr, sizeof(hdr),
-                          "--frame\r\n"
+                          "%s"
                           "Content-Type: image/jpeg\r\n"
                           "Content-Length: %zu\r\n"
                           "\r\n",
-                          f.len);
+                          opened ? "" : "--frame\r\n", f.len);
         esp_err_t se = ESP_FAIL;
         if (hl > 0 && hl < (int)sizeof(hdr)) {
             se = httpd_resp_send_chunk(req, hdr, hl);
             if (se == ESP_OK) {
+                opened = true;
                 se = httpd_resp_send_chunk(req, (const char *)f.data, f.len);
             }
             if (se == ESP_OK) {
-                se = httpd_resp_send_chunk(req, "\r\n", 2);
+                se = httpd_resp_send_chunk(req, "\r\n--frame\r\n", 11);
             }
         }
         video_frame_release(&f);

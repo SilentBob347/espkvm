@@ -18,6 +18,14 @@ bumps the patch).
   boot still waits for a restart there; losing one is noticed on every board.
 
 ### Fixed
+- **The MJPEG picture was always one frame behind.** A browser paints a frame of
+  a multipart stream when the boundary after it arrives, and that boundary was
+  being left for the next frame. At 30 fps nobody sees it; on a still screen,
+  where a frame is only sent when something changes, it meant the console showed
+  the screen as it was *before* the last keystroke - a BIOS was almost unusable
+  through it - until the 5-second keepalive caught up. Each frame now carries
+  the boundary that ends it. Measured on hardware, same screen: the frame's
+  closing boundary went from 5.0 s after the frame to 45 ms.
 - **A card pulled out of the slot dragged the bus down to 2 MHz.** One yank
   arrives as a burst of failed reads, and each one stepped the clock down a
   rung: 40 MHz to the floor in ten milliseconds. A burst now costs one rung.
