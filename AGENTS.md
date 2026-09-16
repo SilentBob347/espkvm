@@ -7,8 +7,8 @@ it accurate; update it when the build, layout, or conventions change.
 
 ESP-KVM is an IP-KVM firmware for the **ESP32-P4** with a **TC358743** HDMI-to-CSI
 capture board: it captures the target's HDMI, presents itself over USB as a
-keyboard, mouse and (read-only) disk, and serves the whole thing to a browser
-over HTTPS. It is a heavily-rewritten fork of jrowny/p4kvm; only the TC358743
+keyboard, mouse and disk (an image read-only, the whole card read-write), and
+serves the whole thing to a browser over HTTPS. It is a heavily-rewritten fork of jrowny/p4kvm; only the TC358743
 driver and the CSI-bridge programming are inherited. ESP-IDF 6.1.
 
 ## Setup, build, flash
@@ -79,6 +79,12 @@ docs/             HARDWARE-NOTES.md (measured facts), PORTING.md
   + available (probe) + enabled (setting); the UI shows a disabled control with
   the device's own reason rather than a control that fails. `net_static` and the
   disabled SD upload/delete are the examples to follow.
+- **A REST change lands in two repos.** The agent-facing skill that documents
+  this API lives in [espkvm/skills](https://github.com/espkvm/skills)
+  (`plugins/espkvm/skills/operate/SKILL.md`), and the MCP server in
+  [espkvm/mcp](https://github.com/espkvm/mcp). Change an endpoint's shape, its
+  auth, or one of its error codes and update them too - a document that drifts
+  from the API is worse than none.
 - Keep commits small and messages short and imperative, matching the log.
 - Versions come from git tags (`v.0.X.Y`); a tag triggers the CI release. Record
   user-facing changes in `CHANGELOG.md` under `[Unreleased]`.

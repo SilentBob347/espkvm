@@ -993,6 +993,22 @@ Everything the console does is available over HTTP.
 | `WS /video` | video frames, JPEG or H.264, behind a 12-byte header |
 | `WS /ws` | keyboard and pointer |
 
+### Driving it from an AI agent
+
+The screen can be read back as **exact characters** on a BIOS setup screen, a
+boot menu, memtest or a console, so a model can read a firmware menu, decide,
+and press a key. Two ways to hand that to one:
+
+- **A skill** — one document that teaches an agent the whole API, traps included:
+  [espkvm/skills](https://github.com/espkvm/skills). `/plugin marketplace add
+  espkvm/skills`, then `/plugin install espkvm@espkvm`.
+- **An MCP server** — the same calls as tools, with input and power behind
+  separate switches: [espkvm/mcp](https://github.com/espkvm/mcp).
+
+The keyboard, pointer and snapshot endpoints are off until **Agent REST API** is
+turned on in Settings &rarr; Security: it grants a program the same control the
+console has. Reading the screen, runbooks, virtual media and power do not need it.
+
 ## Repository layout
 
 ```
