@@ -7,6 +7,8 @@ bumps the patch).
 
 ## [Unreleased]
 
+## [0.50.0] - 2026-09-16
+
 ### Added
 - **The microSD card can be swapped while the device runs.** The slot is watched
   every five seconds while the card is idle. Pull the card and the drive goes
