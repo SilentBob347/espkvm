@@ -7,6 +7,22 @@ bumps the patch).
 
 ## [Unreleased]
 
+## [0.51.1] - 2026-09-17
+
+### Fixed
+- **An RSA key in a PKCS#8 file was refused** with "the private key does not
+  match the certificate", though it matched: the library compares the public key
+  each side carries, and for RSA it fills that in only for the older PKCS#1
+  encoding - while a current openssl writes PKCS#8 ("BEGIN PRIVATE KEY"). The
+  device now signs with the key and verifies with the certificate, which answers
+  the real question whatever the file looked like, and stores the key in the
+  encoding the TLS stack reads. ([#52](https://github.com/espkvm/espkvm/issues/52))
+- **A stored certificate that the TLS stack cannot use no longer takes the
+  console with it.** The pair is checked at start-up; a bad one is logged and the
+  device serves its own certificate instead.
+- A 4096-bit RSA pair does not fit in the device's settings storage, and the
+  message says so now, instead of naming an NVS error code.
+
 ## [0.51.0] - 2026-09-17
 
 ### Added

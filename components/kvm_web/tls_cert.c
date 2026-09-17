@@ -660,7 +660,53 @@ static esp_err_t run_gen(gen_job_t *job)
  * certificate. Parsing wants several kilobytes of stack - more than an HTTP
  * handler has - so, like generation, it runs on a task of its own.
  */
-static esp_err_t validate_pair(const char *cert_pem, const char *key_pem, char *err, size_t errlen)
+/*
+ * Does this key sign what that certificate verifies?
+ *
+ * mbedtls_pk_check_pair() compares the public key each context carries, and an
+ * RSA key read from a PKCS#8 PEM ("BEGIN PRIVATE KEY", which is what a current
+ * openssl writes) carries none in mbedTLS 4.1 - only the PKCS#1 form ("BEGIN RSA
+ * PRIVATE KEY") fills it in. So the same key is accepted in one encoding and
+ * refused in the other. Signing something and verifying it with the certificate
+ * asks the real question instead, whatever the encoding was.
+ */
+static bool signs_for(mbedtls_pk_context *key, mbedtls_pk_context *cert_pk)
+{
+    unsigned char hash[32];
+    memset(hash, 0x5a, sizeof(hash));
+    unsigned char sig[MBEDTLS_PK_SIGNATURE_MAX_SIZE];
+    size_t sig_len = 0;
+    if (mbedtls_pk_sign(key, MBEDTLS_MD_SHA256, hash, sizeof(hash), sig, sizeof(sig), &sig_len) != 0) {
+        return false;
+    }
+    return mbedtls_pk_verify(cert_pk, MBEDTLS_MD_SHA256, hash, sizeof(hash), sig, sig_len) == 0;
+}
+
+/*
+ * The key as mbedTLS writes it: PKCS#1 for RSA, SEC1 for EC. What goes into
+ * storage, whatever the operator sent - see signs_for() for why the encoding
+ * matters here.
+ */
+static char *key_as_pem(mbedtls_pk_context *key)
+{
+    enum { BYO_KEY_PEM_MAX = 4096 };
+    char *out = calloc(1, BYO_KEY_PEM_MAX);
+    if (!out) {
+        return NULL;
+    }
+    if (mbedtls_pk_write_key_pem(key, (unsigned char *)out, BYO_KEY_PEM_MAX) != 0) {
+        free(out);
+        return NULL;
+    }
+    return out;
+}
+
+/*
+ * @p normalised, when not NULL, receives the key re-encoded the way the TLS
+ * stack reads it - the caller frees it.
+ */
+static esp_err_t validate_pair(const char *cert_pem, const char *key_pem, char *err, size_t errlen,
+                               char **normalised)
 {
     mbedtls_x509_crt crt;
     mbedtls_pk_context key;
@@ -672,14 +718,29 @@ static esp_err_t validate_pair(const char *cert_pem, const char *key_pem, char *
         snprintf(err, errlen, "the certificate could not be parsed (is it PEM?)");
         goto done;
     }
-    if (mbedtls_pk_parse_key(&key, (const unsigned char *)key_pem, strlen(key_pem) + 1, NULL, 0) !=
-        0) {
-        snprintf(err, errlen, "the private key could not be parsed (an unencrypted PEM key?)");
+    int rc = mbedtls_pk_parse_key(&key, (const unsigned char *)key_pem, strlen(key_pem) + 1, NULL, 0);
+    if (rc != 0) {
+        snprintf(err, errlen, "the private key could not be parsed (an unencrypted PEM key?) [-0x%04x]",
+                 (unsigned)-rc);
         goto done;
     }
-    if (mbedtls_pk_check_pair(&crt.pk, &key) != 0) {
-        snprintf(err, errlen, "the private key does not match the certificate");
+    rc = mbedtls_pk_check_pair(&crt.pk, &key);
+    if (rc != 0 && !signs_for(&key, &crt.pk)) {
+        /* The code is worth showing: a pair that really does not match and a
+         * library that refuses the key for another reason read the same
+         * otherwise. */
+        snprintf(err, errlen, "the private key does not match the certificate [-0x%04x, %u bits]",
+                 (unsigned)-rc, (unsigned)mbedtls_pk_get_bitlen(&key));
+        ESP_LOGW(TAG, "check_pair: -0x%04x; cert %u bits, key %u bits", (unsigned)-rc,
+                 (unsigned)mbedtls_pk_get_bitlen(&crt.pk), (unsigned)mbedtls_pk_get_bitlen(&key));
         goto done;
+    }
+    if (normalised) {
+        *normalised = key_as_pem(&key);
+        if (!*normalised) {
+            snprintf(err, errlen, "out of memory rewriting the private key");
+            goto done;
+        }
     }
     res = ESP_OK;
 done:
@@ -693,6 +754,7 @@ typedef struct {
     const char *key;
     char *err;
     size_t errlen;
+    char **normalised;
     esp_err_t result;
     SemaphoreHandle_t done;
 } byo_job_t;
@@ -700,14 +762,16 @@ typedef struct {
 static void byo_validate_task(void *arg)
 {
     byo_job_t *job = (byo_job_t *)arg;
-    job->result = validate_pair(job->cert, job->key, job->err, job->errlen);
+    job->result = validate_pair(job->cert, job->key, job->err, job->errlen, job->normalised);
     xSemaphoreGive(job->done);
     vTaskDelete(NULL);
 }
 
-static esp_err_t run_validate(const char *cert, const char *key, char *err, size_t errlen)
+static esp_err_t run_validate(const char *cert, const char *key, char *err, size_t errlen,
+                              char **normalised)
 {
-    byo_job_t job = {.cert = cert, .key = key, .err = err, .errlen = errlen, .result = ESP_FAIL};
+    byo_job_t job = {.cert = cert, .key = key, .err = err, .errlen = errlen,
+                     .normalised = normalised, .result = ESP_FAIL};
     job.done = xSemaphoreCreateBinary();
     if (!job.done) {
         return ESP_ERR_NO_MEM;
@@ -760,13 +824,16 @@ esp_err_t kvm_tls_byo_set(const char *cert_pem, const char *key_pem, char *err, 
     }
 
     char reason[128] = {0};
-    esp_err_t vr = run_validate(cert_pem, key_pem, reason, sizeof(reason));
+    char *key_store = NULL;
+    esp_err_t vr = run_validate(cert_pem, key_pem, reason, sizeof(reason), &key_store);
     if (vr != ESP_OK) {
         if (err) {
             snprintf(err, errlen, "%s", reason[0] ? reason : "the certificate could not be validated");
         }
         return vr;
     }
+    /* Stored as mbedTLS writes it, not as it arrived: see signs_for(). */
+    const char *key_to_store = key_store ? key_store : key_pem;
 
     nvs_handle_t h;
     esp_err_t e = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h);
@@ -778,14 +845,27 @@ esp_err_t kvm_tls_byo_set(const char *cert_pem, const char *key_pem, char *err, 
     }
     e = nvs_set_str(h, NVS_KEY_BYO_CERT, cert_pem);
     if (e == ESP_OK) {
-        e = nvs_set_str(h, NVS_KEY_BYO_KEY, key_pem);
+        e = nvs_set_str(h, NVS_KEY_BYO_KEY, key_to_store);
     }
     if (e == ESP_OK) {
         e = nvs_commit(h);
     }
     nvs_close(h);
+    free(key_store);
     if (e != ESP_OK && err) {
-        snprintf(err, errlen, "could not be stored (%s)", esp_err_to_name(e));
+        if (e == ESP_ERR_NVS_NOT_ENOUGH_SPACE) {
+            /* Settings live in a 24 KB NVS partition, and a 4096-bit RSA pair in
+             * PEM is over 5 KB of it. Say so, and say what does fit - moving the
+             * partition would need a serial flash on every device out there. */
+            nvs_stats_t st = {0};
+            (void)nvs_get_stats(NULL, &st);
+            snprintf(err, errlen,
+                     "no room left in the device's settings storage for a key this size "
+                     "(%u of %u entries free). An EC (P-256) key or RSA 2048 fits.",
+                     (unsigned)st.free_entries, (unsigned)st.total_entries);
+        } else {
+            snprintf(err, errlen, "could not be stored (%s)", esp_err_to_name(e));
+        }
     }
     return e;
 }
@@ -994,7 +1074,19 @@ esp_err_t kvm_tls_identity_get(kvm_tls_identity_t *out, bool allow_byo)
     if (allow_byo) {
         char *byo_cert = NULL;
         char *byo_key = NULL;
-        if (nvs_load_byo(&byo_cert, &byo_key) == ESP_OK) {
+        char why[128] = {0};
+        if (nvs_load_byo(&byo_cert, &byo_key) == ESP_OK &&
+            run_validate(byo_cert, byo_key, why, sizeof(why), NULL) != ESP_OK) {
+            /* Stored once, useless now - written by an older firmware, or the
+             * storage is damaged. The console must still come up, so it does,
+             * with the device's own certificate. */
+            ESP_LOGE(TAG, "the stored certificate cannot be used (%s); serving the device's own", why);
+            free(byo_cert);
+            free(byo_key);
+            byo_cert = NULL;
+            byo_key = NULL;
+        }
+        if (byo_cert && byo_key) {
             out->cert_pem = byo_cert;
             out->cert_len = strlen(byo_cert) + 1;
             out->key_pem = byo_key;
