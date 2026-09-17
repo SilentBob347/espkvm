@@ -45,6 +45,14 @@ typedef struct {
 } kvm_video_status_t;
 
 /**
+ * Something else is holding PSRAM it could give back - the recorder's ring of
+ * frames is the one that matters - and a codec has just failed to get a buffer.
+ * The callback frees what it can; the codec then tries once more.
+ */
+typedef void (*capture_memory_pressure_cb_t)(void);
+void capture_set_memory_pressure_cb(capture_memory_pressure_cb_t cb);
+
+/**
  * Probe the codecs and build the H.264 encoder while internal RAM is still in
  * one piece. Call early in boot, before the network starts. capture_start()
  * does it itself when this was not called.

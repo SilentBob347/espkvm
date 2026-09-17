@@ -7,6 +7,23 @@ bumps the patch).
 
 ## [Unreleased]
 
+## [0.51.2] - 2026-09-17
+
+### Fixed
+- **A clip had no subtitles until the moment the button was pressed.** The
+  dashcam kept the past of the screen but not of the keyboard: cues were only
+  built while a recording ran. They are built the whole time the dashcam is on
+  now, and a clip's .srt starts where its picture starts.
+- **Two subtitle symbols came out as empty boxes.** The return and erase signs
+  (U+23CE, U+232B) are missing from common subtitle fonts; plain arrows are not.
+- **The dashcam could cost the H.264 picture.** Its ring of frames sits in the
+  middle of PSRAM, and when the target changed resolution the encoder could no
+  longer find one long enough run for its reference frame: the device fell back
+  to MJPEG for the rest of the run. Now a codec that cannot get memory asks the
+  recorder for its ring first and tries again, and the recorder stays out of the
+  way for half a minute afterwards. Seen on a Function EV: 7.7 MB of PSRAM free,
+  longest run 4.6 MB, encoder needed more.
+
 ## [0.51.1] - 2026-09-17
 
 ### Fixed

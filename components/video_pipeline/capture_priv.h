@@ -149,6 +149,9 @@ void capture_flat_forget(void);
 /** How long the screen has been one colour, in ms; 0 when it is not. */
 uint32_t capture_flat_ms(void);
 
+/** Ask whoever holds spare PSRAM to give it back. False when nobody listens. */
+bool capture_release_memory(void);
+
 /** Whether the flat colour is black or nearly. Meaningful while flat. */
 bool capture_flat_dark(void);
 

@@ -148,6 +148,22 @@ void capture_status_tick(void)
     taskEXIT_CRITICAL(&s_mu);
 }
 
+static capture_memory_pressure_cb_t s_pressure_cb;
+
+void capture_set_memory_pressure_cb(capture_memory_pressure_cb_t cb)
+{
+    s_pressure_cb = cb;
+}
+
+bool capture_release_memory(void)
+{
+    if (!s_pressure_cb) {
+        return false;
+    }
+    s_pressure_cb();
+    return true;
+}
+
 void capture_status_get(kvm_video_status_t *out)
 {
     if (!out) {

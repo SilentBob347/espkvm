@@ -385,6 +385,19 @@ static esp_err_t encoder_open(uint32_t w, uint32_t h)
     esp_h264_err_t herr = esp_h264_enc_hw_new(&cfg, &s_enc);
     if (herr != ESP_H264_ERR_OK || !s_enc) {
         /*
+         * The reference frame wants one long run of PSRAM, and the recorder's
+         * ring of frames is usually what breaks the longest one in two. Ask for
+         * it back and build the encoder again before giving up on H.264 - the
+         * dashcam can wait, a picture cannot.
+         */
+        if (capture_release_memory()) {
+            ESP_LOGW(CAPTURE_LOG_TAG, "h264 encoder: no memory; asked the recorder for its buffer");
+            vTaskDelay(pdMS_TO_TICKS(200));
+            herr = esp_h264_enc_hw_new(&cfg, &s_enc);
+        }
+    }
+    if (herr != ESP_H264_ERR_OK || !s_enc) {
+        /*
          * Print BOTH heaps, and internal first: the encoder takes its working
          * buffers from internal memory, of which this chip has about half a
          * megabyte in total, while PSRAM sits there with tens of megabytes

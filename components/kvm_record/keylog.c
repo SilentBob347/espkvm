@@ -26,9 +26,12 @@
 #define MOD_SHIFT (MOD_LSHIFT | MOD_RSHIFT)
 #define MOD_GUI (MOD_LGUI | MOD_RGUI)
 
+/* Symbols a player is likely to have a glyph for: the return and erase signs of
+ * the keyboard world (U+23CE, U+232B) are missing from common subtitle fonts and
+ * came out as empty boxes on screen. An arrow is in every font there is. */
 #define DOT "\xe2\x80\xa2"       /* • */
-#define ENTER "\xe2\x8f\x8e"     /* ⏎ */
-#define BACKSPACE "\xe2\x8c\xab" /* ⌫ */
+#define ENTER "\xe2\x86\xb5"     /* ↵ */
+#define BACKSPACE "\xe2\x86\x90" /* ← */
 
 static const char *key_name(uint8_t k, char *buf, size_t cap)
 {

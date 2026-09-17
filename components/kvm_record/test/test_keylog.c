@@ -76,7 +76,7 @@ int main(void)
     type_us(0, "root");
     tap(400 * MS, 0, 0x28);
     keylog_flush(&k);
-    expect("typed word", (const char *const[]){"Typed: root\xe2\x8f\x8e"}, 1);
+    expect("typed word", (const char *const[]){"Typed: root\xe2\x86\xb5"}, 1);
     if (n == 1 && (starts[0] != 0 || ends[0] != 400 * MS + 1500 * MS)) {
         failures++;
         printf("FAIL typed word timing: %lld..%lld\n", starts[0], ends[0]);
@@ -88,7 +88,7 @@ int main(void)
     type_us(0, "root");
     tap(400 * MS, 0, 0x28);
     keylog_flush(&k);
-    expect("masked word", (const char *const[]){"Typed: \xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\xe2\x8f\x8e"}, 1);
+    expect("masked word", (const char *const[]){"Typed: \xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\xe2\x86\xb5"}, 1);
 
     /* Russian layout: the keys that type "ghbdtn" on US type "привет". */
     n = 0;
@@ -117,7 +117,7 @@ int main(void)
     tap(250 * MS, 0, 0x2a);
     type_us(5000 * MS, "c");
     keylog_tick(&k, 9000 * MS);
-    expect("gap and backspace", (const char *const[]){"Typed: ab\xe2\x8c\xab", "Typed: c"}, 2);
+    expect("gap and backspace", (const char *const[]){"Typed: ab\xe2\x86\x90", "Typed: c"}, 2);
 
     /* Win pressed and released alone; Shift alone says nothing. */
     n = 0;

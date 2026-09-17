@@ -432,19 +432,22 @@ which is worth having before the board does.
 
 ### Companion boards
 
+The capture board is what turns the target's HDMI into something the ESP32-P4 can
+read. Either of these two does it; both carry the same TC358743 bridge.
+
 <table>
 <tr>
 <td width="50%"><img src="docs/board-c790.webp" alt="Geekworm C790 TC358743 HDMI-to-CSI capture board"></td>
-<td width="50%"><img src="docs/817.webp" alt="PC817 two-channel optocoupler isolation module"></td>
+<td width="50%"><img src="docs/board-waveshare-19137.webp" alt="Waveshare HDMI to CSI Adapter (19137), a TC358743 capture board with a full-size HDMI socket and a 15-pin camera ribbon"></td>
 </tr>
 <tr>
 <td valign="top">
 
-**The capture — [Geekworm C790](https://wiki.geekworm.com/C790)** (required)
+**[Geekworm C790](https://wiki.geekworm.com/C790)** (required, or the one beside it)
 
 A TC358743 HDMI -> MIPI CSI-2 bridge that turns the target's HDMI output into a
 camera stream the ESP32-P4 can read. Any other TC358743 capture board should do
-just as well: the firmware talks to that chip, not to the board around it. The Waveshare adapter below is one that has been run.
+just as well: the firmware talks to that chip, not to the board around it.
 
 It also brings the bridge's I2S audio out on a 5-pin connector of its own, and
 Geekworm puts a cable for it in the box. Nothing reads it yet; the pinout and
@@ -463,12 +466,15 @@ black screen at 1080p60, that is the first thing to suspect. Use its 15-pin
 </td>
 <td valign="top">
 
-**ATX power control — an optocoupler module** (optional)
+**[Waveshare HDMI to CSI Adapter](https://www.waveshare.com/wiki/HDMI_to_CSI_Adapter)** (19137)
 
-A small board that presses the target's power and reset buttons and senses the
-power LED without a direct electrical connection. A relay board does the two
-buttons just as well, but cannot sense the LED. Wiring for both is in
-[docs/wiring.md](docs/wiring.md).
+The same TC358743 bridge on Waveshare's board, so the firmware treats it exactly
+like the C790. A full-size HDMI input, a 15-pin Raspberry Pi camera connector
+that also powers it, and the bridge's I2S audio on the pin header.
+
+Confirmed by [@deltorek112](https://github.com/deltorek112) on the
+ESP32-P4-WIFI6-POE-ETH: 1080p over H.264 at 23 fps
+([issue #51](https://github.com/espkvm/espkvm/issues/51)).
 
 </td>
 </tr>
@@ -476,16 +482,15 @@ buttons just as well, but cannot sense the LED. Wiring for both is in
 
 <table>
 <tr>
-<td width="50%"><img src="docs/board-waveshare-19137.webp" alt="Waveshare HDMI to CSI Adapter (19137), a TC358743 capture board with a full-size HDMI socket and a 15-pin camera ribbon"></td>
+<td width="50%"><img src="docs/817.webp" alt="PC817 two-channel optocoupler isolation module"></td>
 <td valign="top">
 
-**The capture, another way — [Waveshare HDMI to CSI Adapter](https://www.waveshare.com/wiki/HDMI_to_CSI_Adapter)** (19137)
+**ATX power control — an optocoupler module** (optional)
 
-The same TC358743 bridge on Waveshare's board, so the firmware treats it exactly
-like the C790. A full-size HDMI input, a 15-pin Raspberry Pi camera connector
-that also powers it, and the bridge's I2S audio on the pin header. Confirmed by [@deltorek112](https://github.com/deltorek112) on the
-ESP32-P4-WIFI6-POE-ETH: 1080p over H.264 at 23 fps
-([issue #51](https://github.com/espkvm/espkvm/issues/51)).
+A small board that presses the target's power and reset buttons and senses the
+power LED without a direct electrical connection. A relay board does the two
+buttons just as well, but cannot sense the LED. Wiring for both is in
+[docs/wiring.md](docs/wiring.md).
 
 </td>
 </tr>

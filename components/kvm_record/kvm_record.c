@@ -108,6 +108,8 @@ static volatile bool s_feed_running;
 static volatile bool s_dashcam;
 static volatile bool s_dashcam_no_memory; /* switched on, but the ring did not fit */
 static volatile bool s_feed_resync;     /* drop until a keyframe: the ring was cleared */
+/* Set when a codec could not get memory: the ring stays gone for a while. */
+static volatile int64_t s_ring_hold_until_us;
 
 /* Writer state - only the writer task touches these once it runs. */
 static FILE *s_file;
@@ -167,6 +169,9 @@ typedef struct {
 #define KEY_EVENTS 128
 static QueueHandle_t s_key_events;
 static volatile bool s_subs_on;
+/* Cues are being built for the dashcam's past, with no file to write them to. */
+static volatile bool s_cues_on;
+static SemaphoreHandle_t s_keylog_mu;
 static FILE *s_srt;
 static int s_srt_index;
 static char s_srt_path[112];
@@ -262,7 +267,7 @@ static uint64_t card_free_bytes(void)
 
 static void on_hid_report(const usb_hid_obs_t *report)
 {
-    if (!s_subs_on || !s_key_events) {
+    if ((!s_subs_on && !s_cues_on) || !s_key_events) {
         return;
     }
     const key_event_t ev = {.report = *report, .at_us = esp_timer_get_time()};
@@ -294,23 +299,27 @@ static bg_cue_t *s_bg_cues; /* a ring in PSRAM, oldest at s_bg_cue_head */
 static int s_bg_cue_head;
 static int s_bg_cue_count;
 
+/* Keep a cue for later: the dashcam's past has no file open yet. */
+static void cue_remember(int64_t start_us, int64_t end_us, const char *text)
+{
+    if (s_bg_cues) {
+        const int at = (s_bg_cue_head + s_bg_cue_count) % BG_CUES;
+        s_bg_cues[at] = (bg_cue_t){.start_us = start_us, .end_us = end_us};
+        snprintf(s_bg_cues[at].text, BG_CUE_TEXT, "%s", text);
+        if (s_bg_cue_count < BG_CUES) {
+            s_bg_cue_count++;
+        } else {
+            s_bg_cue_head = (s_bg_cue_head + 1) % BG_CUES;
+        }
+    }
+}
+
 static void on_cue(void *user, int64_t start_us, int64_t end_us, const char *text)
 {
     (void)user;
-    if (s_background) {
-        if (s_bg_cues) {
-            const int at = (s_bg_cue_head + s_bg_cue_count) % BG_CUES;
-            s_bg_cues[at] = (bg_cue_t){.start_us = start_us, .end_us = end_us};
-            snprintf(s_bg_cues[at].text, BG_CUE_TEXT, "%s", text);
-            if (s_bg_cue_count < BG_CUES) {
-                s_bg_cue_count++;
-            } else {
-                s_bg_cue_head = (s_bg_cue_head + 1) % BG_CUES;
-            }
-        }
-        return;
-    }
     if (!s_srt) {
+        /* No file: this is the dashcam's past, kept in case a clip wants it. */
+        cue_remember(start_us, end_us, text);
         return;
     }
     /* A key pressed before the first frame arrived shows at the very start. */
@@ -447,10 +456,18 @@ static void close_srt(void)
     }
 }
 
-/* Feed what arrived to the cue builder. Writer task only. */
+/*
+ * Feed what arrived to the cue builder. The writer does this while it records;
+ * the feed task does it the rest of the time, so the dashcam's past has
+ * keystrokes in it. The lock is for the moment a recording starts or stops,
+ * when both tasks could reach for the same cue builder.
+ */
 static void drain_key_events(int64_t now_us)
 {
-    if (!s_subs_on) {
+    if (!s_subs_on && !s_cues_on) {
+        return;
+    }
+    if (s_keylog_mu && xSemaphoreTake(s_keylog_mu, pdMS_TO_TICKS(200)) != pdTRUE) {
         return;
     }
     key_event_t ev;
@@ -477,6 +494,39 @@ static void drain_key_events(int64_t now_us)
         }
     }
     keylog_tick(&s_keylog, now_us);
+    if (s_keylog_mu) {
+        xSemaphoreGive(s_keylog_mu);
+    }
+}
+
+/* The cue builder, started from the settings. Under s_ctl or at start-up. */
+static bool keylog_begin(void)
+{
+    const keylog_mode_t subs = (keylog_mode_t)kvm_setting_int("rec_subs");
+    if (subs == KEYLOG_OFF || !s_key_events) {
+        return false;
+    }
+    const kvm_setting_t *layout = kvm_setting_find("kbd_layout");
+    const int li = kvm_setting_int("kbd_layout");
+    const char *layout_id =
+        (layout && layout->choices && li >= 0 && li <= layout->max) ? layout->choices[li] : "en_us";
+    keylog_init(&s_keylog, subs, kvm_setting_bool("rec_clicks"), layout_id, on_cue, NULL);
+    xQueueReset(s_key_events);
+    return true;
+}
+
+/* Cues kept for the past, written into an open .srt from @p from_us. */
+static void replay_cues(int64_t from_us)
+{
+    if (!s_srt || !s_bg_cues) {
+        return;
+    }
+    for (int i = 0; i < s_bg_cue_count; i++) {
+        const bg_cue_t *c = &s_bg_cues[(s_bg_cue_head + i) % BG_CUES];
+        if (c->end_us > from_us) {
+            on_cue(NULL, c->start_us, c->end_us, c->text);
+        }
+    }
 }
 
 /* ---- the ring ------------------------------------------------------------------ */
@@ -566,6 +616,10 @@ static void feed_task(void *arg)
             }
             xSemaphoreGive(s_ctl);
         }
+        /* Nobody is writing a file, so the cues are this task's to build. */
+        if (!s_active && s_cues_on) {
+            drain_key_events(esp_timer_get_time());
+        }
         if (s_feed_resync) {
             s_feed_resync = false;
             need_key = true;
@@ -586,6 +640,12 @@ static void feed_task(void *arg)
              * still wants it: the dashcam may have been switched off a moment ago
              * precisely to free it. */
             if (video_frame_payload() != VIDEO_PAYLOAD_H264 || (!s_dashcam && !s_active)) {
+                vTaskDelay(pdMS_TO_TICKS(500));
+                last_seq = video_frame_seq();
+                continue;
+            }
+            if (esp_timer_get_time() < s_ring_hold_until_us) {
+                /* A codec just failed for want of memory; leave it room. */
                 vTaskDelay(pdMS_TO_TICKS(500));
                 last_seq = video_frame_seq();
                 continue;
@@ -1178,6 +1238,23 @@ static void on_card_leaving(const char *why)
     }
 }
 
+/*
+ * A codec could not get its buffers. The dashcam's ring is the largest thing
+ * this component holds and the likeliest reason PSRAM has no long run left, so
+ * give it back and stay out of the way for half a minute. A recording in
+ * progress keeps its ring - dropping that would lose the file being written,
+ * and the codec switch that follows ends the recording cleanly anyway.
+ */
+static void on_memory_pressure(void)
+{
+    if (s_active || !s_ring_buf) {
+        return;
+    }
+    s_ring_hold_until_us = esp_timer_get_time() + 30 * 1000000LL;
+    ring_free();
+    ESP_LOGW(TAG, "gave the frame ring back: a codec needed the memory");
+}
+
 void kvm_record_init(void)
 {
     if (!s_ctl) {
@@ -1185,8 +1262,10 @@ void kvm_record_init(void)
         s_writer_done = xSemaphoreCreateBinary();
         s_ring_mu = xSemaphoreCreateMutex();
         s_ring_ready = xSemaphoreCreateBinary();
+        s_keylog_mu = xSemaphoreCreateMutex();
     }
     kvm_storage_set_fs_leaving_cb(on_card_leaving);
+    capture_set_memory_pressure_cb(on_memory_pressure);
     if (!s_key_events) {
         s_key_events = xQueueCreateWithCaps(KEY_EVENTS, sizeof(key_event_t), MALLOC_CAP_SPIRAM);
     }
@@ -1342,25 +1421,27 @@ static esp_err_t start(uint32_t max_seconds, const char *event_title, uint32_t p
     /* A timelapse's clock is not the wall clock, so subtitles would not line up. */
     if (subs != KEYLOG_OFF && s_key_events && !every_s && background) {
         /* The dashcam keeps its cues in memory; a clip writes its own .srt. */
-        const kvm_setting_t *layout = kvm_setting_find("kbd_layout");
-        const int li = kvm_setting_int("kbd_layout");
-        const char *layout_id =
-            (layout && layout->choices && li >= 0 && li <= layout->max) ? layout->choices[li] : "en_us";
-        keylog_init(&s_keylog, subs, kvm_setting_bool("rec_clicks"), layout_id, on_cue, NULL);
-        xQueueReset(s_key_events);
-        s_bg_cues = heap_caps_calloc(BG_CUES, sizeof(bg_cue_t), MALLOC_CAP_SPIRAM);
-        s_bg_cue_head = 0;
-        s_bg_cue_count = 0;
-        s_subs_on = s_bg_cues != NULL;
+        if (!s_bg_cues) {
+            s_bg_cues = heap_caps_calloc(BG_CUES, sizeof(bg_cue_t), MALLOC_CAP_SPIRAM);
+            s_bg_cue_head = 0;
+            s_bg_cue_count = 0;
+        }
+        s_subs_on = s_bg_cues && keylog_begin();
     } else if (subs != KEYLOG_OFF && s_key_events && !every_s) {
-        const kvm_setting_t *layout = kvm_setting_find("kbd_layout");
-        const int li = kvm_setting_int("kbd_layout");
-        const char *layout_id =
-            (layout && layout->choices && li >= 0 && li <= layout->max) ? layout->choices[li] : "en_us";
-        keylog_init(&s_keylog, subs, kvm_setting_bool("rec_clicks"), layout_id, on_cue, NULL);
-        xQueueReset(s_key_events);
+        /* A clip keeps its own cue builder: the one the dashcam was running
+         * holds the past, and that past is written into the file below. */
+        const bool keep_past = event_title && s_cues_on;
+        if (!keep_past) {
+            (void)keylog_begin();
+        }
         open_srt(rel);
         s_subs_on = s_srt != NULL;
+        if (s_subs_on && keep_past && have_past) {
+            /* What was pressed before the button, timed from the clip's first
+             * frame like everything else in the file. */
+            s_part_t0_us = first.at_us;
+            replay_cues(first.at_us);
+        }
     }
 
     /* The dashcam's own writing is not indexed: a clip is cut from it later, and
@@ -1573,6 +1654,22 @@ void record_set_dashcam(bool on)
     xSemaphoreTake(s_ctl, portMAX_DELAY);
     s_dashcam = on;
     s_dashcam_no_memory = false;
+    /* Keystrokes are part of the past too: start building cues now, not when
+     * the clip starts, or a clip's subtitles would begin at the button. */
+    if (on && !s_cues_on && !s_active) {
+        if (!s_bg_cues) {
+            s_bg_cues = heap_caps_calloc(BG_CUES, sizeof(bg_cue_t), MALLOC_CAP_SPIRAM);
+            s_bg_cue_head = 0;
+            s_bg_cue_count = 0;
+        }
+        s_cues_on = s_bg_cues && keylog_begin();
+    } else if (!on && !s_active) {
+        s_cues_on = false;
+        heap_caps_free(s_bg_cues);
+        s_bg_cues = NULL;
+        s_bg_cue_count = 0;
+        s_bg_cue_head = 0;
+    }
     if (on && !s_feed_running) {
         /* The feed takes the ring itself, once H.264 runs. */
         s_feed_running = true;
