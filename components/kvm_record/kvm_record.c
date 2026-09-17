@@ -51,6 +51,8 @@
 #include "kvm_settings.h"
 #include "kvm_storage.h"
 #include "record_priv.h"
+#include "screentext.h"
+#include "screentext_store.h"
 #include "ts_mux.h"
 #include "usb_hid.h"
 #include "video_frame.h"
@@ -168,6 +170,21 @@ static volatile bool s_subs_on;
 static FILE *s_srt;
 static int s_srt_index;
 static char s_srt_path[112];
+
+/*
+ * The screen's text, when it has any, written beside the video: "<ms>\t<the
+ * screen on one line>" whenever it changes. That is what the panel searches to
+ * find the moment a message was on screen.
+ */
+#define TEXT_EVERY_US (3 * 1000000LL)
+#define TEXT_MAX 12288
+static FILE *s_txt;
+static screentext_grid_t *s_text_grid;
+static char *s_text_buf;
+static uint32_t s_text_hash;
+static int64_t s_text_next_us;
+static int s_text_lines;
+static char s_text_path[112];
 static int64_t s_part_t0_us; /* first frame of the part, 0 until it arrives */
 static keylog_t s_keylog;
 
@@ -349,6 +366,71 @@ static void open_srt(const char *ts_rel)
     if (!s_srt) {
         ESP_LOGW(TAG, "no subtitles: could not create %s", path);
     }
+}
+
+/* ---- the screen's text ---------------------------------------------------- */
+
+static void open_txt(const char *ts_rel)
+{
+    if (!s_text_grid) {
+        return;
+    }
+    snprintf(s_text_path, sizeof(s_text_path), "%s/%.*s.txt", kvm_storage_mount_point(),
+             (int)(strlen(ts_rel) - 3), ts_rel);
+    s_txt = fopen(s_text_path, "w");
+    s_text_hash = 0;
+    s_text_next_us = 0;
+    s_text_lines = 0;
+}
+
+static void close_txt(void)
+{
+    if (s_txt) {
+        fflush(s_txt);
+        fsync(fileno(s_txt));
+        fclose(s_txt);
+        s_txt = NULL;
+        /* A picture all the way through: nothing to search, no file to keep. */
+        if (!s_text_lines) {
+            remove(s_text_path);
+        }
+    }
+}
+
+/*
+ * A reading, now and then, written when it differs from the last one. The read
+ * itself happens on the capture task; this only asks for it and takes the
+ * result, so a screen that is a picture costs a sample of pixels there.
+ */
+static void text_tick(int64_t now_us)
+{
+    if (!s_txt || !s_text_grid || !s_text_buf || now_us < s_text_next_us) {
+        return;
+    }
+    s_text_next_us = now_us + TEXT_EVERY_US;
+    screentext_request();
+    uint32_t age_ms = 0;
+    if (!screentext_latest(s_text_grid, &age_ms) || age_ms > 4000) {
+        return;
+    }
+    const size_t n = screentext_to_utf8(s_text_grid, s_text_buf, TEXT_MAX);
+    if (!n) {
+        return;
+    }
+    uint32_t hash = 2166136261u;
+    for (size_t i = 0; i < n; i++) {
+        if (s_text_buf[i] == '\n' || s_text_buf[i] == '\t') {
+            s_text_buf[i] = ' '; /* one screen, one line */
+        }
+        hash = (hash ^ (uint8_t)s_text_buf[i]) * 16777619u;
+    }
+    if (hash == s_text_hash) {
+        return;
+    }
+    s_text_hash = hash;
+    const int64_t at_ms = s_part_t0_us ? (now_us - s_part_t0_us) / 1000 : 0;
+    fprintf(s_txt, "%lld\t%s\n", (long long)at_ms, s_text_buf);
+    s_text_lines++;
 }
 
 static void close_srt(void)
@@ -980,6 +1062,12 @@ static void writer_task(void *arg)
                             open_srt(rel);
                         }
                     }
+                    if (s_txt) {
+                        close_txt();
+                        if (s_file) {
+                            open_txt(rel);
+                        }
+                    }
                     if (!s_file) {
                         s_write_failed = true;
                         set_stopped("could not start the next file on the card");
@@ -1006,6 +1094,7 @@ static void writer_task(void *arg)
             }
         }
         drain_key_events(now);
+        text_tick(now);
         if (s_file && !s_write_failed && now - synced_us >= SYNC_US) {
             synced_us = now;
             write_chunk();
@@ -1014,6 +1103,9 @@ static void writer_task(void *arg)
             if (s_srt) {
                 fflush(s_srt);
                 fsync(fileno(s_srt));
+            }
+            if (s_txt) {
+                fflush(s_txt);
             }
         }
     }
@@ -1031,6 +1123,11 @@ static void writer_task(void *arg)
         s_bg_cue_count = 0;
     }
     close_srt();
+    close_txt();
+    heap_caps_free(s_text_grid);
+    heap_caps_free(s_text_buf);
+    s_text_grid = NULL;
+    s_text_buf = NULL;
     heap_caps_free(s_chunk);
     s_chunk = NULL;
 
@@ -1266,6 +1363,16 @@ static esp_err_t start(uint32_t max_seconds, const char *event_title, uint32_t p
         s_subs_on = s_srt != NULL;
     }
 
+    /* The dashcam's own writing is not indexed: a clip is cut from it later, and
+     * the text would have to be cut with it. */
+    if (!background && kvm_setting_bool("rec_text")) {
+        s_text_grid = heap_caps_malloc(sizeof(*s_text_grid), MALLOC_CAP_SPIRAM);
+        s_text_buf = heap_caps_malloc(TEXT_MAX, MALLOC_CAP_SPIRAM);
+        if (s_text_grid && s_text_buf) {
+            open_txt(rel);
+        }
+    }
+
     portENTER_CRITICAL(&s_mu);
     if (!background) {
         memset(&s_st, 0, sizeof(s_st));
@@ -1303,6 +1410,7 @@ static esp_err_t start(uint32_t max_seconds, const char *event_title, uint32_t p
         s_st.recording = background ? s_st.recording : false;
         s_subs_on = false;
         close_srt();
+        close_txt();
         snprintf(why, why_cap, "could not start the recorder");
         xSemaphoreGive(s_ctl);
         return ESP_FAIL;

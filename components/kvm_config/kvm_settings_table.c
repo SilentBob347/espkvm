@@ -201,6 +201,22 @@ static const kvm_setting_t s_settings[] = {
         .def = 1, .requires_cap = KVM_CAP_H264,
     },
     {
+        .key = "rec_text", .section = "video", .type = KVM_VT_BOOL,
+        .title = "Save the screen's text with a recording",
+        .help = "Reads the screen as characters every few seconds while recording and writes "
+                "what it says into a .txt beside the video, so the recordings panel can search "
+                "it and jump to the moment. Only screens drawn as text can be read - a BIOS, an "
+                "installer, a console - and reading one costs about a tenth of a second.",
+        .def = 1, .requires_cap = KVM_CAP_H264,
+    },
+    {
+        .key = "rec_tl_every", .section = "video", .type = KVM_VT_INT,
+        .title = "Timelapse: seconds between frames",
+        .help = "What a timelapse started from Home Assistant, or offered first in the "
+                "recordings panel, keeps: one frame this often, played back at 25 fps.",
+        .min = 1, .max = 3600, .def = 10, .requires_cap = KVM_CAP_H264,
+    },
+    {
         .key = "rec_subs", .section = "video", .type = KVM_VT_ENUM,
         .title = "Keystrokes in recordings",
         .help = "Writes what was pressed as subtitles next to each recording (a .srt "

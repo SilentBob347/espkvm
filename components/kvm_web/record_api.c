@@ -7,6 +7,7 @@
  * and SCREENSHOTS/ are reachable here, never the rest of the card.
  */
 #include <ctype.h>
+#include <strings.h> /* strncasecmp: the search ignores case */
 #include <dirent.h>
 #include <errno.h>
 #include <stdio.h>
@@ -187,14 +188,14 @@ static bool name_ok(const char *name, const char *ext)
     return true;
 }
 
-/* "VIDEO/<name>.ts" or its ".srt", or "SCREENSHOTS/<name>.jpg" - nothing else. */
+/* "VIDEO/<name>.ts" or its ".srt"/".txt", or "SCREENSHOTS/<name>.jpg" - nothing else. */
 static bool path_ok(const char *path, bool *video)
 {
     const size_t vd = strlen(KVM_RECORD_DIR), sd = strlen(KVM_SCREENSHOT_DIR);
     if (strncmp(path, KVM_RECORD_DIR "/", vd + 1) == 0) {
         *video = true;
         return name_ok(path + vd + 1, ".ts") || name_ok(path + vd + 1, ".mp4") ||
-               name_ok(path + vd + 1, ".srt");
+               name_ok(path + vd + 1, ".srt") || name_ok(path + vd + 1, ".txt");
     }
     if (strncmp(path, KVM_SCREENSHOT_DIR "/", sd + 1) == 0) {
         *video = false;
@@ -273,16 +274,20 @@ static cJSON *list_dir(const char *dir, const char *ext, const char *ext2)
         snprintf(rel, sizeof(rel), "%s/%.48s", dir, e->d_name);
         cJSON_AddStringToObject(item, "path", rel);
         cJSON_AddNumberToObject(item, "size", (double)st.st_size);
-        /* A recording's keystroke subtitles, when it has them: same name, .srt. */
+        /* What sits beside a recording under the same name: the keystroke
+         * subtitles, and the screen's text for the search. */
         const char *dot = strrchr(full, '.');
-        if (strcmp(ext, ".ts") == 0 && dot) {
-            char srt[128];
-            snprintf(srt, sizeof(srt), "%.*s.srt", (int)(dot - full), full);
-            if (stat(srt, &st) == 0 && S_ISREG(st.st_mode)) {
-                const char *rdot = strrchr(rel, '.');
-                char srt_rel[80];
-                snprintf(srt_rel, sizeof(srt_rel), "%.*s.srt", (int)(rdot - rel), rel);
-                cJSON_AddStringToObject(item, "subtitles", srt_rel);
+        const char *rdot = strrchr(rel, '.');
+        if (strcmp(ext, ".ts") == 0 && dot && rdot) {
+            static const char *const k_side[][2] = {{".srt", "subtitles"}, {".txt", "text"}};
+            for (size_t i = 0; i < sizeof(k_side) / sizeof(k_side[0]); i++) {
+                char side[128];
+                snprintf(side, sizeof(side), "%.*s%s", (int)(dot - full), full, k_side[i][0]);
+                if (stat(side, &st) == 0 && S_ISREG(st.st_mode)) {
+                    char side_rel[80];
+                    snprintf(side_rel, sizeof(side_rel), "%.*s%s", (int)(rdot - rel), rel, k_side[i][0]);
+                    cJSON_AddStringToObject(item, k_side[i][1], side_rel);
+                }
             }
         }
         cJSON_AddItemToArray(arr, item);
@@ -351,11 +356,13 @@ static void download_task(void *arg)
         const size_t nl = strlen(name);
         const bool srt = nl > 4 && strcmp(name + nl - 4, ".srt") == 0;
         const bool mp4 = nl > 4 && strcmp(name + nl - 4, ".mp4") == 0;
+        const bool txt = nl > 4 && strcmp(name + nl - 4, ".txt") == 0;
         char disp[96];
         /* A .ts or subtitles download; an MP4 or a screenshot opens in the tab. */
-        const bool inline_view = mp4 || !dl->video;
+        const bool inline_view = mp4 || txt || !dl->video;
         snprintf(disp, sizeof(disp), "%s; filename=\"%.48s\"", inline_view ? "inline" : "attachment", name);
-        httpd_resp_set_type(req, srt  ? "application/x-subrip"
+        httpd_resp_set_type(req, srt   ? "application/x-subrip"
+                                 : txt ? "text/plain; charset=utf-8"
                                  : mp4 ? "video/mp4"
                                  : dl->video ? "video/mp2t" : "image/jpeg");
         httpd_resp_set_hdr(req, "Content-Disposition", disp);
@@ -467,6 +474,128 @@ static esp_err_t captures_file_get(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* ---- searching the screen's text ---------------------------------------------- */
+
+#define SEARCH_LINE 12800
+#define SEARCH_HITS 50
+#define SEARCH_FILES 64
+
+static bool contains_nocase(const char *hay, const char *needle)
+{
+    const size_t n = strlen(needle);
+    for (; *hay; hay++) {
+        if (strncasecmp(hay, needle, n) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Where the match is, with a little either side, on one line. */
+static void snippet(const char *line, const char *needle, char *out, size_t cap)
+{
+    const size_t n = strlen(needle);
+    const char *at = line;
+    for (; *at; at++) {
+        if (strncasecmp(at, needle, n) == 0) {
+            break;
+        }
+    }
+    const size_t before = 40;
+    const char *from = (size_t)(at - line) > before ? at - before : line;
+    snprintf(out, cap, "%s%.*s", from == line ? "" : "...", (int)(cap - 8), from);
+}
+
+/*
+ * Every .txt the recorder wrote, searched for a phrase. Each answer says which
+ * recording and how far into it, so the console can play from there.
+ */
+static esp_err_t captures_search_get(httpd_req_t *req)
+{
+    if (!kvm_auth_check(req)) {
+        return kvm_auth_challenge(req);
+    }
+    const char *blocked = files_blocked();
+    if (blocked) {
+        return send_json_error(req, "409 Conflict", blocked);
+    }
+    char query[192], needle[64];
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
+        httpd_query_key_value(query, "q", needle, sizeof(needle)) != ESP_OK || !needle[0]) {
+        return send_json_error(req, "400 Bad Request", "missing ?q=");
+    }
+    url_decode_inplace(needle); /* the phrase arrives percent-encoded */
+    const char *decoded = needle;
+
+    char *line = heap_caps_malloc(SEARCH_LINE, MALLOC_CAP_SPIRAM);
+    cJSON *root = cJSON_CreateObject();
+    cJSON *hits = cJSON_CreateArray();
+    cJSON_AddItemToObject(root, "hits", hits);
+    char dir[64];
+    snprintf(dir, sizeof(dir), "%s/%s", kvm_storage_mount_point(), KVM_RECORD_DIR);
+    DIR *d = line ? opendir(dir) : NULL;
+    struct dirent *e;
+    int files = 0, found = 0;
+    while (d && (e = readdir(d)) != NULL && files < SEARCH_FILES && found < SEARCH_HITS) {
+        const size_t nl = strlen(e->d_name);
+        if (nl < 5 || nl > 48 || strcmp(e->d_name + nl - 4, ".txt") != 0) {
+            continue;
+        }
+        char path[128];
+        snprintf(path, sizeof(path), "%s/%.48s", dir, e->d_name);
+        FILE *f = fopen(path, "r");
+        if (!f) {
+            continue;
+        }
+        files++;
+        /* The video the text belongs to: the .ts, or the .mp4 it became. */
+        char video[80];
+        snprintf(video, sizeof(video), "%s/%.*s.ts", KVM_RECORD_DIR, (int)(nl - 4), e->d_name);
+        char check[128];
+        snprintf(check, sizeof(check), "%s/%s", kvm_storage_mount_point(), video);
+        struct stat st;
+        if (stat(check, &st) != 0) {
+            snprintf(video, sizeof(video), "%s/%.*s.mp4", KVM_RECORD_DIR, (int)(nl - 4), e->d_name);
+        }
+        while (found < SEARCH_HITS && fgets(line, SEARCH_LINE, f)) {
+            char *tab = strchr(line, '\t');
+            if (!tab) {
+                continue;
+            }
+            *tab = '\0';
+            char *text = tab + 1;
+            text[strcspn(text, "\n")] = '\0';
+            if (!contains_nocase(text, decoded)) {
+                continue;
+            }
+            char around[160];
+            snippet(text, decoded, around, sizeof(around));
+            cJSON *hit = cJSON_CreateObject();
+            cJSON_AddStringToObject(hit, "path", video);
+            cJSON_AddNumberToObject(hit, "seconds", (double)strtoll(line, NULL, 10) / 1000.0);
+            cJSON_AddStringToObject(hit, "text", around);
+            cJSON_AddItemToArray(hits, hit);
+            found++;
+        }
+        fclose(f);
+    }
+    if (d) {
+        closedir(d);
+    }
+    heap_caps_free(line);
+    cJSON_AddBoolToObject(root, "more", found >= SEARCH_HITS);
+    char *body = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!body) {
+        return send_json_error(req, "500 Internal Server Error", "out of memory");
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    const esp_err_t r = httpd_resp_sendstr(req, body);
+    cJSON_free(body);
+    return r;
+}
+
 static esp_err_t captures_delete_post(httpd_req_t *req)
 {
     if (!kvm_auth_check(req)) {
@@ -489,10 +618,12 @@ static esp_err_t captures_delete_post(httpd_req_t *req)
         return send_json_error(req, errno == ENOENT ? "404 Not Found" : "500 Internal Server Error",
                                errno == ENOENT ? "no such file" : "could not delete");
     }
-    /* A recording takes its subtitles with it. */
+    /* A recording takes its subtitles and its screen text with it. */
     char *dot = strrchr(path, '.');
     if (video && dot && strcmp(dot, ".srt") != 0 && (size_t)(dot - path) + 5 <= sizeof(path)) {
         strcpy(dot, ".srt");
+        (void)remove(path);
+        strcpy(dot, ".txt");
         (void)remove(path);
     }
     ESP_LOGI(TAG, "deleted %s", rel);
@@ -507,6 +638,7 @@ static const httpd_uri_t s_routes[] = {
     {.uri = "/api/v1/screenshot", .method = HTTP_POST, .handler = screenshot_post},
     {.uri = "/api/v1/captures", .method = HTTP_GET, .handler = captures_get},
     {.uri = "/api/v1/captures/file", .method = HTTP_GET, .handler = captures_file_get},
+    {.uri = "/api/v1/captures/search", .method = HTTP_GET, .handler = captures_search_get},
     {.uri = "/api/v1/captures/delete", .method = HTTP_POST, .handler = captures_delete_post},
 };
 

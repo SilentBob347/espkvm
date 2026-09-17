@@ -82,6 +82,14 @@ bumps the patch).
   cities, ordered by UTC offset, with the browser's own zone at the top. The zone and the time server
   used to live in a settings section the console never showed, so they could
   only be set through the API. File names are in local time now too.
+- **Search a recording for what was on the screen.** While recording, the device
+  reads the screen as characters every three seconds and writes what it says
+  into a .txt beside the video. The recordings panel searches those and plays
+  from the moment the phrase was there. Only screens drawn as text can be read -
+  a BIOS, an installer, a console - and it can be switched off in Settings,
+  Video. `GET /api/v1/captures/search?q=` answers the same.
+- **Home Assistant can start a timelapse**, with its own button and a number for
+  the seconds between frames. The recording switch stops it.
 - **Clips to Telegram.** With notifications on, a saved clip goes to Telegram as
   a video that plays right in the chat, up to Telegram's 50 MB. A bigger one
   sends a message with its file name instead. Webhooks get the message.

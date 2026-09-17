@@ -203,7 +203,7 @@ static int build_state(char *b, size_t n)
              "\"jiggler\":\"%s\",\"jigglerSec\":%d,\"jigglerNudges\":%u,"
              "\"runbook\":\"%s\",\"runbookText\":\"%s\","
              /* The recorder: whether it runs, and the file it writes to. */
-             "\"recording\":\"%s\",\"recordingFile\":\"%s\"}",
+             "\"recording\":\"%s\",\"recordingFile\":\"%s\",\"timelapseSec\":%d}",
              t_int, t_dec, kvm_thermal_state_name(kvm_thermal_state()), viewers,
              v.signal ? "ON" : "OFF", res, (unsigned)(v.fps_x100 / 100),
              (unsigned)(v.fps_x100 % 100), codec, (unsigned)v.kbps,
@@ -216,7 +216,7 @@ static int build_state(char *b, size_t n)
              (unsigned)(v.skipped_fps_x100 / 100u), (unsigned)(v.skipped_fps_x100 % 100u),
              running_slot(), boot_reason(), jiggle_s > 0 ? "ON" : "OFF", (int)jiggle_s,
              (unsigned)usb_hid_jiggler_nudges(), k_rb_states[rb.state], rb_json,
-             rec.recording ? "ON" : "OFF", rec.file);
+             rec.recording ? "ON" : "OFF", rec.file, (int)kvm_setting_int("rec_tl_every"));
 }
 
 /*
@@ -521,6 +521,10 @@ static void publish_discovery(void)
                  NULL, "mdi:filmstrip", "diagnostic");
     disco_button("btn_screenshot", "Screenshot to microSD", "screenshot", "mdi:camera", NULL);
     disco_button("btn_clip", "Save dashcam clip", "clip", "mdi:record-circle-outline", NULL);
+    /* A timelapse is a recording too: the switch above stops it. */
+    disco_button("btn_timelapse", "Timelapse to microSD", "timelapse", "mdi:timelapse", NULL);
+    disco_number("tl_every", "Timelapse: seconds between frames", "tl_every",
+                 "{{ value_json.timelapseSec }}", 1, 3600, "s", "mdi:timelapse", "config");
     disco_switch("jiggler", "Mouse jiggler", "jiggler", "{{ value_json.jiggler }}",
                  "mdi:mouse-move-vertical", NULL);
     disco_number("jiggler_s", "Jiggle every", "jiggler_s", "{{ value_json.jigglerSec }}", 0, 3600,
@@ -664,6 +668,26 @@ static void handle_command(esp_mqtt_event_handle_t e)
         } else {
             kvm_record_stop("stopped from Home Assistant");
         }
+        publish_state();
+    } else if (strcmp(action, "timelapse") == 0) {
+        char why[128] = "";
+        if (kvm_record_start_timelapse((uint32_t)kvm_setting_int("rec_tl_every"), 0, why,
+                                       sizeof(why)) != ESP_OK) {
+            ESP_LOGW(TAG, "timelapse from Home Assistant: %s", why);
+        }
+        publish_state();
+    } else if (strcmp(action, "tl_every") == 0) {
+        char v[12];
+        const int n = e->data_len < (int)sizeof(v) - 1 ? e->data_len : (int)sizeof(v) - 1;
+        memcpy(v, e->data, n);
+        v[n] = '\0';
+        long secs = strtol(v, NULL, 10);
+        if (secs < 1) {
+            secs = 1;
+        } else if (secs > KVM_TIMELAPSE_EVERY_MAX) {
+            secs = KVM_TIMELAPSE_EVERY_MAX;
+        }
+        (void)kvm_setting_set_int("rec_tl_every", (int32_t)secs);
         publish_state();
     } else if (strcmp(action, "clip") == 0) {
         char why[96] = "";

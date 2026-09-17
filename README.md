@@ -890,6 +890,11 @@ named keys, and typed text either as dots or, if you choose, in full. Put the
 Play in the recordings panel streams a recording from the card, with seeking and
 the subtitles shown on the picture; `captures/file` answers HTTP ranges.
 
+**Searching a recording.** With the screen's text saved (Settings, Video), the
+recordings panel finds a phrase that was on the target's screen and plays from
+that moment. It works on screens a character generator drew - a BIOS, an
+installer, a console - not on a desktop.
+
 **Timelapse.** One frame every few seconds or minutes, played back at 25 fps, so
 a night of a long install fits in a minute. Start it from the recordings panel, a
 runbook (`timelapse 60`) or `POST /api/v1/record/start?every=60`. It keeps the
@@ -1068,6 +1073,7 @@ Everything the console does is available over HTTP.
 | `POST /api/v1/screenshot` | save a screenshot to SCREENSHOTS/ on the card |
 | `POST /api/v1/record/event` | save a dashcam clip now: the past in memory plus `dashcam_post_s` after |
 | `GET /api/v1/captures`, `GET /api/v1/captures/file?path=`, `POST /api/v1/captures/delete?path=` | list, download and delete recordings and screenshots |
+| `GET /api/v1/captures/search?q=` | find a phrase in the screen text saved with recordings; each answer says which file and how far in |
 | `POST /api/v1/hid/key`, `/type`, `/move`, `/click` | the keyboard and pointer, for automation. Off until the agent API is enabled in Settings &rarr; Security |
 | `POST /api/v1/hid/reattach` | present the keyboard and mouse to the target again, as if the cable had been pulled and put back |
 | `POST /api/v1/runbooks/run`, `/stop`, `GET /api/v1/runbooks/status` | run a saved runbook by name, stop it, see which step it is on |
