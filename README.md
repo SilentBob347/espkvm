@@ -87,6 +87,10 @@ Useful for what it does today, and honest about the rest.
 | Login, and a physical password reset | works |
 | Thermal protection | works |
 | Virtual media: boot the target from a disk image | works; from a FAT32 card, or a small image in the device's own flash |
+| Recording the screen to the microSD card, and screenshots | works; the stream the viewers already get, so nothing is encoded twice. A panel lists them, plays them and downloads them |
+| A dashcam: the last minutes kept, saved when something happens | works; in memory, or on the card for boards short of PSRAM. Saves an MP4 with chapters on a stop screen, a watched phrase, the power going off, or a button - and sends it to Telegram |
+| Timelapse | works; one frame every few seconds, played back at 25 fps |
+| Searching a recording for what was on the screen | works; the screen's text is saved beside the video and the panel plays from the moment. Character modes only |
 | Reading a text screen as text (BIOS, boot loader, console) | works; select and copy with the mouse, or read the screen *instead* of the video - a couple of kilobytes where a picture will not fit. Character modes only |
 | Noticing a screen that is one flat colour | works; a stop screen or a blanked output has no characters, but it is one colour and it stays |
 | Watching the screen for words while nobody is looking | works; off by default. Give it phrases, it alerts in the log and in Home Assistant |

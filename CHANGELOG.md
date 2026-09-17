@@ -7,6 +7,8 @@ bumps the patch).
 
 ## [Unreleased]
 
+## [0.51.0] - 2026-09-17
+
 ### Added
 - **Record the screen to the microSD card.** A record button under the picture
   writes what you see into VIDEO/ on the card, as H.264 in .ts files - the
