@@ -149,6 +149,23 @@ int main(void)
     CHECK(rb_parse("KEY ctrl+c\nTYPE hello\n", &s, err, sizeof(err)) && s.count == 2 &&
           s.steps[0].kind == RB_KEY && s.steps[1].kind == RB_TYPE);
 
+    /* Recording and screenshots: start (for a length, or by the setting), stop. */
+    CHECK(rb_parse("record\nrecord 300\nscreenshot\nrecord stop\n", &s, err, sizeof(err)));
+    CHECK(s.count == 4);
+    CHECK(s.steps[0].kind == RB_RECORD && s.steps[0].value == 0);
+    CHECK(s.steps[1].kind == RB_RECORD && s.steps[1].value == 300);
+    CHECK(s.steps[2].kind == RB_SCREENSHOT);
+    CHECK(s.steps[3].kind == RB_RECORD_STOP);
+    CHECK(!rb_parse("record soon", &s, err, sizeof(err)) && strstr(err, "record wants") != NULL);
+    CHECK(rb_parse("timelapse 10\ntimelapse 30 7200\n", &s, err, sizeof(err)));
+    CHECK(s.count == 2 && s.steps[0].kind == RB_TIMELAPSE && s.steps[0].every == 10 && s.steps[0].value == 0);
+    CHECK(s.steps[1].every == 30 && s.steps[1].value == 7200);
+    CHECK(!rb_parse("timelapse", &s, err, sizeof(err)) && strstr(err, "timelapse wants") != NULL);
+    CHECK(!rb_parse("timelapse 0", &s, err, sizeof(err)) && strstr(err, "timelapse wants") != NULL);
+    CHECK(!rb_parse("timelapse 10 soon", &s, err, sizeof(err)) && strstr(err, "timelapse wants") != NULL);
+    CHECK(!rb_parse("record 0", &s, err, sizeof(err)) && strstr(err, "record wants") != NULL);
+    CHECK(!rb_parse("screenshot now", &s, err, sizeof(err)) && strstr(err, "takes nothing") != NULL);
+
     printf(g_fail ? "%d FAILED\n" : "runbook script: all checks passed\n", g_fail);
     return g_fail ? 1 : 0;
 }

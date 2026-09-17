@@ -18,13 +18,25 @@ a runbook knows too.
 | `type <text>` | type the rest of the line as characters |
 | `delay <ms>` | pause for that many milliseconds |
 
-Runbooks add three more:
+Runbooks add these:
 
 | | |
 |---|---|
 | `wait <phrase>` | hold until a row of the screen contains the phrase |
 | `gone <phrase>` | hold until no row contains it |
 | `timeout <seconds>` | how long the waits below it may take; 60 if unsaid |
+| `record` | start recording the screen to the microSD card, and go on to the next line |
+| `record <seconds>` | the same, stopping by itself after that long |
+| `record stop` | stop the recording or the timelapse |
+| `timelapse <every>` | record one frame every that many seconds, played back at 25 fps, until stopped |
+| `timelapse <every> <seconds>` | the same, stopping by itself after that long |
+| `screenshot` | save the screen as a JPEG on the microSD card |
+
+A recording started by a runbook carries on after the runbook ends, until
+`record stop`, its length, or the length limit in Settings. A timelapse has no
+length limit unless it is given one. If a recording or
+a screenshot cannot be made - no card, H.264 not selected - the runbook stops
+there and says why.
 
 A wait that runs out stops the runbook at that line, and the panel says so.
 The device reads the screen as characters, so a wait only ever sees a text
@@ -88,7 +100,7 @@ printable US ASCII only, and the editor refuses a line with anything else.
 ## Limits
 
 A runbook has at most 64 steps, a `delay` is 1 to 60000 ms, a `timeout` 1 to
-3600 s. All the runbooks together must fit in 3000 bytes, all the macros in
+3600 s, a `record` 1 to 86400 s. All the runbooks together must fit in 3000 bytes, all the macros in
 2000; the editor says when they do not.
 
 ## Schedules
@@ -108,8 +120,10 @@ named runbook, or a restart of the device itself.
 
 Schedules need the wall clock, which the device sets over SNTP - point it at a
 time server on the local network if there is no internet. Until the clock is
-set, nothing fires and the panel says so. Times are in the zone you give as a
-POSIX TZ string (`UTC0`, `GMT0BST,M3.5.0/1,M10.5.0`, `MSK-3`).
+set, nothing fires and the panel says so. Times are in the time zone set in
+Settings, System: pick a city from the list there. Underneath it is a
+POSIX TZ string (`UTC0`, `GMT0BST,M3.5.0/1,M10.5.0`, `MSK-3`), which the API takes
+as `sched_tz`.
 
 ## Examples
 
@@ -135,6 +149,19 @@ key enter
 wait #
 type systemctl start nginx
 key enter
+```
+
+Restart a machine and keep a video of how its boot went, with a picture of the
+setup screen:
+
+```
+record 180
+key ctrl+alt+del
+timeout 120
+wait Press F2
+key f2
+wait Boot
+screenshot
 ```
 
 Pick the second entry of a boot menu, as a macro or a runbook:

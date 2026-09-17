@@ -257,6 +257,47 @@ static bool parse_native(const char *src, rb_script_t *out, char *err, size_t er
                 fail(err, err_cap, line_no, "timeout wants 1..3600 seconds");
                 return false;
             }
+        } else if (strcmp(verb, "record") == 0) {
+            /* "record", "record <seconds>" or "record stop". It starts and goes on
+             * to the next line: the recording runs on its own. */
+            if (!rlen) {
+                st->kind = RB_RECORD;
+            } else if (strcmp(arg, "stop") == 0) {
+                st->kind = RB_RECORD_STOP;
+            } else {
+                st->kind = RB_RECORD;
+                if (!parse_number(arg, 1, 86400, &st->value)) {
+                    fail(err, err_cap, line_no, "record wants nothing, \"stop\" or 1..86400 seconds");
+                    return false;
+                }
+            }
+        } else if (strcmp(verb, "timelapse") == 0) {
+            /* "timelapse <every>" or "timelapse <every> <seconds>"; "record stop"
+             * ends it. Like record, it runs on its own. */
+            st->kind = RB_TIMELAPSE;
+            char first[16] = "";
+            const char *length = strchr(arg, ' ');
+            size_t first_len = length ? (size_t)(length - arg) : strlen(arg);
+            length = length ? length + 1 : "";
+            if (first_len >= sizeof(first)) {
+                first_len = 0; /* too long to be a number */
+            }
+            memcpy(first, arg, first_len);
+            first[first_len] = '\0';
+            uint32_t every = 0;
+            if (!parse_number(first, 1, 3600, &every) ||
+                (*length && !parse_number(length, 1, 604800, &st->value))) {
+                fail(err, err_cap, line_no,
+                     "timelapse wants 1..3600 seconds between frames, then how long it runs");
+                return false;
+            }
+            st->every = (uint16_t)every;
+        } else if (strcmp(verb, "screenshot") == 0) {
+            st->kind = RB_SCREENSHOT;
+            if (rlen) {
+                fail(err, err_cap, line_no, "screenshot takes nothing after it");
+                return false;
+            }
         } else if (strcmp(verb, "wait") == 0 || strcmp(verb, "gone") == 0) {
             st->kind = verb[0] == 'w' ? RB_WAIT : RB_GONE;
             if (!rlen) {
@@ -708,6 +749,10 @@ const char *rb_kind_name(rb_kind_t kind)
     case RB_TIMEOUT: return "timeout";
     case RB_WAIT: return "wait";
     case RB_GONE: return "gone";
+    case RB_RECORD: return "record";
+    case RB_RECORD_STOP: return "record stop";
+    case RB_SCREENSHOT: return "screenshot";
+    case RB_TIMELAPSE: return "timelapse";
     }
     return "?";
 }

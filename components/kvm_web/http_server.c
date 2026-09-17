@@ -41,6 +41,7 @@
 #endif
 
 #include "esp_https_server.h"
+#include "esp_tls.h"
 #include "esp_netif.h"
 
 #include "lwip/sockets.h"
@@ -69,6 +70,8 @@
 #include "kvm_display.h"
 #include "kvm_log.h"
 #include "kvm_settings.h"
+#include "kvm_record.h"
+#include "web_priv.h"
 #include "kvm_storage.h"
 #include "kvm_thermal.h"
 #include "kvm_tls.h"
@@ -134,7 +137,7 @@ static esp_err_t send_json_owned(httpd_req_t *req, char *json)
     return err;
 }
 
-static esp_err_t send_json_error(httpd_req_t *req, const char *status, const char *message)
+esp_err_t send_json_error(httpd_req_t *req, const char *status, const char *message)
 {
     char body[192];
     /* cJSON for a single short field is not worth the allocation, but the message
@@ -622,7 +625,13 @@ static esp_err_t api_video_status_get(httpd_req_t *req)
      * - that is what /api/v1/screen/text answers - only that asking is worth it. */
     const bool text_mode = st.signal && screentext_mode_supported(st.hres, st.vres);
 
-    char body[512];
+    kvm_record_status_t rec;
+    kvm_record_status(&rec);
+    /* Blocked reasons are fixed strings from the firmware: no quoting needed. */
+    const char *rec_blocked = rec.recording ? NULL : kvm_record_blocked();
+    const char *shot_blocked = kvm_record_screenshot_blocked();
+
+    char body[1400];
     int n = snprintf(body, sizeof(body),
                      "{\"signal\":%s,\"width\":%u,\"height\":%u,\"interlaced\":%s,"
                      "\"inputHz\":%u,\"tooFast\":%s,"
@@ -633,7 +642,14 @@ static esp_err_t api_video_status_get(httpd_req_t *req)
                      /* How long the picture has been one flat colour: the shape
                         of a stop screen or a blanked output, neither of which
                         can be read as text. 0 means it is a picture. */
-                     "\"textMode\":%s,\"flatMs\":%u}",
+                     "\"textMode\":%s,\"flatMs\":%u,"
+                     /* The recorder rides along: the console polls this anyway. */
+                     "\"record\":{\"on\":%s,\"file\":\"%s\",\"seconds\":%u,\"bytes\":%llu,"
+                     "\"dropped\":%u,\"stopped\":\"%s\",\"blocked\":%s%s%s,"
+                     "\"event\":%s,\"dashcam\":%s,\"dashcamNoMemory\":%s,\"prerollSeconds\":%u,"
+                     "\"timelapse\":%u,\"clipSecondsLeft\":%u,\"clipsConverting\":%u,"
+                     "\"lastClip\":\"%s\"},"
+                     "\"screenshotBlocked\":%s%s%s}",
                      st.signal ? "true" : "false", (unsigned)st.hres, (unsigned)st.vres,
                      st.interlaced ? "true" : "false", (unsigned)st.input_hz,
                      st.too_fast ? "true" : "false", (unsigned)(st.fps_x100 / 100u),
@@ -644,7 +660,15 @@ static esp_err_t api_video_status_get(httpd_req_t *req)
                      video_frame_viewer_count(), (unsigned)s_video_client_count,
                      (unsigned)s_text_client_count, s_stream_workers, codec,
                      text_mode ? "true" : "false",
-                     (unsigned)st.flat_ms);
+                     (unsigned)st.flat_ms, rec.recording ? "true" : "false", rec.file,
+                     (unsigned)rec.seconds, (unsigned long long)rec.bytes, (unsigned)rec.dropped,
+                     rec.stopped, rec_blocked ? "\"" : "", rec_blocked ? rec_blocked : "null",
+                     rec_blocked ? "\"" : "", rec.event ? "true" : "false",
+                     rec.dashcam ? "true" : "false", rec.dashcam_no_memory ? "true" : "false",
+                     (unsigned)rec.preroll_seconds,
+                     (unsigned)rec.timelapse_every, (unsigned)rec.clip_seconds_left,
+                     (unsigned)rec.clips_converting, rec.last_clip, shot_blocked ? "\"" : "",
+                     shot_blocked ? shot_blocked : "null", shot_blocked ? "\"" : "");
     if (n <= 0 || n >= (int)sizeof(body)) {
         return send_json_error(req, "500 Internal Server Error", "status too long");
     }
@@ -1649,6 +1673,10 @@ static esp_err_t api_storage_upload_post(httpd_req_t *req)
     if (!sd.mounted) {
         return send_json_error(req, "409 Conflict", "no microSD card mounted");
     }
+    /* An upload holds the stream to 2 fps and fights the recording for the card. */
+    if (kvm_record_active()) {
+        return send_json_error(req, "409 Conflict", "a recording is running; stop it before uploading");
+    }
 
     char name[IMAGE_NAME_MAX + 1];
     if (!image_name_from_query(req, name, sizeof(name))) {
@@ -1693,6 +1721,10 @@ static esp_err_t api_storage_delete_post(httpd_req_t *req)
 {
     if (!kvm_auth_check(req)) {
         return kvm_auth_challenge(req);
+    }
+    /* Freeing a large file rewrites the FAT under a recording's feet. */
+    if (kvm_record_active()) {
+        return send_json_error(req, "409 Conflict", "a recording is running; stop it before deleting");
     }
     char name[IMAGE_NAME_MAX + 1];
     if (!image_name_from_query(req, name, sizeof(name))) {
@@ -2042,28 +2074,20 @@ static esp_err_t api_video_frame_get(httpd_req_t *req)
     if (!kvm_auth_token_ok(req) && !agent_allowed(req, &gate)) {
         return gate;
     }
-    if (video_frame_payload() != VIDEO_PAYLOAD_JPEG) {
-        return send_json_error(req, "409 Conflict",
-                               "snapshot needs the MJPEG codec (set vid_codec to mjpeg)");
+    /* Either codec: on H.264 the device encodes the held frame as a JPEG once. */
+    uint8_t *jpeg = NULL;
+    size_t len = 0;
+    const esp_err_t err = capture_snapshot_jpeg(&jpeg, &len, 3000);
+    if (err == ESP_ERR_NOT_FOUND) {
+        return send_json_error(req, "503 Service Unavailable", "no video signal");
     }
-    video_frame_viewer_enter();
-    const uint32_t seen = video_frame_seq();
-    video_frame_wait_new(seen, 2000);
-    video_frame_ref_t ref;
-    esp_err_t r;
-    if (video_frame_acquire(&ref)) {
-        if (ref.payload == VIDEO_PAYLOAD_JPEG && ref.len > 0) {
-            httpd_resp_set_type(req, "image/jpeg");
-            httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-            r = httpd_resp_send(req, (const char *)ref.data, ref.len);
-        } else {
-            r = send_json_error(req, "503 Service Unavailable", "no JPEG frame available");
-        }
-        video_frame_release(&ref);
-    } else {
-        r = send_json_error(req, "503 Service Unavailable", "no frame yet (is there a signal?)");
+    if (err != ESP_OK) {
+        return send_json_error(req, "503 Service Unavailable", "no frame came (is the device too hot?)");
     }
-    video_frame_viewer_leave();
+    httpd_resp_set_type(req, "image/jpeg");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    const esp_err_t r = httpd_resp_send(req, (const char *)jpeg, len);
+    free(jpeg);
     return r;
 }
 
@@ -2514,12 +2538,45 @@ static void video_remove_client(int fd);
  * httpd_ws_send_frame_async() returned, or an error if there was nobody left
  * to send to - callers drop the client either way.
  */
+/*
+ * The TLS server's send, under s_tx_mu.
+ *
+ * s_tx_fds only covers the sends made from our own tasks. The server writes to
+ * the same sessions from its task too - the reply to a WebSocket ping or close,
+ * every HTTP response - and a TLS context is not safe to write from two tasks
+ * at once. With dynamic buffers it was worse than garbled records: a write
+ * frees its output buffer when it finishes, so the other write copied into
+ * freed memory. That was the crash in the video pump that came back after the
+ * August fix (memcpy inside mbedtls_ssl_write, a wild ssl->out_msg). Every
+ * write to a TLS session now comes through here, whoever makes it.
+ *
+ * It does what the server's own httpd_ssl_send does. The session's transport
+ * context is esp_https_server's private struct, whose first member is the
+ * esp_tls_t - that part of its layout has not changed since IDF 4.
+ */
+typedef struct {
+    esp_tls_t *tls;
+} https_transport_head_t;
+
+static int locked_ssl_send(httpd_handle_t hd, int sockfd, const char *buf, size_t buf_len, int flags)
+{
+    (void)flags;
+    const https_transport_head_t *ctx = httpd_sess_get_transport_ctx(hd, sockfd);
+    if (!ctx || !ctx->tls) {
+        return HTTPD_SOCK_ERR_FAIL;
+    }
+    (void)xSemaphoreTakeRecursive(s_tx_mu, portMAX_DELAY);
+    const ssize_t ret = esp_tls_conn_write(ctx->tls, buf, buf_len);
+    xSemaphoreGiveRecursive(s_tx_mu);
+    return (int)ret;
+}
+
 static esp_err_t ws_send_frame(httpd_handle_t server, int fd, httpd_ws_frame_t *frame)
 {
     if (!server || fd < 0 || !s_tx_mu) {
         return ESP_FAIL;
     }
-    if (xSemaphoreTake(s_tx_mu, portMAX_DELAY) != pdTRUE) {
+    if (xSemaphoreTakeRecursive(s_tx_mu, portMAX_DELAY) != pdTRUE) {
         return ESP_FAIL;
     }
     esp_err_t err = ESP_ERR_INVALID_STATE; /* closed under us */
@@ -2529,7 +2586,7 @@ static esp_err_t ws_send_frame(httpd_handle_t server, int fd, httpd_ws_frame_t *
             break;
         }
     }
-    xSemaphoreGive(s_tx_mu);
+    xSemaphoreGiveRecursive(s_tx_mu);
     return err;
 }
 
@@ -2594,9 +2651,13 @@ static void on_hid_leds(uint8_t leds, void *user)
 /** A new session may be written to from now on. See s_tx_fds. */
 static esp_err_t http_sess_open_cb(httpd_handle_t hd, int sockfd)
 {
-    (void)hd;
-    if (!s_tx_mu || sockfd < 0 || xSemaphoreTake(s_tx_mu, portMAX_DELAY) != pdTRUE) {
+    if (!s_tx_mu || sockfd < 0 || xSemaphoreTakeRecursive(s_tx_mu, portMAX_DELAY) != pdTRUE) {
         return ESP_OK;
+    }
+    /* On the TLS server every write to this session - ours and the server's
+     * own - now takes s_tx_mu. See locked_ssl_send. */
+    if (httpd_sess_get_transport_ctx(hd, sockfd)) {
+        (void)httpd_sess_set_send_override(hd, sockfd, locked_ssl_send);
     }
     bool listed = false;
     for (int i = 0; i < TX_MAX_SOCKETS; i++) {
@@ -2613,7 +2674,7 @@ static esp_err_t http_sess_open_cb(httpd_handle_t hd, int sockfd)
             }
         }
     }
-    xSemaphoreGive(s_tx_mu);
+    xSemaphoreGiveRecursive(s_tx_mu);
     return ESP_OK;
 }
 
@@ -2628,13 +2689,13 @@ static void http_sess_close_cb(httpd_handle_t hd, int sockfd)
      * stops the next send and waits out the one that may be running. See
      * s_tx_fds.
      */
-    if (s_tx_mu && xSemaphoreTake(s_tx_mu, portMAX_DELAY) == pdTRUE) {
+    if (s_tx_mu && xSemaphoreTakeRecursive(s_tx_mu, portMAX_DELAY) == pdTRUE) {
         for (int i = 0; i < TX_MAX_SOCKETS; i++) {
             if (s_tx_fds[i] == sockfd) {
                 s_tx_fds[i] = -1;
             }
         }
-        xSemaphoreGive(s_tx_mu);
+        xSemaphoreGiveRecursive(s_tx_mu);
     }
 
     /*
@@ -4161,7 +4222,7 @@ httpd_handle_t http_server_start(void)
         for (int i = 0; i < TX_MAX_SOCKETS; i++) {
             s_tx_fds[i] = -1;
         }
-        s_tx_mu = xSemaphoreCreateMutex();
+        s_tx_mu = xSemaphoreCreateRecursiveMutex();
         if (!s_tx_mu) {
             /* Without it every send would be racing the session teardown. */
             ESP_LOGE(TAG, "tx mutex");
@@ -4203,14 +4264,15 @@ httpd_handle_t http_server_start(void)
      * and input die with a 404 on wss while every REST route still answers, which
      * looks like anything but a table that is one entry too small.
      *
-     * The count, as of writing: 31 in api_uris, 4 from kvm_auth_register(), and 10
-     * standalone (the console files, /cert.pem, /stream, /video, /ws) = 45. Adding
-     * the log endpoint took it from 44 to 45 and cost the keyboard.
+     * The count, as of writing: 47 in api_uris, 8 from record_api_routes(), 4 from
+     * kvm_auth_register(), and 12 standalone (the console files, /cert.pem, /stream,
+     * /video, /ws) = 71. Adding the log endpoint once took it from 44 to 45 and
+     * cost the keyboard; the recorder's routes took it past 64.
      *
      * The check below now logs a failed registration rather than swallowing it, so
      * the next person gets a line instead of a mystery - but keep headroom anyway.
      */
-    cfg.max_uri_handlers = 64;
+    cfg.max_uri_handlers = 80;
 
     if (kvm_auth_init() != ESP_OK) {
         /* Without a working password store the only safe answer is not to
@@ -4396,6 +4458,11 @@ httpd_handle_t http_server_start(void)
     };
     for (size_t i = 0; i < sizeof(api_uris) / sizeof(api_uris[0]); i++) {
         register_route(h, &api_uris[i]);
+    }
+    size_t n_record = 0;
+    const httpd_uri_t *record_uris = record_api_routes(&n_record);
+    for (size_t i = 0; i < n_record; i++) {
+        register_route(h, &record_uris[i]);
     }
 
     /* Before anything else is registered: a request that arrives while the

@@ -21,6 +21,8 @@
 #define FLAT_SAMPLES 512
 #define FLAT_TOLERANCE 12
 #define FLAT_MIN_PERCENT 92
+/* A flat colour this dark is a blanked screen. Limited-range black is 16. */
+#define FLAT_DARK_MAX 40
 
 /** One pixel's three components, whatever the capture format calls them. */
 static inline void sample_at(const uint8_t *px, size_t i, uint8_t bytes_per_px,
@@ -41,8 +43,11 @@ static inline void sample_at(const uint8_t *px, size_t i, uint8_t bytes_per_px,
     out[2] = px[pair + 2]; /* V  */
 }
 
-bool capture_flat_is_flat(const uint8_t *px, size_t pixels, uint8_t bytes_per_px)
+bool capture_flat_is_flat(const uint8_t *px, size_t pixels, uint8_t bytes_per_px, bool *dark)
 {
+    if (dark) {
+        *dark = false;
+    }
     /* UYVY stores two pixels in four bytes, so an odd count has a half pair at
        the end that is not there. Round it away rather than trusting every mode
        to be even: reading one byte past a frame buffer is not worth the two
@@ -83,6 +88,14 @@ bool capture_flat_is_flat(const uint8_t *px, size_t pixels, uint8_t bytes_per_px
             near++;
         }
     }
-    return near * 100 >= FLAT_SAMPLES * FLAT_MIN_PERCENT;
+    const bool flat = near * 100 >= FLAT_SAMPLES * FLAT_MIN_PERCENT;
+    if (flat && dark) {
+        /* UYVY: the luma alone says how bright. RGB: the brightest channel. */
+        const uint8_t bright = bytes_per_px == 2 ? mean[0]
+                               : mean[0] > mean[1] ? (mean[0] > mean[2] ? mean[0] : mean[2])
+                                                   : (mean[1] > mean[2] ? mean[1] : mean[2]);
+        *dark = bright <= FLAT_DARK_MAX;
+    }
+    return flat;
 }
 

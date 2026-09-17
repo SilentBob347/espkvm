@@ -151,9 +151,21 @@ static uint32_t s_idr_starved;
 static bool s_wedged;
 static int64_t s_rebuild_after_us;
 
+/*
+ * A keyframe at least this often, whatever the frame rate. The GOP is counted in
+ * frames for the configured rate, so a pre-3.0 board encoding 1080p at 7 fps
+ * would otherwise send one every nine seconds - too far apart for the recorder's
+ * ring and a timelapse, and for a viewer joining mid-stream.
+ */
+#define KEYFRAME_MAX_US 2500000
+static int64_t s_last_idr_us;
+
 /** Called for every frame the encoder returns; only keyframes carry the signal. */
 static void wedge_watch(bool is_idr, uint32_t len)
 {
+    if (is_idr) {
+        s_last_idr_us = esp_timer_get_time();
+    }
     if (!is_idr || len == 0) {
         return;
     }
@@ -641,6 +653,9 @@ static void force_idr(void)
     if (!s_param) {
         return;
     }
+    /* Counted from the request, so the frames before the IDR comes out do not
+     * ask again - each GOP change starts another one. */
+    s_last_idr_us = esp_timer_get_time();
     /*
      * Toggle between the wanted GOP length and one adjacent to it. Any change of
      * the configured length starts a new GOP, so this forces an IDR while the
@@ -656,6 +671,11 @@ static void force_idr(void)
     if (esp_h264_enc_set_gop(&s_param->base, next) == ESP_H264_ERR_OK) {
         s_gop = next;
     }
+}
+
+static bool keyframe_overdue(void)
+{
+    return s_last_idr_us && esp_timer_get_time() - s_last_idr_us > KEYFRAME_MAX_US;
 }
 
 static void follow_settings(void)
@@ -690,7 +710,7 @@ static void h264_encode_job(const h264_job_t *job)
         (void)video_frame_take_keyframe_request();
     } else if (wedge_rebuild_if_needed(job->hres, job->vres)) {
         return;
-    } else if (video_frame_take_keyframe_request()) {
+    } else if (video_frame_take_keyframe_request() || keyframe_overdue()) {
         force_idr();
     }
     follow_settings();
@@ -795,7 +815,7 @@ static esp_err_t h264_encode(capture_ctx_t *c, const void *src, bool force_publi
         (void)video_frame_take_keyframe_request();
     } else if (wedge_rebuild_if_needed(c->hres, c->vres)) {
         return ESP_FAIL;
-    } else if (video_frame_take_keyframe_request()) {
+    } else if (video_frame_take_keyframe_request() || keyframe_overdue()) {
         force_idr();
     }
     follow_settings();

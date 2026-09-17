@@ -23,8 +23,10 @@ extern "C" {
  * @param px      the frame, as the capture buffer holds it
  * @param pixels  how many pixels it has
  * @param bytes_per_px  3 for RGB888/BGR888, 2 for packed UYVY
+ * @param dark    if not NULL, set when the colour is black or nearly: a blanked
+ *                output rather than a stop screen
  */
-bool capture_flat_is_flat(const uint8_t *px, size_t pixels, uint8_t bytes_per_px);
+bool capture_flat_is_flat(const uint8_t *px, size_t pixels, uint8_t bytes_per_px, bool *dark);
 
 #ifdef __cplusplus
 }

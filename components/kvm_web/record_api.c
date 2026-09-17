@@ -1,0 +1,517 @@
+/*
+ * SPDX-FileCopyrightText: 2026 ESP-KVM contributors
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * The REST side of recording: start, stop and status, a screenshot, and the
+ * files both leave on the card - listed, downloaded and deleted. Only VIDEO/
+ * and SCREENSHOTS/ are reachable here, never the rest of the card.
+ */
+#include <ctype.h>
+#include <dirent.h>
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <sys/time.h>
+#include <time.h>
+
+#include "cJSON.h"
+#include "esp_heap_caps.h"
+#include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "kvm_auth.h"
+#include "kvm_record.h"
+#include "kvm_storage.h"
+#include "web_priv.h"
+
+#define TAG "web"
+
+#define LIST_MAX 500
+#define DOWNLOAD_CHUNK (64 * 1024)
+#define DOWNLOAD_STACK (4 * 1024)
+#define DOWNLOAD_PRIO (tskIDLE_PRIORITY + 5)
+/* Each one holds a socket for as long as the file takes; the server has few. */
+#define DOWNLOADS_MAX 2
+
+static volatile int s_downloads;
+
+/* ---- recording and screenshots ---------------------------------------------- */
+
+/* 2025-01-01: a clock before this was never set. */
+#define CLOCK_SET_EPOCH 1735689600LL
+
+/*
+ * Files are named by the clock, and a device without NTP never has one - its
+ * files would be "up-000123". The console sends the browser's time when it signs
+ * in and with ?t=, taken only while the device's own clock is unset, so NTP
+ * still wins.
+ */
+void kvm_web_clock_from_browser(long long t)
+{
+    if ((long long)time(NULL) >= CLOCK_SET_EPOCH || t < CLOCK_SET_EPOCH || t > 4102444800LL) {
+        return;
+    }
+    const struct timeval tv = {.tv_sec = (time_t)t};
+    if (settimeofday(&tv, NULL) == 0) {
+        ESP_LOGI(TAG, "clock set from the console");
+    }
+}
+
+static void clock_from_query(httpd_req_t *req)
+{
+    char query[64], value[16];
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK &&
+        httpd_query_key_value(query, "t", value, sizeof(value)) == ESP_OK) {
+        kvm_web_clock_from_browser(strtoll(value, NULL, 10));
+    }
+}
+
+static esp_err_t send_record_status(httpd_req_t *req)
+{
+    kvm_record_status_t rec;
+    kvm_record_status(&rec);
+    char body[640];
+    const int n = snprintf(body, sizeof(body),
+                           "{\"on\":%s,\"file\":\"%s\",\"seconds\":%u,\"bytes\":%llu,\"frames\":%u,"
+                           "\"dropped\":%u,\"stopped\":\"%s\",\"event\":%s,\"dashcam\":%s,"
+                           "\"prerollSeconds\":%u,\"timelapse\":%u,\"clipSecondsLeft\":%u,"
+                           "\"clipsConverting\":%u,\"lastClip\":\"%s\"}",
+                           rec.recording ? "true" : "false", rec.file, (unsigned)rec.seconds,
+                           (unsigned long long)rec.bytes, (unsigned)rec.frames,
+                           (unsigned)rec.dropped, rec.stopped, rec.event ? "true" : "false",
+                           rec.dashcam ? "true" : "false", (unsigned)rec.preroll_seconds,
+                           (unsigned)rec.timelapse_every, (unsigned)rec.clip_seconds_left,
+                           (unsigned)rec.clips_converting, rec.last_clip);
+    if (n <= 0 || n >= (int)sizeof(body)) {
+        return send_json_error(req, "500 Internal Server Error", "status too long");
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, body, n);
+}
+
+static esp_err_t record_status_get(httpd_req_t *req)
+{
+    if (!kvm_auth_check(req)) {
+        return kvm_auth_challenge(req);
+    }
+    return send_record_status(req);
+}
+
+static esp_err_t record_start_post(httpd_req_t *req)
+{
+    if (!kvm_auth_check(req)) {
+        return kvm_auth_challenge(req);
+    }
+    clock_from_query(req);
+    /* ?seconds=N records for that long, whatever the length setting says;
+     * ?every=N makes it a timelapse of one frame every N seconds. */
+    unsigned long seconds = 0, every = 0;
+    char query[96], value[16];
+    const bool has_query = httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK;
+    if (has_query && httpd_query_key_value(query, "seconds", value, sizeof(value)) == ESP_OK) {
+        seconds = strtoul(value, NULL, 10);
+        if (seconds < 1 || seconds > 86400 * 7) {
+            return send_json_error(req, "400 Bad Request", "seconds wants 1..604800");
+        }
+    }
+    if (has_query && httpd_query_key_value(query, "every", value, sizeof(value)) == ESP_OK) {
+        every = strtoul(value, NULL, 10);
+        if (every < 1 || every > KVM_TIMELAPSE_EVERY_MAX) {
+            return send_json_error(req, "400 Bad Request", "every wants 1..3600 seconds");
+        }
+    }
+    char why[128] = "";
+    const esp_err_t err = every ? kvm_record_start_timelapse((uint32_t)every, (uint32_t)seconds, why, sizeof(why))
+                                : kvm_record_start((uint32_t)seconds, why, sizeof(why));
+    if (err != ESP_OK) {
+        return send_json_error(req, "409 Conflict", why);
+    }
+    return send_record_status(req);
+}
+
+static esp_err_t record_stop_post(httpd_req_t *req)
+{
+    if (!kvm_auth_check(req)) {
+        return kvm_auth_challenge(req);
+    }
+    kvm_record_stop("stopped by the operator");
+    return send_record_status(req);
+}
+
+/* "Save clip": what the dashcam holds, and a little after. */
+static esp_err_t record_event_post(httpd_req_t *req)
+{
+    if (!kvm_auth_check(req)) {
+        return kvm_auth_challenge(req);
+    }
+    clock_from_query(req);
+    char why[96] = "";
+    if (!kvm_record_event("Saved by hand", why, sizeof(why))) {
+        return send_json_error(req, "409 Conflict", why);
+    }
+    return send_record_status(req);
+}
+
+static esp_err_t screenshot_post(httpd_req_t *req)
+{
+    if (!kvm_auth_check(req)) {
+        return kvm_auth_challenge(req);
+    }
+    clock_from_query(req);
+    char file[64], why[128] = "";
+    if (kvm_record_screenshot(file, sizeof(file), why, sizeof(why)) != ESP_OK) {
+        return send_json_error(req, "409 Conflict", why);
+    }
+    char body[128];
+    const int n = snprintf(body, sizeof(body), "{\"file\":\"%s\"}", file);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, body, n);
+}
+
+/* ---- the files -------------------------------------------------------------- */
+
+static bool name_ok(const char *name, const char *ext)
+{
+    const size_t n = strlen(name), e = strlen(ext);
+    if (n <= e || n > 48 || name[0] == '.' || strcmp(name + n - e, ext) != 0) {
+        return false;
+    }
+    for (const char *p = name; *p; p++) {
+        if (!isalnum((unsigned char)*p) && *p != '-' && *p != '_' && *p != '.') {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* "VIDEO/<name>.ts" or its ".srt", or "SCREENSHOTS/<name>.jpg" - nothing else. */
+static bool path_ok(const char *path, bool *video)
+{
+    const size_t vd = strlen(KVM_RECORD_DIR), sd = strlen(KVM_SCREENSHOT_DIR);
+    if (strncmp(path, KVM_RECORD_DIR "/", vd + 1) == 0) {
+        *video = true;
+        return name_ok(path + vd + 1, ".ts") || name_ok(path + vd + 1, ".mp4") ||
+               name_ok(path + vd + 1, ".srt");
+    }
+    if (strncmp(path, KVM_SCREENSHOT_DIR "/", sd + 1) == 0) {
+        *video = false;
+        return name_ok(path + sd + 1, ".jpg");
+    }
+    return false;
+}
+
+static void url_decode_inplace(char *s)
+{
+    char *o = s;
+    for (char *p = s; *p; p++) {
+        if (*p == '%' && isxdigit((unsigned char)p[1]) && isxdigit((unsigned char)p[2])) {
+            const char hex[3] = {p[1], p[2], 0};
+            *o++ = (char)strtol(hex, NULL, 16);
+            p += 2;
+        } else if (*p == '+') {
+            *o++ = ' ';
+        } else {
+            *o++ = *p;
+        }
+    }
+    *o = '\0';
+}
+
+static bool path_from_query(httpd_req_t *req, char *out, size_t cap, bool *video)
+{
+    char query[192];
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
+        httpd_query_key_value(query, "path", out, cap) != ESP_OK) {
+        return false;
+    }
+    url_decode_inplace(out);
+    return path_ok(out, video);
+}
+
+/* Readable from here: a card is mounted and the firmware still owns it. */
+static const char *files_blocked(void)
+{
+    kvm_storage_status_t sd;
+    kvm_storage_status(&sd);
+    if (!sd.mounted) {
+        return "no microSD card in the slot";
+    }
+    if (kvm_storage_card_handed_over()) {
+        return "the whole card is handed to the target";
+    }
+    return NULL;
+}
+
+static cJSON *list_dir(const char *dir, const char *ext, const char *ext2)
+{
+    cJSON *arr = cJSON_CreateArray();
+    char path[64];
+    snprintf(path, sizeof(path), "%s/%s", kvm_storage_mount_point(), dir);
+    DIR *d = opendir(path);
+    if (!d) {
+        return arr; /* nothing saved yet */
+    }
+    int count = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL && count < LIST_MAX) {
+        const bool second = ext2 && name_ok(e->d_name, ext2);
+        if (!name_ok(e->d_name, ext) && !second) {
+            continue;
+        }
+        /* name_ok() capped the name at 48, so these always fit. */
+        char full[128];
+        snprintf(full, sizeof(full), "%s/%.48s", path, e->d_name);
+        struct stat st;
+        if (stat(full, &st) != 0 || !S_ISREG(st.st_mode)) {
+            continue;
+        }
+        cJSON *item = cJSON_CreateObject();
+        char rel[80];
+        snprintf(rel, sizeof(rel), "%s/%.48s", dir, e->d_name);
+        cJSON_AddStringToObject(item, "path", rel);
+        cJSON_AddNumberToObject(item, "size", (double)st.st_size);
+        /* A recording's keystroke subtitles, when it has them: same name, .srt. */
+        const char *dot = strrchr(full, '.');
+        if (strcmp(ext, ".ts") == 0 && dot) {
+            char srt[128];
+            snprintf(srt, sizeof(srt), "%.*s.srt", (int)(dot - full), full);
+            if (stat(srt, &st) == 0 && S_ISREG(st.st_mode)) {
+                const char *rdot = strrchr(rel, '.');
+                char srt_rel[80];
+                snprintf(srt_rel, sizeof(srt_rel), "%.*s.srt", (int)(rdot - rel), rel);
+                cJSON_AddStringToObject(item, "subtitles", srt_rel);
+            }
+        }
+        cJSON_AddItemToArray(arr, item);
+        count++;
+    }
+    closedir(d);
+    return arr;
+}
+
+static esp_err_t captures_get(httpd_req_t *req)
+{
+    if (!kvm_auth_check(req)) {
+        return kvm_auth_challenge(req);
+    }
+    cJSON *root = cJSON_CreateObject();
+    const char *blocked = files_blocked();
+    cJSON_AddItemToObject(root, "blocked", blocked ? cJSON_CreateString(blocked) : cJSON_CreateNull());
+    if (!blocked) {
+        cJSON_AddItemToObject(root, "video", list_dir(KVM_RECORD_DIR, ".ts", ".mp4"));
+        cJSON_AddItemToObject(root, "screenshots", list_dir(KVM_SCREENSHOT_DIR, ".jpg", NULL));
+    }
+    /* No deleting while a recording runs: it would rewrite the FAT under it. */
+    cJSON_AddBoolToObject(root, "canDelete", !blocked && !kvm_record_active() && kvm_storage_writable());
+    char *body = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!body) {
+        return send_json_error(req, "500 Internal Server Error", "out of memory");
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    const esp_err_t r = httpd_resp_sendstr(req, body);
+    cJSON_free(body);
+    return r;
+}
+
+typedef struct {
+    httpd_req_t *req;
+    char path[96];
+    bool video;
+    /* A Range request: bytes first..last of size. Without one, the whole file. */
+    bool ranged;
+    uint64_t first, last, size;
+} download_t;
+
+static void download_finish(httpd_req_t *req)
+{
+    const int fd = httpd_req_to_sockfd(req);
+    httpd_handle_t server = req->handle;
+    httpd_req_async_handler_complete(req);
+    if (server && fd >= 0) {
+        (void)httpd_sess_trigger_close(server, fd);
+    }
+}
+
+static void download_task(void *arg)
+{
+    download_t *dl = arg;
+    httpd_req_t *req = dl->req;
+    FILE *f = fopen(dl->path, "rb");
+    uint8_t *buf = heap_caps_malloc(DOWNLOAD_CHUNK, MALLOC_CAP_SPIRAM);
+    if (!f || !buf) {
+        send_json_error(req, f ? "500 Internal Server Error" : "404 Not Found",
+                        f ? "out of memory" : "no such file");
+    } else {
+        const char *name = strrchr(dl->path, '/') + 1;
+        const size_t nl = strlen(name);
+        const bool srt = nl > 4 && strcmp(name + nl - 4, ".srt") == 0;
+        const bool mp4 = nl > 4 && strcmp(name + nl - 4, ".mp4") == 0;
+        char disp[96];
+        /* A .ts or subtitles download; an MP4 or a screenshot opens in the tab. */
+        const bool inline_view = mp4 || !dl->video;
+        snprintf(disp, sizeof(disp), "%s; filename=\"%.48s\"", inline_view ? "inline" : "attachment", name);
+        httpd_resp_set_type(req, srt  ? "application/x-subrip"
+                                 : mp4 ? "video/mp4"
+                                 : dl->video ? "video/mp2t" : "image/jpeg");
+        httpd_resp_set_hdr(req, "Content-Disposition", disp);
+        httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+        /* Ranges let a player seek: the browser's own for an MP4, the console's
+         * for a .ts. The body stays chunked; Content-Range carries the size. */
+        httpd_resp_set_hdr(req, "Accept-Ranges", "bytes");
+        char range[64];
+        uint64_t left = UINT64_MAX;
+        if (dl->ranged) {
+            snprintf(range, sizeof(range), "bytes %llu-%llu/%llu", (unsigned long long)dl->first,
+                     (unsigned long long)dl->last, (unsigned long long)dl->size);
+            httpd_resp_set_status(req, "206 Partial Content");
+            httpd_resp_set_hdr(req, "Content-Range", range);
+            left = dl->last - dl->first + 1;
+            if (fseeko(f, (off_t)dl->first, SEEK_SET) != 0) {
+                left = 0;
+            }
+        }
+        size_t n;
+        esp_err_t err = ESP_OK;
+        while (err == ESP_OK && left &&
+               (n = fread(buf, 1, left < DOWNLOAD_CHUNK ? (size_t)left : DOWNLOAD_CHUNK, f)) > 0) {
+            err = httpd_resp_send_chunk(req, (const char *)buf, (ssize_t)n);
+            left -= left == UINT64_MAX ? 0 : n;
+        }
+        if (err == ESP_OK) {
+            httpd_resp_send_chunk(req, NULL, 0);
+        }
+    }
+    if (f) {
+        fclose(f);
+    }
+    heap_caps_free(buf);
+    download_finish(req);
+    free(dl);
+    s_downloads--;
+    vTaskDelete(NULL);
+}
+
+static esp_err_t captures_file_get(httpd_req_t *req)
+{
+    if (!kvm_auth_check(req)) {
+        return kvm_auth_challenge(req);
+    }
+    const char *blocked = files_blocked();
+    if (blocked) {
+        return send_json_error(req, "409 Conflict", blocked);
+    }
+    char rel[80];
+    bool video = false;
+    if (!path_from_query(req, rel, sizeof(rel), &video)) {
+        return send_json_error(req, "400 Bad Request", "missing or invalid ?path=");
+    }
+    if (s_downloads >= DOWNLOADS_MAX) {
+        return send_json_error(req, "503 Service Unavailable", "two downloads are already running");
+    }
+    download_t *dl = calloc(1, sizeof(*dl));
+    if (!dl) {
+        return send_json_error(req, "500 Internal Server Error", "out of memory");
+    }
+    snprintf(dl->path, sizeof(dl->path), "%s/%s", kvm_storage_mount_point(), rel);
+    dl->video = video;
+    struct stat st;
+    if (stat(dl->path, &st) != 0) {
+        free(dl);
+        return send_json_error(req, "404 Not Found", "no such file");
+    }
+    /* "bytes=first-", "bytes=first-last" or "bytes=-suffix"; one range only. */
+    char range[48];
+    if (httpd_req_get_hdr_value_str(req, "Range", range, sizeof(range)) == ESP_OK &&
+        strncmp(range, "bytes=", 6) == 0 && st.st_size > 0) {
+        const uint64_t size = (uint64_t)st.st_size;
+        char *p = range + 6, *end;
+        uint64_t first, last = size - 1;
+        if (*p == '-') {
+            const uint64_t suffix = strtoull(p + 1, &end, 10);
+            first = suffix >= size ? 0 : size - suffix;
+        } else {
+            first = strtoull(p, &end, 10);
+            if (*end == '-' && end[1] >= '0' && end[1] <= '9') {
+                last = strtoull(end + 1, &end, 10);
+            }
+        }
+        if (first >= size || last < first) {
+            free(dl);
+            char cr[40];
+            snprintf(cr, sizeof(cr), "bytes */%llu", (unsigned long long)size);
+            httpd_resp_set_hdr(req, "Content-Range", cr);
+            return send_json_error(req, "416 Range Not Satisfiable", "that range is not in the file");
+        }
+        dl->ranged = true;
+        dl->first = first;
+        dl->last = last < size ? last : size - 1;
+        dl->size = size;
+    }
+    /* A file of any size would tie up the control task; it goes to a worker. */
+    if (httpd_req_async_handler_begin(req, &dl->req) != ESP_OK) {
+        free(dl);
+        return send_json_error(req, "503 Service Unavailable", "download busy");
+    }
+    s_downloads++;
+    if (xTaskCreate(download_task, "kvm_download", DOWNLOAD_STACK, dl, DOWNLOAD_PRIO, NULL) != pdPASS) {
+        s_downloads--;
+        httpd_req_async_handler_complete(dl->req);
+        free(dl);
+        return send_json_error(req, "503 Service Unavailable", "download task");
+    }
+    return ESP_OK;
+}
+
+static esp_err_t captures_delete_post(httpd_req_t *req)
+{
+    if (!kvm_auth_check(req)) {
+        return kvm_auth_challenge(req);
+    }
+    if (kvm_record_active()) {
+        return send_json_error(req, "409 Conflict", "a recording is running; stop it before deleting");
+    }
+    if (!kvm_storage_writable()) {
+        return send_json_error(req, "409 Conflict", kvm_storage_write_unavailable_reason());
+    }
+    char rel[80];
+    bool video = false;
+    if (!path_from_query(req, rel, sizeof(rel), &video)) {
+        return send_json_error(req, "400 Bad Request", "missing or invalid ?path=");
+    }
+    char path[112];
+    snprintf(path, sizeof(path), "%s/%s", kvm_storage_mount_point(), rel);
+    if (remove(path) != 0) {
+        return send_json_error(req, errno == ENOENT ? "404 Not Found" : "500 Internal Server Error",
+                               errno == ENOENT ? "no such file" : "could not delete");
+    }
+    /* A recording takes its subtitles with it. */
+    char *dot = strrchr(path, '.');
+    if (video && dot && strcmp(dot, ".srt") != 0 && (size_t)(dot - path) + 5 <= sizeof(path)) {
+        strcpy(dot, ".srt");
+        (void)remove(path);
+    }
+    ESP_LOGI(TAG, "deleted %s", rel);
+    return captures_get(req);
+}
+
+static const httpd_uri_t s_routes[] = {
+    {.uri = "/api/v1/record/status", .method = HTTP_GET, .handler = record_status_get},
+    {.uri = "/api/v1/record/start", .method = HTTP_POST, .handler = record_start_post},
+    {.uri = "/api/v1/record/stop", .method = HTTP_POST, .handler = record_stop_post},
+    {.uri = "/api/v1/record/event", .method = HTTP_POST, .handler = record_event_post},
+    {.uri = "/api/v1/screenshot", .method = HTTP_POST, .handler = screenshot_post},
+    {.uri = "/api/v1/captures", .method = HTTP_GET, .handler = captures_get},
+    {.uri = "/api/v1/captures/file", .method = HTTP_GET, .handler = captures_file_get},
+    {.uri = "/api/v1/captures/delete", .method = HTTP_POST, .handler = captures_delete_post},
+};
+
+const httpd_uri_t *record_api_routes(size_t *count)
+{
+    *count = sizeof(s_routes) / sizeof(s_routes[0]);
+    return s_routes;
+}

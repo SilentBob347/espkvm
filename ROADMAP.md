@@ -32,6 +32,9 @@ and use [Discussions](https://github.com/espkvm/espkvm/discussions) for ideas.
 - Faster H.264 on rev 3.x silicon - native YUV422 capture fed straight to the encoder; 1080p went from ~15 to ~22 fps
 - IPv6 alongside IPv4, autoconfigured from the router's advertisements, with the certificate naming the addresses
 - A log kept on the device, surviving a restart and downloadable from the console - so a report of something that failed at boot can carry the evidence
+- Screen recording and screenshots to the microSD card, with a panel to download them - recorded from the stream the viewers already get, so nothing is encoded twice
+- Timelapse to the microSD card: one keyframe every few seconds or minutes, played at 25 fps
+- A dashcam: the last stretch of the screen kept in memory or on the microSD card, and saved as an MP4 with chapters when a stop screen shows, a phrase appears or the power drops - and sent to Telegram as a video
 - A status screen on the device itself (I2C OLED or round SPI LCD) - link, address, capture and health without a browser; on the round LCD also a scannable code for joining the rescue hotspot, and a ring that fills while the recovery button is held
 
 ## Planned
@@ -45,7 +48,6 @@ and use [Discussions](https://github.com/espkvm/espkvm/discussions) for ideas.
 
 ## Under consideration
 
-- A screen recorder (save a clip of the target's output)
 - Serial console passthrough - a terminal in the console, on a free UART or as a USB serial port the target sees
 - A USB network interface to the target
 - A VNC server - reach the target from any VNC client, no browser

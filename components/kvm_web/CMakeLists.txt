@@ -4,7 +4,9 @@ idf_component_register(
         "tls_cert.c"
         "auth.c"
         "fw_install.c"
+        "record_api.c"
     INCLUDE_DIRS "include"
+    PRIV_INCLUDE_DIRS "."
     REQUIRES
         esp_http_server
         esp_https_server
@@ -14,6 +16,7 @@ idf_component_register(
         kvm_hid
         kvm_config
         kvm_storage
+        kvm_record
         kvm_net
         kvm_atx
         kvm_display

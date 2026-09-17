@@ -406,7 +406,7 @@ static void wg_reconcile(void)
     xSemaphoreGive(s_mtx);
 
     /* Optional SNTP so the handshake timestamp survives a reboot. Started once. */
-    if (kvm_setting_bool("wg_sntp") && !s_sntp_started) {
+    if (kvm_setting_bool("wg_sntp") && !s_sntp_started && !esp_sntp_enabled()) {
         esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
         esp_sntp_setservername(0, kvm_setting_str("wg_sntp_srv"));
         esp_sntp_set_time_sync_notification_cb(on_time_synced);

@@ -46,6 +46,8 @@ typedef struct {
     video_payload_t payload;
     /** Decodable on its own: JPEG always, H.264 only on an IDR. */
     bool keyframe;
+    /** esp_timer time the frame was published. */
+    int64_t at_us;
 } video_frame_ref_t;
 
 /** Mutexes and semaphores. Call once, before the web server starts. */

@@ -15,6 +15,7 @@ idf_component_register(
         kvm_mqtt
         nvs_flash
         kvm_storage
+        kvm_record
         kvm_display
         app_update
         esp_timer

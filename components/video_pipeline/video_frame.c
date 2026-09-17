@@ -16,13 +16,15 @@
 
 static struct {
     SemaphoreHandle_t mutex;
-    /** Given once per viewer per publish, so a waiting sender wakes up. */
+    /** Created once: the store is usable when this is non-NULL. */
     SemaphoreHandle_t ready;
     uint8_t *buf[VIDEO_SLOT_COUNT];
     size_t len[VIDEO_SLOT_COUNT];
     /** Readers currently sending from this slot; the encoder must not reuse it. */
     uint8_t ref[VIDEO_SLOT_COUNT];
     bool key[VIDEO_SLOT_COUNT];
+    /** When the frame was published: the time a recording gives it. */
+    int64_t at_us[VIDEO_SLOT_COUNT];
     int slots;
     int front;
     size_t cap;
@@ -30,6 +32,22 @@ static struct {
     volatile uint32_t seq;
     volatile bool keyframe_wanted;
 } s;
+
+/*
+ * Waking the senders. Each waiter takes a slot with its own binary semaphore,
+ * and a publish gives every occupied slot's. The store used to give one token
+ * per viewer into a shared counting semaphore, and a waiter that woke drained
+ * all of them to skip frames it had fallen behind on - taking the other
+ * viewers' tokens with its own. With two viewers, whichever woke first (the
+ * recorder, which runs at a higher priority) got every frame and the other got
+ * one at each 500 ms timeout: a live view at 2 fps while a recording ran.
+ */
+#define WAITER_SLOTS 16
+static struct {
+    SemaphoreHandle_t sem;
+    bool used;
+} s_waiters[WAITER_SLOTS];
+static portMUX_TYPE s_waiters_mu = portMUX_INITIALIZER_UNLOCKED;
 
 /* Viewer counting is done under a spinlock rather than the store mutex: it is
  * read from HTTP handlers on every status request and must never wait behind
@@ -45,8 +63,13 @@ void video_frame_store_init(void)
     s.front = -1;
     s.payload = VIDEO_PAYLOAD_NONE;
     s.mutex = xSemaphoreCreateMutex();
-    /* Counting, because several senders may be waiting for the same frame. */
-    s.ready = xSemaphoreCreateCounting(128, 0);
+    bool slots_ok = true;
+    for (int i = 0; i < WAITER_SLOTS; i++) {
+        s_waiters[i].sem = xSemaphoreCreateBinary();
+        slots_ok = slots_ok && s_waiters[i].sem;
+    }
+    /* Only a flag now: set once every slot exists. */
+    s.ready = slots_ok ? s.mutex : NULL;
     if (!s.mutex || !s.ready) {
         ESP_LOGE(TAG, "frame store init failed");
     }
@@ -178,21 +201,20 @@ void video_frame_publish(int slot, size_t len, bool keyframe)
     }
     s.len[slot] = len;
     s.key[slot] = keyframe;
+    s.at_us[slot] = esp_timer_get_time();
     s.front = slot;
     s.seq++;
     xSemaphoreGive(s.mutex);
 
-    int n = video_frame_viewer_count();
-    if (!s.ready || n <= 0) {
+    if (!s.ready) {
         return;
     }
-    const int cap = 16;
-    if (n > cap) {
-        n = cap;
-    }
-    for (int i = 0; i < n; i++) {
-        if (xSemaphoreGive(s.ready) != pdTRUE) {
-            break;
+    for (int i = 0; i < WAITER_SLOTS; i++) {
+        portENTER_CRITICAL(&s_waiters_mu);
+        const bool used = s_waiters[i].used;
+        portEXIT_CRITICAL(&s_waiters_mu);
+        if (used) {
+            (void)xSemaphoreGive(s_waiters[i].sem); /* already given is fine */
         }
     }
 }
@@ -231,6 +253,7 @@ bool video_frame_acquire(video_frame_ref_t *out)
         out->seq = s.seq;
         out->payload = s.payload;
         out->keyframe = s.key[f];
+        out->at_us = s.at_us[f];
         got = true;
     }
     xSemaphoreGive(s.mutex);
@@ -269,12 +292,35 @@ bool video_frame_wait_new(uint32_t seen, uint32_t timeout_ms)
         vTaskDelay(pdMS_TO_TICKS(timeout_ms < 5 ? 5 : timeout_ms));
         return s.seq != seen;
     }
-    if (xSemaphoreTake(s.ready, pdMS_TO_TICKS(timeout_ms)) == pdTRUE) {
-        while (xSemaphoreTake(s.ready, 0) == pdTRUE) {
-            /* Coalesce: a sender that fell behind sends the newest frame, not
-             * every frame it missed. */
+    int slot = -1;
+    portENTER_CRITICAL(&s_waiters_mu);
+    for (int i = 0; i < WAITER_SLOTS; i++) {
+        if (!s_waiters[i].used) {
+            s_waiters[i].used = true;
+            slot = i;
+            break;
         }
     }
+    portEXIT_CRITICAL(&s_waiters_mu);
+    if (slot < 0) {
+        /* More waiters than slots: poll, a tick at a time. */
+        const TickType_t until = xTaskGetTickCount() + pdMS_TO_TICKS(timeout_ms);
+        while (s.seq == seen && xTaskGetTickCount() < until) {
+            vTaskDelay(1);
+        }
+        return s.seq != seen;
+    }
+    /* A give left from whoever had the slot before means nothing now. The frame
+     * may also have landed between the check above and taking the slot. */
+    (void)xSemaphoreTake(s_waiters[slot].sem, 0);
+    if (s.seq == seen) {
+        /* Waking once is enough: the caller takes the newest frame, so one that
+         * fell behind sends the latest rather than every frame it missed. */
+        (void)xSemaphoreTake(s_waiters[slot].sem, pdMS_TO_TICKS(timeout_ms));
+    }
+    portENTER_CRITICAL(&s_waiters_mu);
+    s_waiters[slot].used = false;
+    portEXIT_CRITICAL(&s_waiters_mu);
     return s.seq != seen;
 }
 

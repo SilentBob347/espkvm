@@ -48,6 +48,7 @@
 #endif
 
 static const char *const s_codec_choices[] = {"mjpeg", "h264"};
+static const char *const s_rec_subs_choices[] = {"off", "keys", "everything"};
 static const char *const s_edid_choices[] = {"full", "1080p30", "720p", "1024x768"};
 static const char *const s_mouse_choices[] = {"absolute", "relative"};
 static const char *const s_engage_choices[] = {"click", "hover"};
@@ -55,6 +56,8 @@ static const char *const s_engage_choices[] = {"click", "hover"};
    the value is stored as an index, so reordering would move everyone's setting. */
 static const char *const s_layout_choices[] = {"en_us", "ru_ru", "cs_cz", "uk_ua", "lt_lt"};
 static const char *const s_media_choices[] = {"auto", "cdrom", "disk"};
+/* Index 1 is what dashcam.c calls on_card(). */
+static const char *const s_dashcam_store_choices[] = {"memory", "microSD"};
 /* Index 1.. must match k_sd_steps_khz[] in kvm_storage.c. */
 static const char *const s_sd_speed_choices[] = {"auto", "40 MHz", "20 MHz", "10 MHz", "4 MHz", "2 MHz"};
 static const char *const s_log_choices[] = {"error", "warn", "info", "debug"};
@@ -124,6 +127,95 @@ static const kvm_setting_t s_settings[] = {
                 "are taken as that fault and the encoder is rebuilt - a lost frame, once "
                 "every two minutes at most. Turn it off if a screen of yours is being "
                 "rebuilt for no reason; the log says when it happens.",
+        .def = 1, .requires_cap = KVM_CAP_H264,
+    },
+    {
+        .key = "rec_split_min", .section = "video", .type = KVM_VT_INT,
+        .title = "New recording file every (minutes)",
+        .help = "A long recording is written as several files, each playable on its own, "
+                "so one is quick to download and a damaged card loses one piece rather "
+                "than the whole. 0 starts a new file only when FAT32 needs it, at 3.9 GB.",
+        .min = 0, .max = 240, .def = 10, .requires_cap = KVM_CAP_H264,
+    },
+    {
+        .key = "rec_max_min", .section = "video", .type = KVM_VT_INT,
+        .title = "Stop a recording after (minutes)",
+        .help = "So a recording left running does not fill the card. 0 records until it is "
+                "stopped or the card is full. A runbook's \"record <seconds>\" and the "
+                "API's ?seconds= set their own length instead.",
+        .min = 0, .max = 1440, .def = 60, .requires_cap = KVM_CAP_H264,
+    },
+    {
+        .key = "dashcam", .section = "video", .type = KVM_VT_BOOL,
+        .title = "Dashcam: keep the last minutes in memory",
+        .help = "Keeps the screen's recent past in memory, and saves it to the microSD card as a "
+                "clip when something happens - the screen stays one colour, a watched phrase "
+                "appears, the power goes off - or when you press Save clip. How far back "
+                "depends on the picture: minutes of a still screen, seconds of a playing video. "
+                "Needs H.264, and keeps the encoder running while it is on. On boards with an "
+                "older (pre-3.0) chip there is less memory left, so it reaches back seconds, not minutes; "
+                "keep the past on the microSD card there instead.",
+        .def = 0, .requires_cap = KVM_CAP_H264,
+    },
+    {
+        .key = "dashcam_store", .section = "video", .type = KVM_VT_ENUM,
+        .title = "Dashcam: where the past is kept",
+        .help = "\"memory\" holds what PSRAM can spare and does not touch the card until something "
+                "happens. \"microSD\" writes the screen to the card all the time, in 15-second pieces "
+                "in VIDEO/.dashcam, and deletes the old ones: it reaches back as far as the setting "
+                "below on any board, but the card cannot be handed to the target meanwhile.",
+        .min = 0, .max = ENUM_MAX(s_dashcam_store_choices), .def = 0,
+        .choices = s_dashcam_store_choices, .requires_cap = KVM_CAP_H264,
+    },
+    {
+        .key = "dashcam_pre_s", .section = "video", .type = KVM_VT_INT,
+        .title = "Dashcam: seconds before the event",
+        .help = "At most this much of the past goes into a clip - if memory holds that much, "
+                "or all of it when the past is kept on the card.",
+        .min = 5, .max = 600, .def = 120, .requires_cap = KVM_CAP_H264,
+    },
+    {
+        .key = "dashcam_post_s", .section = "video", .type = KVM_VT_INT,
+        .title = "Dashcam: seconds after the event",
+        .help = "How long a clip goes on after what set it off. Another event meanwhile "
+                "makes it longer, up to ten minutes in all.",
+        .min = 5, .max = 600, .def = 30, .requires_cap = KVM_CAP_H264,
+    },
+    {
+        .key = "dashcam_on_flat", .section = "video", .type = KVM_VT_BOOL,
+        .title = "Dashcam: save when the screen stays one colour",
+        .help = "Half a minute of one flat colour, such as a stop screen. A black screen does "
+                "not count: that is usually the display going to sleep.",
+        .def = 1, .requires_cap = KVM_CAP_H264,
+    },
+    {
+        .key = "dashcam_on_watch", .section = "video", .type = KVM_VT_BOOL,
+        .title = "Dashcam: save when a watched phrase appears",
+        .help = "The phrases are the ones set for screen alerts.",
+        .def = 1, .requires_cap = KVM_CAP_H264,
+    },
+    {
+        .key = "dashcam_on_power", .section = "video", .type = KVM_VT_BOOL,
+        .title = "Dashcam: save when the target's power goes off",
+        .help = "Needs the ATX power LED wired, so the device can see it.",
+        .def = 1, .requires_cap = KVM_CAP_H264,
+    },
+    {
+        .key = "rec_subs", .section = "video", .type = KVM_VT_ENUM,
+        .title = "Keystrokes in recordings",
+        .help = "Writes what was pressed as subtitles next to each recording (a .srt "
+                "file of the same name; VLC and mpv show it). keys: shortcuts, named keys "
+                "and clicks, with typed characters shown as dots. everything: the typed "
+                "text too - which includes any password typed on the target, stored on "
+                "the card in plain text.",
+        .min = 0, .max = ENUM_MAX(s_rec_subs_choices), .def = 0, .choices = s_rec_subs_choices,
+        .requires_cap = KVM_CAP_H264,
+    },
+    {
+        .key = "rec_clicks", .section = "video", .type = KVM_VT_BOOL,
+        .title = "Mouse clicks in recordings",
+        .help = "With keystrokes in recordings on, also write each mouse click and "
+                "where it landed.",
         .def = 1, .requires_cap = KVM_CAP_H264,
     },
     {
@@ -255,16 +347,27 @@ static const kvm_setting_t s_settings[] = {
         .help = "Let the device fire scheduled actions. It needs the clock set over the network.",
         .def = 0, .requires_cap = KVM_CAP_SCHED,
     },
+    /* The clock. The keys keep their schedule names so saved values carry over;
+     * they sit in System because recordings use the clock too. */
     {
-        .key = "sched_ntp", .section = "schedules", .type = KVM_VT_STR,
+        .key = "time_sync", .section = "system", .type = KVM_VT_BOOL,
+        .title = "Set the clock over the network",
+        .help = "Recordings and screenshots are named by the clock, and schedules run by it. "
+                "Without this, the console sets the clock when you sign in. Schedules set it "
+                "over the network anyway.",
+        .def = 0, .requires_cap = KVM_CAP_SCHED,
+    },
+    {
+        .key = "sched_ntp", .section = "system", .type = KVM_VT_STR,
         .title = "Time server (NTP)",
         .help = "Where the clock is set from. A name on the local network works with no internet.",
         .def_str = "pool.ntp.org", .max_len = 64, .requires_cap = KVM_CAP_SCHED,
     },
     {
-        .key = "sched_tz", .section = "schedules", .type = KVM_VT_STR,
-        .title = "Time zone (POSIX TZ)",
-        .help = "A POSIX TZ string, e.g. UTC0, GMT0BST,M3.5.0/1,M10.5.0 or MSK-3. Schedules run in this zone.",
+        .key = "sched_tz", .section = "system", .type = KVM_VT_STR,
+        .title = "Time zone",
+        .help = "Pick your city; the browser's own zone is at the top of the list. File names and schedules use it. "
+                "Stored as a POSIX TZ string, e.g. MSK-3 or CET-1CEST,M3.5.0,M10.5.0/3.",
         .def_str = "UTC0", .max_len = 48, .requires_cap = KVM_CAP_SCHED,
     },
     {
@@ -297,7 +400,15 @@ static const kvm_setting_t s_settings[] = {
     {
         .key = "notify_snap", .section = "notify", .type = KVM_VT_BOOL,
         .title = "Attach a screenshot",
-        .help = "Send the screen with the message. Needs the MJPEG codec; skipped on H.264.",
+        .help = "Send the screen with the message.",
+        .def = 1, .requires_cap = KVM_CAP_NOTIFY,
+    },
+    {
+        .key = "notify_clip", .section = "notify", .type = KVM_VT_BOOL,
+        .title = "Send dashcam clips",
+        .help = "When the dashcam saves a clip, send it: to Telegram as a video that plays in "
+                "the chat (up to 50 MB; bigger ones are named instead), to the webhook as a "
+                "message with the file's name.",
         .def = 1, .requires_cap = KVM_CAP_NOTIFY,
     },
     {

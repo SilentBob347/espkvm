@@ -73,6 +73,14 @@ void kvm_storage_set_other_slot_busy(bool busy);
 void kvm_storage_set_slot_changed_cb(void (*cb)(void));
 
 /**
+ * Register a callback run just before the card's filesystem goes away - the
+ * card is pulled out, handed whole to the target, re-read, or the SD host goes
+ * to the WiFi chip - so open files can be closed first. It may block until they
+ * are. @p why says which, for the log and the console.
+ */
+void kvm_storage_set_fs_leaving_cb(void (*cb)(const char *why));
+
+/**
  * Hand the SD slot back so a WiFi co-processor on the same slot can use it.
  * Ejects any exposed image and unmounts the card. @p was_mounted,
  * if not NULL, is set to whether a card was actually mounted, so the caller

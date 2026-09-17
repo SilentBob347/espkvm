@@ -1147,6 +1147,21 @@ static void enqueue(const q_msg_t *m)
     (void)xQueueSend(s_hid_q, m, 0);
 }
 
+static void (*volatile s_observer)(const usb_hid_obs_t *report);
+
+void usb_hid_set_observer(void (*cb)(const usb_hid_obs_t *report))
+{
+    s_observer = cb;
+}
+
+static void observe(const usb_hid_obs_t *report)
+{
+    void (*const cb)(const usb_hid_obs_t *) = s_observer;
+    if (cb) {
+        cb(report);
+    }
+}
+
 void usb_hid_mouse_abs(uint8_t buttons, uint16_t x, uint16_t y, int8_t wheel, int8_t pan)
 {
     if (x > USB_HID_ABS_MAX) {
@@ -1155,6 +1170,7 @@ void usb_hid_mouse_abs(uint8_t buttons, uint16_t x, uint16_t y, int8_t wheel, in
     if (y > USB_HID_ABS_MAX) {
         y = USB_HID_ABS_MAX;
     }
+    observe(&(usb_hid_obs_t){.type = USB_HID_OBS_MOUSE_ABS, .buttons = buttons, .x = x, .y = y});
     const q_msg_t m = {
         .type = Q_MOUSE_ABS,
         .u.abs = {.buttons = buttons, .x = x, .y = y, .wheel = wheel, .pan = pan},
@@ -1164,6 +1180,7 @@ void usb_hid_mouse_abs(uint8_t buttons, uint16_t x, uint16_t y, int8_t wheel, in
 
 void usb_hid_mouse_rel(uint8_t buttons, int16_t dx, int16_t dy, int8_t wheel, int8_t pan)
 {
+    observe(&(usb_hid_obs_t){.type = USB_HID_OBS_MOUSE_REL, .buttons = buttons});
     const q_msg_t m = {
         .type = Q_MOUSE_REL,
         .u.rel = {.buttons = buttons, .dx = dx, .dy = dy, .wheel = wheel, .pan = pan},
@@ -1186,6 +1203,9 @@ void usb_hid_keyboard(uint8_t modifier, const uint8_t keycode[HID_KBD_KEYS])
     if (!keycode) {
         return;
     }
+    usb_hid_obs_t obs = {.type = USB_HID_OBS_KEYBOARD, .modifier = modifier};
+    memcpy(obs.keys, keycode, sizeof(obs.keys));
+    observe(&obs);
     q_msg_t m = {.type = Q_KEY};
     m.u.key.modifier = modifier;
     memcpy(m.u.key.keycode, keycode, sizeof(m.u.key.keycode));
@@ -1194,6 +1214,7 @@ void usb_hid_keyboard(uint8_t modifier, const uint8_t keycode[HID_KBD_KEYS])
 
 void usb_hid_consumer(uint16_t usage)
 {
+    observe(&(usb_hid_obs_t){.type = USB_HID_OBS_CONSUMER, .usage = usage});
     const q_msg_t m = {.type = Q_CONSUMER, .u.consumer = usage};
     enqueue(&m);
 }

@@ -11,6 +11,8 @@
  */
 #include "runbook.h"
 
+#include "kvm_record.h"
+
 #include "cJSON.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -62,8 +64,13 @@ static void status_step(uint16_t step, const rb_step_t *st)
     char line[RUNBOOK_LINE_MAX];
     snprintf(line, sizeof(line), "%s %s", rb_kind_name(st->kind),
              (st->kind == RB_DELAY || st->kind == RB_TIMEOUT) ? "" : st->arg);
-    if (st->kind == RB_DELAY || st->kind == RB_TIMEOUT) {
+    if (st->kind == RB_DELAY || st->kind == RB_TIMEOUT || (st->kind == RB_RECORD && st->value)) {
         snprintf(line, sizeof(line), "%s %u", rb_kind_name(st->kind), (unsigned)st->value);
+    } else if (st->kind == RB_TIMELAPSE) {
+        snprintf(line, sizeof(line), st->value ? "timelapse %u %u" : "timelapse %u", (unsigned)st->every,
+                 (unsigned)st->value);
+    } else if (st->kind == RB_RECORD || st->kind == RB_RECORD_STOP || st->kind == RB_SCREENSHOT) {
+        snprintf(line, sizeof(line), "%s", rb_kind_name(st->kind));
     }
     xSemaphoreTake(s_lock, portMAX_DELAY);
     s_status.step = step;
@@ -182,6 +189,37 @@ static void run_task(void *arg)
         case RB_TIMEOUT:
             timeout_s = st->value;
             break;
+        case RB_RECORD: {
+            char why[96];
+            if (kvm_record_start(st->value, why, sizeof(why)) != ESP_OK) {
+                /* A runbook meant to leave a recording behind should say it could not. */
+                snprintf(msg, sizeof(msg), "line %u: no recording: %.64s", (unsigned)st->line, why);
+                end = RUNBOOK_FAILED;
+                ok = false;
+            }
+            break;
+        }
+        case RB_TIMELAPSE: {
+            char why[96];
+            if (kvm_record_start_timelapse(st->every, st->value, why, sizeof(why)) != ESP_OK) {
+                snprintf(msg, sizeof(msg), "line %u: no timelapse: %.64s", (unsigned)st->line, why);
+                end = RUNBOOK_FAILED;
+                ok = false;
+            }
+            break;
+        }
+        case RB_RECORD_STOP:
+            kvm_record_stop("stopped by a runbook");
+            break;
+        case RB_SCREENSHOT: {
+            char file[64], why[96];
+            if (kvm_record_screenshot(file, sizeof(file), why, sizeof(why)) != ESP_OK) {
+                snprintf(msg, sizeof(msg), "line %u: no screenshot: %.64s", (unsigned)st->line, why);
+                end = RUNBOOK_FAILED;
+                ok = false;
+            }
+            break;
+        }
         case RB_WAIT:
         case RB_GONE: {
             const int r = wait_phrase(st, timeout_s, msg, sizeof(msg));

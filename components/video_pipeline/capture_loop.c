@@ -175,8 +175,12 @@ void capture_loop_run(capture_ctx_t *c)
         if (want != codec) {
             const capture_codec_t *now_running = codec_switch(codec, want);
             if (!now_running) {
-                ESP_LOGE(CAPTURE_LOG_TAG, "codec switch left nothing running");
-                break;
+                /* Usually memory. The loop's top retries every two seconds; leaving
+                 * the loop instead ended the capture task, and the watchdog then
+                 * restarted the whole device. */
+                ESP_LOGE(CAPTURE_LOG_TAG, "codec switch left nothing running; retrying");
+                codec = NULL;
+                continue;
             }
             if (now_running == codec) {
                 continue; /* still busy; try again on the next frame */
@@ -246,6 +250,7 @@ void capture_loop_run(capture_ctx_t *c)
          * text mode that has stopped moving. */
         capture_screentext_tick(c, src);
         capture_flat_tick(c, src);
+        capture_snapshot_tick(c, src);
 
         esp_err_t ee = codec->encode(c, src, force_publish);
         if (ee == ESP_OK) {

@@ -5,9 +5,11 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "driver/i2c_master.h"
+#include "esp_err.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -38,6 +40,8 @@ typedef struct {
      * read and is nearly all one colour. See capture_flat.c.
      */
     uint32_t flat_ms;
+    /** The flat colour is black or nearly: a blanked output, not a stop screen. */
+    bool flat_dark;
 } kvm_video_status_t;
 
 /**
@@ -50,6 +54,13 @@ void capture_reserve_early(void);
 void capture_start(void);
 
 void capture_status_get(kvm_video_status_t *out);
+
+/**
+ * The screen as a JPEG, on either codec. On success @p out is a PSRAM buffer the
+ * caller frees. ESP_ERR_NOT_FOUND when there is no signal, ESP_ERR_TIMEOUT when
+ * no frame came in @p timeout_ms (a device too hot to encode sends none).
+ */
+esp_err_t capture_snapshot_jpeg(uint8_t **out, size_t *out_len, uint32_t timeout_ms);
 
 /**
  * The I2C master bus the capture bridge lives on (I2C_NUM_0, the board's

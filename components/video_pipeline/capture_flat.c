@@ -40,6 +40,7 @@
  * as nothing tries to compare the two directly.
  */
 static volatile uint32_t s_flat_since_ms;
+static volatile bool s_flat_dark;
 
 static inline uint32_t now_ms(void)
 {
@@ -51,14 +52,22 @@ static inline uint32_t now_ms(void)
 
 void capture_flat_tick(capture_ctx_t *c, const void *frame)
 {
+    bool dark = false;
     if (!capture_flat_is_flat(frame, (size_t)c->hres * c->vres,
-                              (uint8_t)capture_pixfmt_bytes())) {
+                              (uint8_t)capture_pixfmt_bytes(), &dark)) {
         s_flat_since_ms = 0;
         return;
     }
-    if (s_flat_since_ms == 0) {
+    /* A change of colour, black to blue, is a new flat screen. */
+    if (s_flat_since_ms == 0 || dark != s_flat_dark) {
         s_flat_since_ms = now_ms();
     }
+    s_flat_dark = dark;
+}
+
+bool capture_flat_dark(void)
+{
+    return s_flat_dark;
 }
 
 void capture_flat_forget(void)

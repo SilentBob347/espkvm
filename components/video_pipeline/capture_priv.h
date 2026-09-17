@@ -139,11 +139,18 @@ void capture_screentext_forget(void);
  */
 void capture_flat_tick(capture_ctx_t *c, const void *frame);
 
+/* A screenshot asked for while H.264 runs is encoded from this frame. Capture
+ * task only; costs nothing unless one is waiting. See capture_snapshot.c. */
+void capture_snapshot_tick(capture_ctx_t *c, const void *frame);
+
 /** Forget it, the way capture_screentext_forget() does when the signal goes. */
 void capture_flat_forget(void);
 
 /** How long the screen has been one colour, in ms; 0 when it is not. */
 uint32_t capture_flat_ms(void);
+
+/** Whether the flat colour is black or nearly. Meaningful while flat. */
+bool capture_flat_dark(void);
 
 /*
  * Read the screen with no viewer connected, for the watch. Cheap and silent

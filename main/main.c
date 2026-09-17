@@ -31,6 +31,7 @@
 #include "kvm_caps.h"
 #include "kvm_ipv6.h"
 #include "kvm_mqtt.h"
+#include "kvm_record.h"
 #include "kvm_storage.h"
 #include "kvm_ts.h"
 #include "kvm_tls.h"
@@ -641,6 +642,7 @@ void app_main(void)
         ESP_LOGI(TAG, "boot: storage (SDMMC slot %d)", kvm_storage_sd_slot());
         ESP_ERROR_CHECK(kvm_storage_init());
         kvm_storage_set_slot_changed_cb(on_slot_changed);
+        kvm_record_init();
     } else {
         ESP_LOGI(TAG, "boot: storage skipped (WiFi mode; the co-processor holds the SD slot)");
     }
@@ -739,6 +741,7 @@ void app_main(void)
     kvm_sched_init();
     /* Push notifications, on their own low-priority task. */
     kvm_notify_init();
+    kvm_record_dashcam_init();
 
     ESP_LOGI(TAG, "boot: capture");
     capture_start();

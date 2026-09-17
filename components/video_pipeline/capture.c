@@ -160,6 +160,7 @@ void capture_status_get(kvm_video_status_t *out)
        integer written by one task and read here, and it has no business
        holding the critical section the encoder's counters live in. */
     out->flat_ms = capture_flat_ms();
+    out->flat_dark = out->flat_ms && capture_flat_dark();
 }
 
 static bool s_probed;

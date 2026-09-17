@@ -9,4 +9,5 @@ idf_component_register(
         kvm_config
         kvm_hid
         kvm_screentext
+        kvm_record
 )

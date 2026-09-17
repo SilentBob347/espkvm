@@ -16,6 +16,7 @@
 #include "kvm_mqtt.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "esp_app_desc.h"
@@ -36,6 +37,7 @@
 #include "ethernet.h"
 #include "kvm_atx.h"
 #include "kvm_caps.h"
+#include "kvm_record.h"
 #include "kvm_settings.h"
 #include "kvm_thermal.h"
 #include "usb_hid.h"
@@ -178,6 +180,9 @@ static int build_state(char *b, size_t n)
     }
     json_escape(rb_json, sizeof(rb_json), rb_text);
 
+    static kvm_record_status_t rec; /* file names are the recorder's own: no quoting needed */
+    kvm_record_status(&rec);
+
     return snprintf(b, n,
              "{\"tempC\":%d.%u,\"thermal\":\"%s\",\"viewers\":%d,\"signal\":\"%s\","
              "\"resolution\":\"%s\",\"fps\":%u.%02u,\"codec\":\"%s\",\"kbps\":%u,"
@@ -196,7 +201,9 @@ static int build_state(char *b, size_t n)
              "\"internalKb\":%u,\"internalLargestKb\":%u,\"skippedFps\":%u.%02u,"
              "\"slot\":\"%s\",\"bootReason\":\"%s\","
              "\"jiggler\":\"%s\",\"jigglerSec\":%d,\"jigglerNudges\":%u,"
-             "\"runbook\":\"%s\",\"runbookText\":\"%s\"}",
+             "\"runbook\":\"%s\",\"runbookText\":\"%s\","
+             /* The recorder: whether it runs, and the file it writes to. */
+             "\"recording\":\"%s\",\"recordingFile\":\"%s\"}",
              t_int, t_dec, kvm_thermal_state_name(kvm_thermal_state()), viewers,
              v.signal ? "ON" : "OFF", res, (unsigned)(v.fps_x100 / 100),
              (unsigned)(v.fps_x100 % 100), codec, (unsigned)v.kbps,
@@ -208,7 +215,8 @@ static int build_state(char *b, size_t n)
              (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024),
              (unsigned)(v.skipped_fps_x100 / 100u), (unsigned)(v.skipped_fps_x100 % 100u),
              running_slot(), boot_reason(), jiggle_s > 0 ? "ON" : "OFF", (int)jiggle_s,
-             (unsigned)usb_hid_jiggler_nudges(), k_rb_states[rb.state], rb_json);
+             (unsigned)usb_hid_jiggler_nudges(), k_rb_states[rb.state], rb_json,
+             rec.recording ? "ON" : "OFF", rec.file);
 }
 
 /*
@@ -229,8 +237,9 @@ static int build_state(char *b, size_t n)
  * spare; the compiler checks the arithmetic at -O2 (format-truncation) and the
  * caller checks the result at runtime, because a truncated payload is not JSON.
  */
-/* The alert and the runbook line, both escaped, plus the fixed fields. */
-#define STATE_JSON_MAX (SCREENTEXT_ALERT_MAX * 2 + (RUNBOOK_NAME_MAX + RB_ERR_MAX + 32) * 2 + 700)
+/* The alert and the runbook line, both escaped, the recording's file name, plus the
+ * fixed fields. */
+#define STATE_JSON_MAX (SCREENTEXT_ALERT_MAX * 2 + (RUNBOOK_NAME_MAX + RB_ERR_MAX + 32) * 2 + 800)
 static void publish_snapshot(void);      /* defined with the discovery helpers below */
 static void publish_update_state(bool force);
 
@@ -245,6 +254,7 @@ static void publish_state(void)
         /* Should not happen - the buffer is sized for the worst case - but a
          * cut-off payload is worse than none, so say so instead of sending it. */
         ESP_LOGW(TAG, "state payload did not fit; not published");
+        xSemaphoreGive(s_mtx); /* or every later publish waits on it forever */
         return;
     }
     if (s_client) {
@@ -427,36 +437,28 @@ static void disco_camera(const char *obj, const char *name, const char *icon)
 }
 
 /*
- * Publish one still of the target's screen.
- *
- * Only possible while MJPEG is the codec - H.264 has no still to hand out, the
- * same reason /api/v1/video/frame.jpg refuses there. Published at QoS 0 and not
- * retained: the client sends a large message in fragments rather than copying it
- * whole, which matters on a chip with this little internal memory, and a stale
- * screenshot sitting on the broker forever helps nobody.
+ * Publish one still of the target's screen, on either codec (see
+ * capture_snapshot_jpeg). Published at QoS 0 and not retained: the client sends
+ * a large message in fragments rather than copying it whole, which matters on a
+ * chip with this little internal memory, and a stale screenshot sitting on the
+ * broker forever helps nobody.
  */
 static void publish_snapshot(void)
 {
     if (!s_connected || !s_client) {
         return;
     }
-    if (video_frame_payload() != VIDEO_PAYLOAD_JPEG) {
-        ESP_LOGI(TAG, "snapshot skipped: needs the MJPEG codec");
+    uint8_t *jpeg = NULL;
+    size_t len = 0;
+    if (capture_snapshot_jpeg(&jpeg, &len, 3000) != ESP_OK) {
+        ESP_LOGI(TAG, "snapshot skipped: no picture to take");
         return;
     }
-    video_frame_viewer_enter();
-    (void)video_frame_wait_new(video_frame_seq(), 2000);
-    video_frame_ref_t ref;
-    if (video_frame_acquire(&ref)) {
-        if (ref.payload == VIDEO_PAYLOAD_JPEG && ref.len > 0) {
-            char topic[96];
-            snprintf(topic, sizeof(topic), "%s/snapshot", s_base_topic);
-            esp_mqtt_client_publish(s_client, topic, (const char *)ref.data, (int)ref.len, 0, 0);
-            ESP_LOGI(TAG, "snapshot published (%u bytes)", (unsigned)ref.len);
-        }
-        video_frame_release(&ref);
-    }
-    video_frame_viewer_leave();
+    char topic[96];
+    snprintf(topic, sizeof(topic), "%s/snapshot", s_base_topic);
+    esp_mqtt_client_publish(s_client, topic, (const char *)jpeg, (int)len, 0, 0);
+    ESP_LOGI(TAG, "snapshot published (%u bytes)", (unsigned)len);
+    free(jpeg);
 }
 
 static void publish_discovery(void)
@@ -510,6 +512,15 @@ static void publish_discovery(void)
 
     /* The jiggler, as a switch and the interval beside it: the point of having
      * it here is an automation - quiet during the day, awake at night. */
+    /* Recording to the microSD card: a switch that shows whether it runs, and a
+     * screenshot saved there. A snapshot to MQTT is a separate thing - that one
+     * lands in Home Assistant, this one on the card. */
+    disco_switch("recording", "Recording to microSD", "record", "{{ value_json.recording }}",
+                 "mdi:record-rec", NULL);
+    disco_sensor("sensor", "recfile", "Recording file", "{{ value_json.recordingFile }}", NULL,
+                 NULL, "mdi:filmstrip", "diagnostic");
+    disco_button("btn_screenshot", "Screenshot to microSD", "screenshot", "mdi:camera", NULL);
+    disco_button("btn_clip", "Save dashcam clip", "clip", "mdi:record-circle-outline", NULL);
     disco_switch("jiggler", "Mouse jiggler", "jiggler", "{{ value_json.jiggler }}",
                  "mdi:mouse-move-vertical", NULL);
     disco_number("jiggler_s", "Jiggle every", "jiggler_s", "{{ value_json.jigglerSec }}", 0, 3600,
@@ -644,6 +655,26 @@ static void handle_command(esp_mqtt_event_handle_t e)
         }
     } else if (strcmp(action, "snapshot") == 0) {
         publish_snapshot();
+    } else if (strcmp(action, "record") == 0) {
+        char why[128] = "";
+        if (payload_is(e, "ON")) {
+            if (kvm_record_start(0, why, sizeof(why)) != ESP_OK) {
+                ESP_LOGW(TAG, "recording from Home Assistant: %s", why);
+            }
+        } else {
+            kvm_record_stop("stopped from Home Assistant");
+        }
+        publish_state();
+    } else if (strcmp(action, "clip") == 0) {
+        char why[96] = "";
+        if (!kvm_record_event("Saved from Home Assistant", why, sizeof(why))) {
+            ESP_LOGW(TAG, "clip from Home Assistant: %s", why);
+        }
+    } else if (strcmp(action, "screenshot") == 0) {
+        char file[64], why[128] = "";
+        if (kvm_record_screenshot(file, sizeof(file), why, sizeof(why)) != ESP_OK) {
+            ESP_LOGW(TAG, "screenshot from Home Assistant: %s", why);
+        }
     } else if (strcmp(action, "runbook") == 0) {
         /* The payload is the runbook's name, as the button was told to send. */
         char name[RUNBOOK_NAME_MAX];

@@ -186,8 +186,8 @@ written down in [docs/HARDWARE-NOTES.md](docs/HARDWARE-NOTES.md).
 
 ### More boards, run on real hardware
 
-Each of these has had this firmware on it, on someone's bench. All three carry
-an ESP32-P4, a MIPI-CSI connector, USB OTG-HS and an onboard ESP32-C6; the units
+Each of these has had this firmware on it, on someone's bench. All four carry
+an ESP32-P4, a MIPI-CSI connector, USB OTG-HS and an onboard ESP32-C6. Most units
 tested were pre-3.0 silicon, so the overlays build for that by default and a rev
 3.x unit takes the `-rev3` image instead.
 
@@ -224,9 +224,29 @@ Two USB-C ports - the target goes on the OTG-HS one. Build overlay:
 
 <table>
 <tr>
+<td width="50%"><img src="docs/board-poe.jpg" alt="Waveshare ESP32-P4-WIFI6-POE-ETH board"></td>
 <td width="50%"><img src="docs/board-wifi6.webp" alt="Waveshare ESP32-P4-WIFI6 board"></td>
 </tr>
 <tr>
+<td valign="top">
+
+**[Waveshare ESP32-P4-WIFI6-POE-ETH](https://www.waveshare.com/esp32-p4-wifi6-poe-eth.htm)**
+
+The first supported board that takes **PoE**, so a KVM in a rack needs one cable
+instead of two. Same IP101 Ethernet, same microSD wiring and the same ESP32-C6
+over SDIO as the boards above; 32 MB PSRAM, 32 MB flash, and a full-size USB-A
+port for the target. Confirmed by [@deltorek112](https://github.com/deltorek112)
+on rev 3.x silicon with the `p4-poe-rev3` image: 1080p over H.264 at 23 fps,
+through a Waveshare HDMI to CSI Adapter
+([issue #51](https://github.com/espkvm/espkvm/issues/51)). Build overlay:
+`boards/poe_p4.defaults`, or `boards/poe_p4_rev3.defaults`.
+
+Waveshare said in August 2026 that these ship rev 1.3, but the one tested was
+rev 3.x - **check the boot log before flashing**: it prints `Chip rev:`, and a
+rev 3.x board wants the `-rev3` build. The pre-3.0 image has not been run on
+this board yet.
+
+</td>
 <td valign="top">
 
 **[Waveshare ESP32-P4-WIFI6](https://www.waveshare.com/esp32-p4-wifi6.htm)**
@@ -259,24 +279,9 @@ above.
 
 <table>
 <tr>
-<td width="50%"><img src="docs/board-poe.jpg" alt="Waveshare ESP32-P4-WIFI6-POE-ETH board"></td>
 <td width="50%"><img src="docs/board-wifi6-devkit.webp" alt="Waveshare ESP32-P4-WIFI6-DEV-KIT board"></td>
 </tr>
 <tr>
-<td valign="top">
-
-**[Waveshare ESP32-P4-WIFI6-POE-ETH](https://www.waveshare.com/esp32-p4-wifi6-poe-eth.htm)**
-
-The first supported board that takes **PoE**, so a KVM in a rack needs one cable
-instead of two. Same IP101 Ethernet, same microSD wiring and the same ESP32-C6
-over SDIO as the boards above; 32 MB PSRAM, 32 MB flash, and a full-size USB-A
-port for the target. Build overlay: `boards/poe_p4.defaults`.
-
-Waveshare confirmed (August 2026) that these ship rev 1.3 today, so the pre-3.0
-image is the likely one. **Check the boot log before flashing** - it prints
-`Chip rev:`, and a rev 3.x board wants the `-rev3` build.
-
-</td>
 <td valign="top">
 
 **[Waveshare ESP32-P4-WIFI6-DEV-KIT](https://www.waveshare.com/esp32-p4-wifi6-dev-kit.htm)**
@@ -435,7 +440,7 @@ which is worth having before the board does.
 
 A TC358743 HDMI -> MIPI CSI-2 bridge that turns the target's HDMI output into a
 camera stream the ESP32-P4 can read. Any other TC358743 capture board should do
-just as well: the firmware talks to that chip, not to the board around it.
+just as well: the firmware talks to that chip, not to the board around it. The Waveshare adapter below is one that has been run.
 
 It also brings the bridge's I2S audio out on a 5-pin connector of its own, and
 Geekworm puts a cable for it in the box. Nothing reads it yet; the pinout and
@@ -460,6 +465,23 @@ A small board that presses the target's power and reset buttons and senses the
 power LED without a direct electrical connection. A relay board does the two
 buttons just as well, but cannot sense the LED. Wiring for both is in
 [docs/wiring.md](docs/wiring.md).
+
+</td>
+</tr>
+</table>
+
+<table>
+<tr>
+<td width="50%"><img src="docs/board-waveshare-19137.webp" alt="Waveshare HDMI to CSI Adapter (19137), a TC358743 capture board with a full-size HDMI socket and a 15-pin camera ribbon"></td>
+<td valign="top">
+
+**The capture, another way — [Waveshare HDMI to CSI Adapter](https://www.waveshare.com/wiki/HDMI_to_CSI_Adapter)** (19137)
+
+The same TC358743 bridge on Waveshare's board, so the firmware treats it exactly
+like the C790. A full-size HDMI input, a 15-pin Raspberry Pi camera connector
+that also powers it, and the bridge's I2S audio on the pin header. Confirmed by [@deltorek112](https://github.com/deltorek112) on the
+ESP32-P4-WIFI6-POE-ETH: 1080p over H.264 at 23 fps
+([issue #51](https://github.com/espkvm/espkvm/issues/51)).
 
 </td>
 </tr>
@@ -569,10 +591,29 @@ along one side, with the ports coming out of the ends.
 </tr>
 </table>
 
+<table>
+<tr>
+<td width="50%"><a href="https://makerworld.com/de/models/3317162-esp32-p4-nano-c6-kvm-case"><img src="docs/case-nano-c6.webp" alt="A small black 3D-printed case for the ESP32-P4-NANO and the C790, with Ethernet, USB and HDMI coming out of one end"></a></td>
+<td valign="top">
+
+**[ESP32-P4-NANO / C6 KVM case](https://makerworld.com/de/models/3317162-esp32-p4-nano-c6-kvm-case)** (optional)
+
+A compact box for the Waveshare ESP32-P4-NANO with its ESP32-C6 and the C790,
+designed by [Crisspii](https://github.com/Crisspii), who also sent the NANO fix
+in 0.48.0. Ethernet, USB and HDMI come out of one end, the sides are vented, and
+there is room for a 10 &times; 10 &times; 7 mm heatsink. It closes with five M2
+&times; 8 mm pointed screws; the assembly notes are with the model. No display
+yet - a version with one is planned.
+
+</td>
+</tr>
+</table>
+
 <sub>Board and module photos (c) their makers, taken from product pages and used
 only to identify the hardware. The case photos are by their authors:
-[Colin Hickey](https://github.com/chickey), CC BY-NC, and
-[Fabrion365](https://makerworld.com/en/@Fabrion365). ESP-KVM is not affiliated with
+[Colin Hickey](https://github.com/chickey), CC BY-NC,
+[Fabrion365](https://makerworld.com/en/@Fabrion365) and
+[Crisspii](https://github.com/Crisspii). ESP-KVM is not affiliated with
 [Espressif](https://github.com/espressif), [Waveshare](https://github.com/waveshareteam),
 [Geekworm](https://github.com/geekworm-com), [Guition](https://github.com/guitionofficial)
 or [M5Stack](https://github.com/m5stack).
@@ -828,6 +869,49 @@ hardware cannot support is shown disabled, with the device's own explanation on
 it - not hidden, and not left to fail silently. `GET /api/capabilities` is that
 registry.
 
+**Recording and screenshots.** The record button under the picture writes the
+screen to the microSD card, into VIDEO/, as H.264 in .ts files. It records the
+same stream the viewers get, so it costs no second encode: on the Function EV the
+picture stays at 21-22 fps with a video playing on the target, and no frame is
+lost. A .ts plays in VLC and most players, and a file cut off by a pulled card or
+a power cut plays up to the last few seconds. Files over 3.9 GB continue in a
+second file, as FAT32 has a 4 GB limit. The camera button saves a JPEG into
+SCREENSHOTS/, on either codec. Both are listed in their own panel, where they can
+be downloaded and deleted. Recording needs H.264 and a card the device can write,
+and not the whole card handed to the target.
+
+A recording is split into files of 10 minutes and stops after an hour; both are
+settings. A runbook can start and stop one (`record 300`, `record stop`,
+`screenshot`), and so can Home Assistant. With keystrokes in recordings switched
+on, each video also gets a .srt of what was pressed and clicked - shortcuts and
+named keys, and typed text either as dots or, if you choose, in full. Put the
+.srt next to the video and VLC or mpv shows it.
+
+Play in the recordings panel streams a recording from the card, with seeking and
+the subtitles shown on the picture; `captures/file` answers HTTP ranges.
+
+**Timelapse.** One frame every few seconds or minutes, played back at 25 fps, so
+a night of a long install fits in a minute. Start it from the recordings panel, a
+runbook (`timelapse 60`) or `POST /api/v1/record/start?every=60`. It keeps the
+stream's keyframes (about one every two seconds), runs until stopped, and becomes
+an MP4 when it ends.
+
+**Dashcam.** With the dashcam on, the device keeps the last stretch of the screen
+in memory (up to 5 MB: minutes of a quiet screen, about 40 seconds of a playing
+video) and saves it to VIDEO/ when something happens: the screen goes one flat
+colour for half a minute, a screen alert phrase appears, or the power LED goes
+off. It keeps recording 30 seconds after. The clip becomes an MP4 with a chapter
+for each event, so it plays in a browser, and with Telegram set up it arrives in
+the chat as a video. A button under the picture, `POST /api/v1/record/event` and
+a Home Assistant button save one by hand.
+
+The past can also be kept on the microSD card instead of memory: the device then
+writes the screen to VIDEO/.dashcam in 15-second pieces all the time and deletes
+the old ones. That works on boards with little PSRAM, like the P4-ETH, and
+reaches back as far as the setting says. The card cannot be handed to the target
+while it runs. A black screen does not start a clip; a coloured one, like a stop
+screen, does.
+
 **Virtual media.** A disk image is presented to the target as a USB drive it can
 boot from - a rescue system, an installer, a live image. The console lists what
 is there and lets you pick which one the target sees. Images live in two places.
@@ -979,7 +1063,11 @@ Everything the console does is available over HTTP.
 | `POST /api/v1/storage/upload`, `/rescue`, `/delete` | manage the virtual-media images |
 | `POST /api/v1/power/wake` | send a Wake-on-LAN magic packet to the target's MAC |
 | `POST /api/v1/power/click`, `/hold`, `/reset` | ATX: tap power, hold power for a hard off, tap reset |
-| `GET /api/v1/video/frame.jpg` | one frame as a JPEG; 409 while H.264 is selected |
+| `GET /api/v1/video/frame.jpg` | one frame as a JPEG, on either codec |
+| `POST /api/v1/record/start`, `/stop`, `GET /api/v1/record/status` | record the screen to VIDEO/ on the card; `?seconds=` for a set length, `?every=` for a timelapse |
+| `POST /api/v1/screenshot` | save a screenshot to SCREENSHOTS/ on the card |
+| `POST /api/v1/record/event` | save a dashcam clip now: the past in memory plus `dashcam_post_s` after |
+| `GET /api/v1/captures`, `GET /api/v1/captures/file?path=`, `POST /api/v1/captures/delete?path=` | list, download and delete recordings and screenshots |
 | `POST /api/v1/hid/key`, `/type`, `/move`, `/click` | the keyboard and pointer, for automation. Off until the agent API is enabled in Settings &rarr; Security |
 | `POST /api/v1/hid/reattach` | present the keyboard and mouse to the target again, as if the cable had been pulled and put back |
 | `POST /api/v1/runbooks/run`, `/stop`, `GET /api/v1/runbooks/status` | run a saved runbook by name, stop it, see which step it is on |

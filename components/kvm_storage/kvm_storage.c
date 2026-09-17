@@ -82,6 +82,7 @@ static volatile bool s_presence_poll; /* the slot watcher is asking, not reading
 static volatile bool s_slot_recheck;  /* a real transfer failed; look at the slot now */
 static volatile bool s_bus_released;  /* the SD host went to the co-processor */
 static void (*s_slot_cb)(void);       /* told when a card appears or goes away */
+static void (*s_leaving_cb)(const char *why); /* told before the filesystem goes */
 
 static esp_err_t sd_mount(int attempts);
 
@@ -123,6 +124,20 @@ void kvm_storage_set_other_slot_busy(bool busy)
 void kvm_storage_set_slot_changed_cb(void (*cb)(void))
 {
     s_slot_cb = cb;
+}
+
+void kvm_storage_set_fs_leaving_cb(void (*cb)(const char *why))
+{
+    s_leaving_cb = cb;
+}
+
+/* Outside the media lock: whoever listens may take a while to close its files,
+ * and a target read must not wait behind that. */
+static void fs_leaving(const char *why)
+{
+    if (s_leaving_cb) {
+        s_leaving_cb(why);
+    }
 }
 
 void sdmmc_espkvm_transfer_started(sdmmc_card_t *card)
@@ -508,6 +523,9 @@ esp_err_t kvm_storage_media_select_whole_sd(void)
     if (!s_media_lock) {
         return ESP_ERR_INVALID_STATE;
     }
+    if (s_card) {
+        fs_leaving("the whole card was handed to the target");
+    }
     xSemaphoreTake(s_media_lock, portMAX_DELAY);
     media_close_locked();
     if (!s_card) {
@@ -809,6 +827,7 @@ void kvm_storage_reread(void)
      * medium and unmount under the lock first, so a target read in flight cannot
      * touch the card object as it is freed. */
     ESP_LOGI(TAG, "re-reading microSD after target write access");
+    fs_leaving("the card is being re-read");
     xSemaphoreTake(s_media_lock, portMAX_DELAY);
     s_handed_over = false;
     media_close_locked();
@@ -932,10 +951,16 @@ static void sd_probe_task(void *arg)
                 }
             } else if (s_card && !sd_present()) {
                 ESP_LOGW(TAG, "microSD is gone; the slot reads as empty now");
+                /* Files open on the card are closed before it is unmounted. */
+                xSemaphoreGive(s_media_lock);
+                fs_leaving("the microSD card was removed");
+                xSemaphoreTake(s_media_lock, portMAX_DELAY);
                 media_close_locked();
                 s_handed_over = false; /* nothing left to hand anyone */
-                (void)esp_vfs_fat_sdcard_unmount(MOUNT_POINT, s_card);
-                s_card = NULL;
+                if (s_card) {
+                    (void)esp_vfs_fat_sdcard_unmount(MOUNT_POINT, s_card);
+                    s_card = NULL;
+                }
                 s_ra_len = 0;
                 s_next_probe_us = 0;
                 changed = true;
@@ -1064,7 +1089,9 @@ static esp_err_t sd_mount(int attempts)
          * with data on it, and a KVM has no business wiping it to make itself
          * tidy. A card that does not mount is reported empty instead. */
         .format_if_mount_failed = false,
-        .max_files = 4,
+        /* A recording and its subtitles, two downloads or a player, an upload
+         * and a disk image; the file table lives in PSRAM. */
+        .max_files = 8,
         .allocation_unit_size = 16 * 1024,
     };
 
@@ -1157,6 +1184,7 @@ esp_err_t kvm_storage_bus_suspend(bool *was_mounted)
         return ESP_OK; /* nothing mounted - the SD host controller is already free */
     }
     /* Pull any image the target is reading before the filesystem goes away. */
+    fs_leaving("the SD host was handed to the WiFi chip");
     kvm_storage_media_eject();
     xSemaphoreTake(s_media_lock, portMAX_DELAY); /* not under a speed probe */
     s_handed_over = false; /* the card is going away; the remount on resume is fresh */

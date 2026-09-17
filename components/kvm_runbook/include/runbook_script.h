@@ -42,6 +42,10 @@ typedef enum {
     RB_TIMEOUT,
     RB_WAIT,
     RB_GONE,
+    RB_RECORD,      /* value: seconds to record, 0 = the rec_max_min setting */
+    RB_RECORD_STOP,
+    RB_SCREENSHOT,
+    RB_TIMELAPSE,   /* every: seconds between frames; value: seconds to run, 0 = until stopped */
 } rb_kind_t;
 
 typedef struct {
@@ -50,6 +54,7 @@ typedef struct {
     uint8_t mod;          /* RB_KEY: modifier bits */
     uint8_t code;         /* RB_KEY: usage */
     uint32_t value;       /* RB_DELAY: milliseconds; RB_TIMEOUT: seconds */
+    uint16_t every;       /* RB_TIMELAPSE: seconds between frames */
     char arg[RB_ARG_MAX]; /* RB_TYPE: the text; RB_WAIT/RB_GONE: the phrase;
                              RB_KEY: the chord as written */
 } rb_step_t;

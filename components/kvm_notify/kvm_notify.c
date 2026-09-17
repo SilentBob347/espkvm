@@ -27,6 +27,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 
 static const char *TAG = "notify";
@@ -43,7 +44,7 @@ static const char *TAG = "notify";
 #define HTTP_TIMEOUT_MS 15000
 /* A screen JPEG we are willing to attach. Bigger than this and we send text
    only - a notification is not a place for a megabyte. */
-#define PHOTO_MAX (256 * 1024)
+#define PHOTO_MAX (2 * 1024 * 1024) /* a 1080p screenshot at quality 90; Telegram takes 10 MB */
 /* How much of the tail of the device log to attach, when asked. Telegram takes
    up to 4096 characters in one message; a webhook takes it as a field. */
 #define LOG_TAIL_MAX 2048
@@ -55,6 +56,7 @@ static const char *TAG = "notify";
 typedef enum {
     EV_SEND,
     EV_FIND_CHATS,
+    EV_CLIP,
 } ev_kind_t;
 
 typedef struct {
@@ -62,7 +64,13 @@ typedef struct {
     char title[TITLE_MAX];
     char body[BODY_MAX];
     bool want_photo;
+    char path[112];     /* EV_CLIP: the file */
+    char card_path[80]; /* EV_CLIP: how the card names it */
 } event_t;
+
+/* The Bot API takes uploads up to 50 MB; a little under, for the form around it. */
+#define TG_VIDEO_MAX (49 * 1024 * 1024)
+#define CLIP_CHUNK (32 * 1024)
 
 static QueueHandle_t s_queue;
 static SemaphoreHandle_t s_lock;
@@ -84,6 +92,19 @@ void kvm_notify_send(const char *title, const char *body, bool want_photo)
     strlcpy(ev.body, body ? body : "", sizeof(ev.body));
     /* Never block a caller (it might be the capture task): drop if the queue is
        full - a backlog of stale alerts helps no one. */
+    (void)xQueueSend(s_queue, &ev, 0);
+}
+
+void kvm_notify_send_clip(const char *path, const char *card_path, const char *caption)
+{
+    if (!s_queue) {
+        return;
+    }
+    event_t ev = {.kind = EV_CLIP};
+    strlcpy(ev.title, "Dashcam clip", sizeof(ev.title));
+    strlcpy(ev.body, caption ? caption : "", sizeof(ev.body));
+    strlcpy(ev.path, path ? path : "", sizeof(ev.path));
+    strlcpy(ev.card_path, card_path ? card_path : "", sizeof(ev.card_path));
     (void)xQueueSend(s_queue, &ev, 0);
 }
 
@@ -146,26 +167,18 @@ static void json_escape(const char *src, char *dst, size_t cap)
 
 static uint8_t *grab_photo(size_t *out_len)
 {
-    *out_len = 0;
-    if (video_frame_payload() != VIDEO_PAYLOAD_JPEG) {
-        return NULL; /* only the MJPEG codec has a JPEG to send */
+    /* Either codec: on H.264 the device makes the JPEG from the held frame. */
+    uint8_t *jpeg = NULL;
+    if (capture_snapshot_jpeg(&jpeg, out_len, 3000) != ESP_OK) {
+        *out_len = 0;
+        return NULL;
     }
-    video_frame_viewer_enter();
-    (void)video_frame_wait_new(video_frame_seq(), 2000);
-    uint8_t *buf = NULL;
-    video_frame_ref_t ref;
-    if (video_frame_acquire(&ref)) {
-        if (ref.payload == VIDEO_PAYLOAD_JPEG && ref.len > 0 && ref.len <= PHOTO_MAX) {
-            buf = heap_caps_malloc(ref.len, MALLOC_CAP_SPIRAM);
-            if (buf) {
-                memcpy(buf, ref.data, ref.len);
-                *out_len = ref.len;
-            }
-        }
-        video_frame_release(&ref);
+    if (*out_len > PHOTO_MAX) {
+        free(jpeg);
+        *out_len = 0;
+        return NULL;
     }
-    video_frame_viewer_leave();
-    return buf;
+    return jpeg;
 }
 
 /* --- Telegram ------------------------------------------------------------- */
@@ -262,6 +275,83 @@ static bool tg_photo(const char *token, const char *chat, const char *text, cons
     }
     esp_http_client_close(c);
     esp_http_client_cleanup(c);
+    return ok;
+}
+
+/*
+ * sendVideo, streamed from the card: the file never has to fit in memory. With
+ * supports_streaming the chat plays it at once, which the MP4's index at the
+ * front of the file allows.
+ */
+static bool tg_video(const char *token, const char *chat, const char *text, const char *path,
+                     size_t size)
+{
+    FILE *f = fopen(path, "rb");
+    char *chunk = heap_caps_malloc(CLIP_CHUNK, MALLOC_CAP_SPIRAM);
+    if (!f || !chunk) {
+        if (f) {
+            fclose(f);
+        }
+        free(chunk);
+        return false;
+    }
+    static const char *const boundary = "espkvmXXbnd7391";
+    char url[128];
+    snprintf(url, sizeof(url), "https://api.telegram.org/bot%s/sendVideo", token);
+    char pre[BODY_MAX + 640];
+    int pn = 0;
+    pn += snprintf(pre + pn, sizeof(pre) - pn,
+                   "--%s\r\nContent-Disposition: form-data; name=\"chat_id\"\r\n\r\n%s\r\n",
+                   boundary, chat);
+    pn += snprintf(pre + pn, sizeof(pre) - pn,
+                   "--%s\r\nContent-Disposition: form-data; name=\"caption\"\r\n\r\n%s\r\n",
+                   boundary, text);
+    pn += snprintf(pre + pn, sizeof(pre) - pn,
+                   "--%s\r\nContent-Disposition: form-data; name=\"supports_streaming\"\r\n\r\n"
+                   "true\r\n",
+                   boundary);
+    pn += snprintf(pre + pn, sizeof(pre) - pn,
+                   "--%s\r\nContent-Disposition: form-data; name=\"video\"; "
+                   "filename=\"clip.mp4\"\r\nContent-Type: video/mp4\r\n\r\n",
+                   boundary);
+    char post[64];
+    const int pon = snprintf(post, sizeof(post), "\r\n--%s--\r\n", boundary);
+
+    esp_http_client_config_t cfg = {
+        .url = url,
+        .method = HTTP_METHOD_POST,
+        .timeout_ms = 30000,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+    };
+    esp_http_client_handle_t c = esp_http_client_init(&cfg);
+    bool ok = false;
+    if (c) {
+        char ctype[80];
+        snprintf(ctype, sizeof(ctype), "multipart/form-data; boundary=%s", boundary);
+        esp_http_client_set_header(c, "Content-Type", ctype);
+        if (esp_http_client_open(c, pn + (int)size + pon) == ESP_OK &&
+            esp_http_client_write(c, pre, pn) == pn) {
+            size_t sent = 0;
+            size_t n;
+            bool w = true;
+            while (w && (n = fread(chunk, 1, CLIP_CHUNK, f)) > 0) {
+                w = esp_http_client_write(c, chunk, (int)n) == (int)n;
+                sent += n;
+            }
+            if (w && sent == size && esp_http_client_write(c, post, pon) == pon) {
+                esp_http_client_fetch_headers(c);
+                const int status = esp_http_client_get_status_code(c);
+                ok = status >= 200 && status < 300;
+                if (!ok) {
+                    ESP_LOGW(TAG, "telegram video: HTTP %d", status);
+                }
+            }
+        }
+        esp_http_client_close(c);
+        esp_http_client_cleanup(c);
+    }
+    fclose(f);
+    free(chunk);
     return ok;
 }
 
@@ -538,6 +628,42 @@ static void deliver(const event_t *ev)
     }
 }
 
+static void deliver_clip(const event_t *ev)
+{
+    if (!kvm_setting_bool("notify_clip")) {
+        return;
+    }
+    const char *token = kvm_setting_str("notify_tg_token");
+    const char *chat = kvm_setting_str("notify_tg_chat");
+    const char *url = kvm_setting_str("notify_url");
+    struct stat st;
+    const bool exists = stat(ev->path, &st) == 0;
+    char text[BODY_MAX + 200];
+    bool any = false, ok = true;
+
+    if (token[0] && chat[0] && token_plausible(token) && exists) {
+        any = true;
+        if ((size_t)st.st_size <= TG_VIDEO_MAX) {
+            snprintf(text, sizeof(text), "%s", ev->body);
+            ok = tg_video(token, chat, text, ev->path, (size_t)st.st_size);
+            ESP_LOGI(TAG, "telegram clip: %s (%u KB)", ok ? "sent" : "failed",
+                     (unsigned)(st.st_size / 1024));
+        } else {
+            snprintf(text, sizeof(text), "%.160s\nSaved on the card as %.80s (%u MB, too big for Telegram).",
+                     ev->body, ev->card_path, (unsigned)(st.st_size / (1024 * 1024)));
+            ok = tg_message(token, chat, text);
+        }
+    }
+    if (url[0]) {
+        any = true;
+        snprintf(text, sizeof(text), "%.160s - saved on the card as %.80s", ev->body, ev->card_path);
+        ok = webhook(url, ev->title, text, NULL) && ok;
+    }
+    if (any) {
+        set_result(ok ? "ok" : "the last clip did not go out - check the token, chat id or URL");
+    }
+}
+
 /* --- the event poll ------------------------------------------------------- */
 
 static void poll_events(void)
@@ -587,7 +713,9 @@ static void task(void *arg)
         if (!on) {
             continue; /* a queued event while disabled is simply dropped */
         }
-        if (got) {
+        if (got && ev.kind == EV_CLIP) {
+            deliver_clip(&ev);
+        } else if (got) {
             deliver(&ev);
         }
         poll_events();

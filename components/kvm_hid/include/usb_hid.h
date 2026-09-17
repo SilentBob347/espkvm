@@ -102,6 +102,30 @@ void usb_hid_keyboard(uint8_t modifier, const uint8_t keycode[6]);
 /** Consumer control usage (volume, media, power). 0 releases. */
 void usb_hid_consumer(uint16_t usage);
 
+/** One report on its way to the target, as a recording's subtitles see it. */
+typedef enum {
+    USB_HID_OBS_KEYBOARD,
+    USB_HID_OBS_MOUSE_ABS, /**< x, y are 0..USB_HID_ABS_MAX */
+    USB_HID_OBS_MOUSE_REL,
+    USB_HID_OBS_CONSUMER,
+} usb_hid_obs_type_t;
+
+typedef struct {
+    usb_hid_obs_type_t type;
+    uint8_t modifier;
+    uint8_t keys[6];
+    uint8_t buttons;
+    uint16_t x, y;
+    uint16_t usage;
+} usb_hid_obs_t;
+
+/**
+ * Be told about every keyboard, mouse and media-key report the device sends,
+ * whoever sent it - the console, the REST API, a runbook. Called on the
+ * sender's task, so it must only copy the report and return. NULL to stop.
+ */
+void usb_hid_set_observer(void (*cb)(const usb_hid_obs_t *report));
+
 /**
  * Release every key and button.
  * Called when the browser tab loses focus or the socket drops, so a held key

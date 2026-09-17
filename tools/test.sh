@@ -26,6 +26,9 @@ if [ "$what" = all ] || [ "$what" = host ]; then
     echo "== noticing a screen gone flat =="
     sh "$here/components/video_pipeline/test/run.sh"
     echo
+    echo "== a recording as a transport stream, and its keystroke subtitles =="
+    sh "$here/components/kvm_record/test/run.sh"
+    echo
     echo "== two things on one pin =="
     sh "$here/components/kvm_config/test/run.sh"
     echo
@@ -46,6 +49,9 @@ if [ "$what" = all ] || [ "$what" = web ]; then
     echo
     echo "== the paste tables =="
     node "$here/tools/check_layouts.mjs"
+    echo
+    echo "== the firmware's copy of the layouts, for subtitles =="
+    node "$here/tools/gen_keymap.mjs" --check
 fi
 
 echo "all good"

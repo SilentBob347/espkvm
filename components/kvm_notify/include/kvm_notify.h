@@ -29,6 +29,14 @@ void kvm_notify_init(void);
  */
 void kvm_notify_send(const char *title, const char *body, bool want_photo);
 
+/**
+ * Send a saved video: to Telegram as a video that plays in the chat (when it is
+ * under the Bot API's 50 MB), to the webhook as a message naming the file.
+ * @p path is the file's full path; @p card_path is what to call it, e.g.
+ * "VIDEO/20260917-140322-event.mp4". Queued, like kvm_notify_send.
+ */
+void kvm_notify_send_clip(const char *path, const char *card_path, const char *caption);
+
 typedef struct {
     bool enabled;
     char last_result[96]; /* "ok", or why the last send failed */

@@ -7,6 +7,117 @@ bumps the patch).
 
 ## [Unreleased]
 
+### Added
+- **Record the screen to the microSD card.** A record button under the picture
+  writes what you see into VIDEO/ on the card, as H.264 in .ts files - the
+  stream the viewers already get, so nothing is encoded twice. A .ts plays in
+  VLC and most players, and one cut off by a pulled card, a full card or a crash
+  plays up to where it stopped. On the Function EV with a video playing on the
+  target, the picture stayed at 21-22 fps while recording and no frame was lost.
+  Recording needs H.264 and a card the device can write.
+- **Screenshots to the card.** The camera button saves a JPEG into SCREENSHOTS/.
+  It works on H.264 too: the device encodes the frame it holds through the JPEG
+  engine, which H.264 leaves idle.
+- **A panel for both**, on the rail: download a recording, open a screenshot,
+  delete either. Deleting and uploading wait while a recording runs, so the card
+  only does one heavy thing at a time.
+- Files are named by the date. A device without a clock takes the time from the
+  browser the first time you record or take a screenshot.
+- **A long recording is split into files**, 10 minutes each by default, and
+  **stops by itself after an hour** unless told otherwise (both in Settings,
+  Video). Each file plays on its own from 0:00.
+- **Keystrokes as subtitles.** With it switched on, each recording gets a .srt of
+  what was pressed and clicked: "Typed: root", "Ctrl+Alt+Delete", "Down x5",
+  "Left click (812, 440)". Off by default. The "keys" mode hides typed characters
+  as dots; "everything" writes them out, passwords included. Letters follow the
+  target's keyboard layout setting.
+- **Recording from runbooks and Home Assistant.** A runbook can `record`,
+  `record 300`, `record stop` and `screenshot`, so a schedule can record too. Home
+  Assistant gets a "Recording to microSD" switch and a "Screenshot to microSD"
+  button.
+- **A dashcam.** Switched on in Settings, Video, the device keeps the last stretch
+  of the screen in memory, up to 5 MB of it. A quiet screen fits minutes; a
+  video playing on the target at about 1 Mbit fits 40 seconds. When something
+  happens it saves that past plus 30 seconds after into VIDEO/ on the card: half
+  a minute of one flat colour (a stop screen, a blank output), a screen alert
+  phrase appearing, or the power LED going off. A button under the picture, a
+  runbook's API call and a Home Assistant button save a clip by hand. Another
+  event while a clip is being saved makes it longer instead of starting a new
+  one. The dashcam needs H.264, and it waits while an ordinary recording runs.
+  A black screen does not count as an event: that is usually a display going to
+  sleep. A coloured one, like a stop screen, does.
+- **The dashcam can keep its past on the microSD card.** Set "where the past is
+  kept" to microSD and the device writes the screen to VIDEO/.dashcam in
+  15-second pieces, deleting the old ones. A clip joins the pieces it needs into
+  one MP4. It reaches back as far as the setting says on any board: on the
+  P4-ETH, which has about 3 MB of PSRAM to spare while H.264 runs, memory holds
+  only a few seconds. An ordinary recording takes over the card while it runs,
+  and the dashcam carries on after it. Tested on the P4-ETH: a 100-second clip
+  with two events, no gaps, chapters in place.
+- **A clip is an MP4 with chapters.** After it is written the device turns the
+  .ts into an MP4 on the card, so it plays in the browser and in the phone's
+  gallery. Each thing that happened is a chapter ("Before", "Target power went
+  off"), which VLC and mpv show in their chapter menu. A 46-second 1080p clip
+  took under 6 seconds to convert.
+- **Timelapse.** One frame every few seconds or minutes, played back at 25 fps:
+  an hour at one frame in 10 seconds plays in 14 seconds. Start it from the
+  recordings panel, a runbook (`timelapse 10`, `timelapse 60 28800`) or
+  `record/start?every=10`; the record button stops it. It keeps the stream's
+  keyframes, which come about every two seconds, so nothing is encoded again,
+  and it runs until stopped or the card is full. It becomes an MP4 when it ends,
+  up to 256 MB. A minute at one frame in 2 s on a busy 1080p screen was 24 frames
+  and 7 MB.
+- **Play recordings in the console.** Play in the recordings panel streams the
+  file from the card, with a seek bar and the keystroke subtitles on the
+  picture, which a button turns off. An MP4 gets them as a track of the browser's
+  player, under its CC button. Nothing is downloaded first. A .ts goes through a small demuxer in the
+  console and the same H.264 decoder the live picture uses; an MP4 plays in the
+  browser's own player. Downloads now answer HTTP ranges, which is what makes
+  seeking work.
+- **The clock is set from the network or the browser.** A new setting sets it
+  over NTP, so recordings made by the dashcam get dates in their names instead of
+  `up-001442`. Without it, the console gives the device the browser's time when
+  you sign in.
+- **The time zone can be set from the console.** Settings, System has a list of
+  cities, ordered by UTC offset, with the browser's own zone at the top. The zone and the time server
+  used to live in a settings section the console never showed, so they could
+  only be set through the API. File names are in local time now too.
+- **Clips to Telegram.** With notifications on, a saved clip goes to Telegram as
+  a video that plays right in the chat, up to Telegram's 50 MB. A bigger one
+  sends a message with its file name instead. Webhooks get the message.
+
+### Changed
+- `GET /api/v1/video/frame.jpg`, Telegram photos and the Home Assistant snapshot
+  now work while H.264 runs, instead of answering 409 or sending no picture.
+
+### Fixed
+- **Screenshots failed on the P4-ETH while H.264 ran**, and so did Telegram
+  photos and the Home Assistant snapshot: the JPEG buffer was sized for the worst
+  case, 2.6 MB, which that board does not have free. Smaller buffers are tried
+  after it.
+- **A keyframe came every nine seconds on the P4-ETH.** The keyframe interval
+  was counted in frames for 30 fps, and that board encodes 1080p at about 7.
+  Now a keyframe is sent at least every 2.5 seconds, so a viewer who joins, a
+  timelapse and the dashcam get one soon.
+- **MQTT stopped publishing for good** if a state message ever came out too long:
+  the error path returned without releasing its lock.
+- **The device could panic when a viewer left.** The video task and the web
+  server wrote to the same TLS connection from two tasks. With dynamic TLS
+  buffers one of them freed the output buffer while the other was copying into
+  it. It happened most when a browser tab closed or reconnected. The August fix
+  only covered our own sends; now every write to a connection takes the same
+  lock, and TLS buffers are no longer freed and allocated around each write.
+  Before the fix a test that opens and drops viewers crashed the device in 40
+  seconds; after it, 279 viewers came and went in three minutes with nothing.
+- **Internal memory ran short with the recorder in.** Its buffers were static,
+  so they took internal RAM that TLS needs, and logins and Telegram sends failed
+  with out-of-memory. They live in PSRAM now.
+- **The device rebooted when the codec switch failed.** The capture loop gave up
+  and the watchdog restarted the device; now it tries again.
+- **A second viewer got 2 fps.** When two viewers waited for a frame, the first
+  to wake took the other's wake-up too, and the other waited for its 500 ms
+  timeout. Two browser tabs, or a recording and a tab, showed it.
+
 ## [0.50.0] - 2026-09-16
 
 ### Added

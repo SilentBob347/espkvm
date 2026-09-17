@@ -25,6 +25,7 @@
 #include "http_server.h" /* kvm_web_security_headers: the auth routes register themselves */
 #include "kvm_tls.h"
 #include "wifi.h" /* kvm_net_mode_t: AP mode serves the console plain */
+#include "web_priv.h" /* kvm_web_clock_from_browser */
 
 #define TAG "auth"
 
@@ -871,6 +872,8 @@ static esp_err_t auth_login_post(httpd_req_t *req)
     cJSON *j = cJSON_Parse(body);
     bool fields_ok = j && json_str_field(j, "user", user, sizeof(user)) &&
                      json_str_field(j, "password", password, sizeof(password));
+    const cJSON *now = j ? cJSON_GetObjectItemCaseSensitive(j, "now") : NULL;
+    const long long browser_time = cJSON_IsNumber(now) ? (long long)now->valuedouble : 0;
     cJSON_Delete(j);
     if (!fields_ok) {
         return send_json(req, "400 Bad Request", "{\"error\":\"user and password are required\"}");
@@ -903,6 +906,8 @@ static esp_err_t auth_login_post(httpd_req_t *req)
     lock();
     s_failures = 0;
     unlock();
+    /* Signed in, so the time it brought can be trusted as far as a clock goes. */
+    kvm_web_clock_from_browser(browser_time);
 
     const bool must_change = !s_have_password;
     const char *token = session_create(must_change);

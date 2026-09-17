@@ -84,10 +84,12 @@ CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
 CONFIG_MBEDTLS_X509_CREATE_C=y
 CONFIG_MBEDTLS_X509_CRT_WRITE_C=y
 
-# TLS buffers are allocated when a connection has data to move and released
-# afterwards. Without this each open socket holds ~20 KB of internal RAM for as
-# long as the browser keeps it, and a console holds several at once.
-CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+# No dynamic TLS buffers. They freed a session's output buffer at the end of
+# every write, and the video pump and the server write to the same WebSocket
+# from two tasks: one write copied into the buffer the other had just freed, and
+# the device panicked. They were there to spare internal RAM, but TLS buffers
+# come from PSRAM now (below), so all they saved was ~20 KB of PSRAM a socket.
+# CONFIG_MBEDTLS_DYNAMIC_BUFFER is not set
 
 # TLS buffers and contexts come from PSRAM. Internal RAM is ~500 KB and has
 # ~70 KB free once WiFi and Tailscale run; a large HTTPS upload then failed to

@@ -142,8 +142,9 @@ static void task(void *arg)
     (void)arg;
     for (;;) {
         const bool on = kvm_setting_bool("sched_enable");
-        if (on) {
-            apply_tz();
+        /* The zone always: recordings are named in local time too. */
+        apply_tz();
+        if (on || kvm_setting_bool("time_sync")) {
             start_sntp();
         }
         const time_t now = time(NULL);
