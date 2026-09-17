@@ -153,6 +153,20 @@ Each of these cost real time. They are recorded so they are not rediscovered.
   BGR888, but the code gates RGB support behind `CHIP_SUPPORT_MIN_REV >= 300`.
   Below revision 3.0 the encoder takes only `O_UYY_E_VYY` (YUV420 with
   alternating `u y y` / `v y y` line prefixes).
+- **Capturing YUV422 on a pre-3.0 chip to save PSRAM does not work**, however
+  tempting it looks: a 1080p frame is 4.1 MB instead of 6.2, and the rev 3.x
+  boards do exactly that. Tried on a P4-ETH (rev 1.3) on 2026-09-17 and the
+  encoder refused the frames outright - `esp_h264_enc_hw_new(): Un-supported
+  h264 picture type parameter, pic_type: 59565955` ("UYVY"), the same revision
+  gate as the bullet above - so the device fell back to MJPEG, whose picture
+  came out green and purple because without the rev 3.0 colour-mode block in
+  the CSI bridge the bytes land in another order. The PPA cannot take them
+  either: all four of its YUV422 input modes sit behind the same revision gate
+  (`ppa_ll_srm_is_color_mode_supported`, `#if HAL_CONFIG(CHIP_SUPPORT_MIN_REV)
+  >= 300`), so capture YUV422 -> PPA -> YUV420 -> encoder is closed as well. On
+  that silicon the capture stays RGB888 with a PPA pass, which is why those
+  boards have about 3 MB of PSRAM free while H.264 runs, against 11 MB on a
+  rev 3.x board.
 - **Only the PPA can convert colour on this part.** The CSI bridge checks the
   chip revision and refuses below 3.0; the ISP accepts RAW8/10/12 only,
   because it is a Bayer pipeline.
