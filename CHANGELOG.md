@@ -7,6 +7,24 @@ bumps the patch).
 
 ## [Unreleased]
 
+### Added
+- **A keyboard on the page.** A button under the picture opens it; it is the way
+  in when the real keyboard cannot be used - a phone, a combination the browser
+  or the operating system swallows, a key the local layout does not have. Keys
+  are sent as positions, so the target's own layout decides what appears.
+  Modifiers latch: once for the next key, twice to lock. Ctrl+Alt+Del, Alt+F4,
+  Alt+Tab and Ctrl+Alt+F2 have buttons of their own, and Caps, Num and Scroll
+  light up from the target. Three layouts - every key, a compact one with the
+  function row and the navigation block, and one of symbols with the number pad -
+  two skins, and it can sit under the picture or float where it is dragged.
+- **Everyone is told when the device is being updated.** The console that
+  started it had its own splash; the others watched the picture stop for no
+  reason. They now show the same progress, and the notice clears itself when the
+  device comes back.
+- **An eye in the password field**, and the browser is asked to remember the
+  password properly - through the credential manager, with the fields named the
+  way a password manager expects.
+
 ## [0.51.2] - 2026-09-17
 
 ### Fixed

@@ -52,6 +52,7 @@ and use [Discussions](https://github.com/espkvm/espkvm/discussions) for ideas.
 - A USB network interface to the target
 - A VNC server - reach the target from any VNC client, no browser
 - Serving a USB drive plugged into the device as the target's virtual media
+- AmneziaWG - the obfuscated WireGuard fork, on top of the WireGuard client that is already here: junk packets before the handshake, junk inside it, and message types of its own ([#44](https://github.com/espkvm/espkvm/issues/44)). Asked for; it needs a server to test against
 - Yggdrasil - a decentralised overlay as an alternative to the WireGuard/Tailscale backends
 
 Have a use case that is not here? Open a discussion.

@@ -937,6 +937,14 @@ static esp_err_t api_system_usbprobe_get(httpd_req_t *req)
     return httpd_resp_send(req, body, n);
 }
 
+/* Defined with the WebSocket code below; the update path needs it up here. */
+static void ws_broadcast_update(uint8_t phase, uint8_t percent);
+/* WS_D2C_UPDATE phases, mirrored from the enum below. */
+#define UPDATE_RECEIVING 0
+#define UPDATE_VERIFYING 1
+#define UPDATE_RESTARTING 2
+#define UPDATE_FAILED 3
+
 /*
  * Restart shortly, from a timer rather than inline. Calling esp_restart() straight
  * from a request handler proved unreliable after a large OTA (issue #13): the
@@ -952,6 +960,8 @@ static void restart_soon_cb(void *arg)
 
 static void restart_soon(uint32_t delay_ms)
 {
+    /* Everyone watching gets the same warning, not only whoever asked. */
+    ws_broadcast_update(UPDATE_RESTARTING, 100);
     static esp_timer_handle_t timer;
     if (!timer) {
         const esp_timer_create_args_t args = {.callback = restart_soon_cb, .name = "restart"};
@@ -1018,6 +1028,7 @@ static esp_err_t api_system_update_post_body(httpd_req_t *req)
      * anything?" without a network.
      */
     kvm_display_notice("UPDATE", "receiving", 0, 30000);
+    ws_broadcast_update(UPDATE_RECEIVING, 0);
 
     char chunk[2048];
     int received = 0;
@@ -1034,6 +1045,7 @@ static esp_err_t api_system_update_post_body(httpd_req_t *req)
             if (++stalls > KVM_RECV_MAX_STALLS) {
                 esp_ota_abort(ota);
                 kvm_display_notice("UPDATE", "upload lost", -1, 10000);
+            ws_broadcast_update(UPDATE_FAILED, 0);
                 ESP_LOGE(TAG, "update stalled after %d of %d bytes", received, req->content_len);
                 return send_json_error(req, "408 Request Timeout", "the upload went quiet");
             }
@@ -1043,6 +1055,7 @@ static esp_err_t api_system_update_post_body(httpd_req_t *req)
         if (n <= 0) {
             esp_ota_abort(ota);
             kvm_display_notice("UPDATE", "upload lost", -1, 10000);
+            ws_broadcast_update(UPDATE_FAILED, 0);
             ESP_LOGE(TAG, "update aborted after %d of %d bytes (recv %d)", received,
                      req->content_len, n);
             return send_json_error(req, "400 Bad Request", "upload was cut short");
@@ -1051,6 +1064,7 @@ static esp_err_t api_system_update_post_body(httpd_req_t *req)
         if (err != ESP_OK) {
             esp_ota_abort(ota);
             kvm_display_notice("UPDATE", "write failed", -1, 10000);
+            ws_broadcast_update(UPDATE_FAILED, 0);
             ESP_LOGE(TAG, "esp_ota_write: %s", esp_err_to_name(err));
             return send_json_error(req, "500 Internal Server Error", esp_err_to_name(err));
         }
@@ -1061,15 +1075,18 @@ static esp_err_t api_system_update_post_body(httpd_req_t *req)
         if (pct / 5 != shown) {
             shown = pct / 5;
             kvm_display_notice("UPDATE", "receiving", pct, 30000);
+            ws_broadcast_update(UPDATE_RECEIVING, (uint8_t)pct);
         }
     }
 
     kvm_display_notice("UPDATE", "verifying", 100, 30000);
+    ws_broadcast_update(UPDATE_VERIFYING, 100);
     err = esp_ota_end(ota);
     if (err != ESP_OK) {
         /* Most often the image is not a valid application: a truncated upload
          * or the wrong file entirely. */
         kvm_display_notice("UPDATE", "bad image", -1, 10000);
+            ws_broadcast_update(UPDATE_FAILED, 0);
         ESP_LOGE(TAG, "esp_ota_end: %s", esp_err_to_name(err));
         return send_json_error(req, "400 Bad Request",
                                err == ESP_ERR_OTA_VALIDATE_FAILED ? "not a valid firmware image"
@@ -2487,7 +2504,13 @@ enum {
     WS_D2C_STATUS = 0x81,
     WS_D2C_PONG = 0x82,
     WS_D2C_CONTROL = 0x83,
+    /* An update is happening: phase, then percent. Every console gets it, not
+     * only the one that started it - the others would otherwise watch the
+     * device go quiet with no idea why. */
+    WS_D2C_UPDATE = 0x84,
 };
+
+
 
 /* WS_D2C_CONTROL states. */
 enum {
@@ -2529,6 +2552,8 @@ static httpd_handle_t s_redirect_httpd;
 #define TX_MAX_SOCKETS 16
 static SemaphoreHandle_t s_tx_mu;
 static int s_tx_fds[TX_MAX_SOCKETS];
+/* The control WebSockets, which is where a notice for everybody goes. */
+static int s_ctrl_fds[TX_MAX_SOCKETS];
 
 /** Defined with the video channel below; the session close callback needs it. */
 static void video_remove_client(int fd);
@@ -2612,6 +2637,45 @@ static void ws_send_control(int fd, uint8_t state)
 {
     const uint8_t msg[] = {WS_D2C_CONTROL, state};
     ws_send_binary(fd, msg, sizeof(msg));
+}
+
+/* Remember a control socket, so a notice can reach every console. */
+static void ctrl_client_add(int fd)
+{
+    if (!s_ws_mu || xSemaphoreTake(s_ws_mu, pdMS_TO_TICKS(200)) != pdTRUE) {
+        return;
+    }
+    int free_slot = -1;
+    for (int i = 0; i < TX_MAX_SOCKETS; i++) {
+        if (s_ctrl_fds[i] == fd) {
+            free_slot = -1;
+            break;
+        }
+        if (s_ctrl_fds[i] == 0 && free_slot < 0) {
+            free_slot = i;
+        }
+    }
+    if (free_slot >= 0) {
+        s_ctrl_fds[free_slot] = fd;
+    }
+    xSemaphoreGive(s_ws_mu);
+}
+
+/** Tell every console what the update is doing. */
+static void ws_broadcast_update(uint8_t phase, uint8_t percent)
+{
+    int fds[TX_MAX_SOCKETS];
+    if (!s_ws_mu || xSemaphoreTake(s_ws_mu, pdMS_TO_TICKS(200)) != pdTRUE) {
+        return;
+    }
+    memcpy(fds, s_ctrl_fds, sizeof(fds));
+    xSemaphoreGive(s_ws_mu);
+    const uint8_t msg[] = {WS_D2C_UPDATE, phase, percent};
+    for (int i = 0; i < TX_MAX_SOCKETS; i++) {
+        if (fds[i] > 0) {
+            ws_send_binary(fds[i], msg, sizeof(msg));
+        }
+    }
 }
 
 /** Push target-attached state and keyboard LEDs to the connected client. */
@@ -2713,6 +2777,11 @@ static void http_sess_close_cb(httpd_handle_t hd, int sockfd)
         if (was_control_session) {
             s_ws_fd = -1;
         }
+        for (int i = 0; i < TX_MAX_SOCKETS; i++) {
+            if (s_ctrl_fds[i] == sockfd) {
+                s_ctrl_fds[i] = 0;
+            }
+        }
         xSemaphoreGive(s_ws_mu);
     }
 
@@ -2766,6 +2835,7 @@ static esp_err_t ws_input_handler(httpd_req_t *req)
     }
 
     const int my_fd = httpd_req_to_sockfd(req);
+    ctrl_client_add(my_fd);
     const uint8_t op = pkt.len ? buf[0] : 0;
     const bool is_input = op >= WS_C2D_MOUSE_ABS && op <= WS_C2D_RELEASE_ALL;
 
