@@ -1131,6 +1131,8 @@ components/
   kvm_storage/    microSD and on-flash rescue image, virtual media
   kvm_config/     settings registry and capability registry
   kvm_screentext/ reading a text-mode screen back as characters
+  kvm_record/     recording to the card, the dashcam, the timelapse, MP4 remux,
+                  screenshots, and the keystroke subtitles
   kvm_runbook/    runbooks: scripted keys and screen waits, run on the device
   kvm_sched/      scheduler: cron lines that fire actions on the device
   kvm_notify/     push notifications to Telegram and a webhook
