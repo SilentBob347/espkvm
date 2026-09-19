@@ -16,6 +16,7 @@
 #include "kvm_ts.h"
 
 #include <string.h>
+#include <time.h>
 
 #include "esp_event.h"
 #include "esp_log.h"
@@ -28,6 +29,7 @@
 #include "microlink.h"
 
 #include "kvm_caps.h"
+#include "kvm_notify.h"
 #include "kvm_ipv6.h"
 #include "kvm_settings.h"
 
@@ -270,6 +272,59 @@ static void sync_tailnet_cert(void)
     }
 }
 
+/*
+ * A tailnet key lasts six months at most, and a device nobody logs into drops
+ * off the tailnet the day it lapses. The control plane tells us the date; this
+ * says so in good time, once a day, through whatever notifications are set up.
+ */
+static time_t s_key_warned;
+
+static void check_key_expiry(void)
+{
+    const int warn_days = (int)kvm_setting_int("ts_key_warn");
+    if (warn_days <= 0) {
+        return;
+    }
+    const time_t now = time(NULL);
+    if (now < 1735689600) {
+        return; /* before 2025: the clock is not set, so no date can be judged */
+    }
+    if (s_key_warned && now - s_key_warned < 24 * 3600) {
+        return;
+    }
+    kvm_ts_status_t st;
+    kvm_ts_status(&st);
+    if (!st.enabled || (!st.key_expiry && !st.key_expired)) {
+        return;
+    }
+
+    char body[192];
+    if (st.key_expired) {
+        snprintf(body, sizeof(body),
+                 "The tailnet key has run out. The device is off the tailnet until it is "
+                 "authorised again: put a fresh auth key in Settings > VPN.");
+    } else {
+        const int64_t left = st.key_expiry - (int64_t)now;
+        if (left > (int64_t)warn_days * 86400) {
+            return;
+        }
+        const int days = (int)((left + 86399) / 86400);
+        char when[32] = "soon";
+        struct tm tm;
+        const time_t expiry = (time_t)st.key_expiry;
+        if (localtime_r(&expiry, &tm)) {
+            strftime(when, sizeof(when), "%Y-%m-%d %H:%M", &tm);
+        }
+        snprintf(body, sizeof(body),
+                 "The tailnet key runs out on %s, in %d day%s. Authorise the device again "
+                 "before then, or it drops off the tailnet.",
+                 when, days, days == 1 ? "" : "s");
+    }
+    s_key_warned = now;
+    ESP_LOGW(TAG, "%s", body);
+    kvm_notify_send("Tailscale key", body, false);
+}
+
 static void ts_task(void *arg)
 {
     (void)arg;
@@ -285,6 +340,7 @@ static void ts_task(void *arg)
             ts_reconcile();
         }
         sync_tailnet_cert();
+        check_key_expiry();
     }
 }
 
@@ -321,6 +377,8 @@ void kvm_ts_status(kvm_ts_status_t *out)
     if (s_started && ml) {
         out->up = microlink_is_connected(ml);
         out->peers = microlink_get_peer_count(ml);
+        out->key_expiry = microlink_get_key_expiry(ml);
+        out->key_expired = microlink_key_expired(ml);
         const uint32_t ip = microlink_get_vpn_ip(ml);
         if (ip) {
             microlink_ip_to_str(ip, out->address);

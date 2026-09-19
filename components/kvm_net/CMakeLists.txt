@@ -19,6 +19,7 @@ idf_component_register(
     REQUIRES esp_netif
     PRIV_REQUIRES
         kvm_config
+        kvm_notify
         kvm_storage
         esp_eth
         esp_event

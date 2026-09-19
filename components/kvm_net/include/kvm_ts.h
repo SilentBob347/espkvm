@@ -11,6 +11,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "esp_err.h"
 
@@ -33,6 +34,11 @@ typedef struct {
     bool up;            /**< registered with the control plane and ready */
     char address[24];   /**< our tailnet IP (100.x.y.z), empty until assigned */
     int  peers;         /**< number of known tailnet peers */
+    /** When the node key runs out, in Unix epoch seconds; 0 when the control
+     *  plane reported none (key expiry switched off) or has not answered yet.
+     *  Tailscale allows six months at most, so this is a date worth watching. */
+    int64_t key_expiry;
+    bool key_expired;   /**< the control plane says the key is already out */
 } kvm_ts_status_t;
 
 /** Fill @p out with the tailnet client's current state. */

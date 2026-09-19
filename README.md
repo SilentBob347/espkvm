@@ -1105,6 +1105,10 @@ Everything the console does is available over HTTP.
 | `WS /video` | video frames, JPEG or H.264, behind a 12-byte header |
 | `WS /ws` | keyboard and pointer |
 
+Notifications go to Telegram, to a webhook, or to both. What the webhook
+receives - the JSON body, the fields and when each one is there - is in
+[docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md).
+
 ### Driving it from an AI agent
 
 The screen can be read back as **exact characters** on a BIOS setup screen, a

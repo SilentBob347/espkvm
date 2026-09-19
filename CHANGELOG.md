@@ -25,6 +25,32 @@ bumps the patch).
   password properly - through the credential manager, with the fields named the
   way a password manager expects.
 
+- **A warning before the tailnet key runs out.** Tailscale gives a node key six
+  months at most, and when it lapses the device is off the tailnet until someone
+  authorises it again. The device learns the date from the control plane, shows
+  it in Settings -> VPN, reports it as `ts.keyExpiry` in the system info, and
+  sends a notification a set number of days before - fourteen by default.
+
+### Changed
+- **Settings open in a window instead of the side panel.** There are over a
+  hundred of them, and a 340 px column was a scroll with no shape. The window
+  has the sections in a column on the left and the settings beside them, a box
+  to search every setting by name or by what its help says, a filter for the
+  ones that differ from the factory values, and a button per setting to put it
+  back. Help hides behind an info button rather than sitting under every row.
+  The sections, their titles and the headings inside them now come from the
+  device: a new setting is still one table row and no console work.
+- **The keyboard's extra keys moved beside it.** The arrows and editing keys sat
+  under the keyboard, repeating keys the full rows already have and pushing the
+  whole thing up over the picture. They stand beside the keys now - only what
+  the rows do not carry - and on a phone a button in the header swaps between
+  the keys and that block. The ready-made combinations fold away too.
+
+### Fixed
+- **The browser filled the settings filter with a saved username.** The search
+  box sits above password fields, which was enough for the browser to take it
+  for a login form.
+
 ## [0.51.2] - 2026-09-17
 
 ### Fixed

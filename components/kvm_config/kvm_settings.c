@@ -334,9 +334,33 @@ static const char *type_name(kvm_val_type_t t)
 
 char *kvm_settings_schema_json(void)
 {
+    /*
+     * The schema carries its own sections: their titles, their order and what
+     * each is for. The console draws whatever comes, so a new section or a new
+     * heading is a line in the table here and nothing in the console at all.
+     */
+    cJSON *root = cJSON_CreateObject();
     cJSON *arr = cJSON_CreateArray();
-    if (!arr) {
+    if (!root || !arr) {
+        cJSON_Delete(root);
+        cJSON_Delete(arr);
         return NULL;
+    }
+    cJSON_AddItemToObject(root, "settings", arr);
+    cJSON *secs = cJSON_AddArrayToObject(root, "sections");
+    size_t section_count = 0;
+    const kvm_section_t *sections = kvm_settings_sections(&section_count);
+    for (size_t i = 0; secs && i < section_count; i++) {
+        cJSON *o = cJSON_CreateObject();
+        if (!o) {
+            break;
+        }
+        cJSON_AddStringToObject(o, "id", sections[i].id);
+        cJSON_AddStringToObject(o, "title", sections[i].title);
+        if (sections[i].blurb) {
+            cJSON_AddStringToObject(o, "blurb", sections[i].blurb);
+        }
+        cJSON_AddItemToArray(secs, o);
     }
     for (size_t i = 0; i < s_count; i++) {
         const kvm_setting_t *d = &s_table[i];
@@ -347,6 +371,9 @@ char *kvm_settings_schema_json(void)
         }
         cJSON_AddStringToObject(o, "key", d->key);
         cJSON_AddStringToObject(o, "section", d->section);
+        if (d->group) {
+            cJSON_AddStringToObject(o, "group", d->group);
+        }
         cJSON_AddStringToObject(o, "title", d->title ? d->title : d->key);
         if (d->help) {
             cJSON_AddStringToObject(o, "help", d->help);
@@ -392,8 +419,8 @@ char *kvm_settings_schema_json(void)
         }
         cJSON_AddItemToArray(arr, o);
     }
-    char *out = cJSON_PrintUnformatted(arr);
-    cJSON_Delete(arr);
+    char *out = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
     return out;
 }
 

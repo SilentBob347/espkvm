@@ -40,6 +40,9 @@ enum {
 typedef struct {
     const char *key;     /**< NVS key, <= 15 chars, also the JSON field name */
     const char *section; /**< groups settings into UI tabs */
+    /** A heading within the section, for the console to gather rows under.
+     *  NULL puts the setting above the first heading. */
+    const char *group;
     const char *title;
     const char *help;
     kvm_val_type_t type;
@@ -56,6 +59,19 @@ typedef struct {
                                      (e.g. the GC9A01 pins only for the round LCD type) */
     int32_t visible_val;
 } kvm_setting_t;
+
+/**
+ * A section of the settings, as the console draws it: the tabs, their order and
+ * what each one is for. Declared beside the settings so the console needs no
+ * list of its own - a new section appears by being written here.
+ */
+typedef struct {
+    const char *id;    /**< matches kvm_setting_t::section */
+    const char *title; /**< what the tab says */
+    const char *blurb; /**< one line under the title, or NULL */
+} kvm_section_t;
+
+const kvm_section_t *kvm_settings_sections(size_t *out_count);
 
 /** Called after a value changed and was persisted. @p key is never NULL. */
 typedef void (*kvm_settings_cb_t)(const char *key, void *user);

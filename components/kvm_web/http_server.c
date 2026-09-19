@@ -854,7 +854,8 @@ static esp_err_t api_system_info_get(httpd_req_t *req)
                      "\"atx\":{\"enabled\":%s,\"known\":%s,\"on\":%s},"
                      "\"mqtt\":{\"enabled\":%s,\"connected\":%s},"
                      "\"wg\":{\"enabled\":%s,\"up\":%s,\"address\":\"%s\",\"publicKey\":\"%s\"},"
-                     "\"ts\":{\"enabled\":%s,\"up\":%s,\"address\":\"%s\",\"peers\":%d},"
+                     "\"ts\":{\"enabled\":%s,\"up\":%s,\"address\":\"%s\",\"peers\":%d,"
+                     "\"keyExpiry\":%lld,\"keyExpired\":%s},"
                      "\"jiggler\":{\"everyS\":%d,\"nudges\":%u},"
                      "\"crashDumpBytes\":%u}",
                      app->project_name, app->version, app->date, app->time, kvm_board_id(),
@@ -875,7 +876,8 @@ static esp_err_t api_system_info_get(httpd_req_t *req)
                      mqtt_conn ? "true" : "false", wg.enabled ? "true" : "false",
                      wg.up ? "true" : "false", wg.address, wg.public_key,
                      ts.enabled ? "true" : "false", ts.up ? "true" : "false", ts.address,
-                     ts.peers, (int)kvm_setting_int("jiggle_s"),
+                     ts.peers, (long long)ts.key_expiry, ts.key_expired ? "true" : "false",
+                     (int)kvm_setting_int("jiggle_s"),
                      (unsigned)usb_hid_jiggler_nudges(), dump_bytes);
     if (n <= 0 || n >= (int)sizeof(body)) {
         return send_json_error(req, "500 Internal Server Error", "system info too long");
