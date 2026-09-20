@@ -488,15 +488,28 @@ ESP32-P4-WIFI6-POE-ETH: 1080p over H.264 at 23 fps
 </tr>
 </table>
 
+<table>
+<tr>
+<td width="50%"><img src="docs/board-m5-addon-display-in.webp" alt="M5Stack Add-on Display In: an LT6911D capture module with an HDMI socket and a 24-pin flat cable"></td>
+</tr>
+<tr>
+<td valign="top">
+
 **[M5Stack Add-on Display In](https://shop.m5stack.com/products/add-on-display-in-for-poe-p4-lt6911d)**
 (for the Unit PoE-P4 and PoE-P4X only)
 
 The odd one out, and the only capture board here that is not a TC358743: it
-carries a **Lontium LT6911D**, and it brings a microSD slot with it. It plugs
-onto the 24-pin FPC on M5Stack's own units and onto nothing else - it is not a
-15-pin Raspberry Pi camera ribbon, so it will not fit any other board on this
-page, and no other board will drive it. Checked on hardware: 23 fps at 1280x720
-over MJPEG, H.264 as well, and the card slot reads and writes at 40 MHz.
+carries a **Lontium LT6911D**, and it brings a microSD slot with it. Note the
+ribbon in the picture - 24-pin, and it plugs onto M5Stack's own units and onto
+nothing else. It is not the 15-pin Raspberry Pi camera cable every other board
+on this page uses, so it will not fit them, and they will not drive it.
+
+Checked on hardware: 23 fps at 1280x720 over MJPEG, H.264 as well, and the card
+slot reads and writes at 40 MHz.
+
+</td>
+</tr>
+</table>
 
 <table>
 <tr>
