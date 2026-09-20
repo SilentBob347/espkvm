@@ -5,7 +5,7 @@ All notable changes to ESP-KVM are recorded here. The format follows
 semantic versioning while it is pre-1.0 (a new feature bumps the minor, a fix
 bumps the patch).
 
-## [Unreleased]
+## [0.52.0] - 2026-09-20
 
 ### Added
 - **A keyboard on the page.** A button under the picture opens it; it is the way

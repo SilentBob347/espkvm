@@ -440,7 +440,8 @@ which is worth having before the board does.
 ### Companion boards
 
 The capture board is what turns the target's HDMI into something the ESP32-P4 can
-read. Either of these two does it; both carry the same TC358743 bridge.
+read. Either of the two below does it; both carry the same TC358743 bridge. There
+is a third, further down, that fits one board only.
 
 <table>
 <tr>
@@ -486,6 +487,16 @@ ESP32-P4-WIFI6-POE-ETH: 1080p over H.264 at 23 fps
 </td>
 </tr>
 </table>
+
+**[M5Stack Add-on Display In](https://shop.m5stack.com/products/add-on-display-in-for-poe-p4-lt6911d)**
+(for the Unit PoE-P4 and PoE-P4X only)
+
+The odd one out, and the only capture board here that is not a TC358743: it
+carries a **Lontium LT6911D**, and it brings a microSD slot with it. It plugs
+onto the 24-pin FPC on M5Stack's own units and onto nothing else - it is not a
+15-pin Raspberry Pi camera ribbon, so it will not fit any other board on this
+page, and no other board will drive it. Checked on hardware: 23 fps at 1280x720
+over MJPEG, H.264 as well, and the card slot reads and writes at 40 MHz.
 
 <table>
 <tr>
@@ -972,8 +983,8 @@ next restart - a card taken out is still noticed.
 Every supported board with a microSD slot powers the slot's pins from one of
 the chip's LDOs, LDO 4 (`CONFIG_KVM_SD_IO_LDO_CHAN`) - read off each vendor's
 schematic. Until it was switched on, the card only read at 4 MHz, and on a
-rev 1.3 chip it did not write at all. The two boards below are the ones checked
-on hardware.
+rev 1.3 chip it did not write at all. The boards below are the ones checked on
+hardware.
 
 | Board | Bus | Card read | Card write | Upload from the console (Ethernet) |
 |---|---|---|---|---|
@@ -992,8 +1003,13 @@ the full speed back.
 
 The other boards with a slot start at 40 MHz as well and write on both chip
 revisions, but nobody has run them on hardware yet - if the card steps down on
-yours, the Media panel says so, and a report helps. The M5Stack Unit PoE-P4 has
-no slot of its own; the card on its add-on is on other pins and stays at 4 MHz.
+yours, the Media panel says so, and a report helps.
+
+The M5Stack Unit PoE-P4 has no slot of its own: the card is on its Add-on Display
+In, on other pins and fed from the add-on rather than from the chip's LDO. That
+was why writes were refused there at first - "may write" was tied to that LDO -
+and the two are separate settings now. Checked on hardware: 40 MHz, no bus
+errors, and it writes.
 
 The **device's own flash** holds one small image, in a 4 MB partition: enough for
 iPXE, memtest or a DOS floppy, with no card at all. Flash writes work on every
