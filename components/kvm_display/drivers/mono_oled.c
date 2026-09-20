@@ -581,9 +581,11 @@ esp_err_t mono_oled_attach(mono_oled_t **out, const uint8_t *init_cmds, size_t i
     }
     err = send_cmds(m->dev, init_cmds, init_len);
     if (err == ESP_OK && kvm_setting_bool("disp_rotate_180")) {
-        /* Reverse both controller axes for a 180-degree panel rotation. */
-        const uint8_t rotate_180[] = {0xA0, 0xC0};
-        err = send_cmds(m->dev, rotate_180, sizeof(rotate_180));
+        /* Every driver's own sequence sets 0xA1 and 0xC8; these are the same two
+           the other way round, which turns the panel over. Sent before the glass
+           commands below, so those still have the last word. */
+        const uint8_t upside_down[] = {0xA0, 0xC0};
+        err = send_cmds(m->dev, upside_down, sizeof(upside_down));
     }
     if (err == ESP_OK) {
         /*

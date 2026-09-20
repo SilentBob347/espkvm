@@ -25,6 +25,11 @@ bumps the patch).
   password properly - through the credential manager, with the fields named the
   way a password manager expects.
 
+- **The status display can be turned upside down.** A panel does not always face
+  the way its connector or its enclosure wants it to, and until now the picture
+  went with the hardware. There is a switch for it under Screen; it applies at
+  once, without a restart, on both the I2C OLEDs and the round SPI LCD.
+  Contributed by @Crisspii in #56, who designed an enclosure that needed it.
 - **A warning before the tailnet key runs out.** Tailscale gives a node key six
   months at most, and when it lapses the device is off the tailnet until someone
   authorises it again. The device learns the date from the control plane, shows

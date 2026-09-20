@@ -91,14 +91,14 @@ Useful for what it does today, and honest about the rest.
 | A dashcam: the last minutes kept, saved when something happens | works; in memory, or on the card for boards short of PSRAM. Saves an MP4 with chapters on a stop screen, a watched phrase, the power going off, or a button - and sends it to Telegram |
 | Timelapse | works; one frame every few seconds, played back at 25 fps |
 | Searching a recording for what was on the screen | works; the screen's text is saved beside the video and the panel plays from the moment. Character modes only |
-| Reading a text screen as text (BIOS, boot loader, console) | works; select and copy with the mouse, or read the screen *instead* of the video - a couple of kilobytes where a picture will not fit. Character modes only |
+| Reading a text screen as text (BIOS, boot loader, console) | works; select and copy with the mouse, or read the screen *instead* of the video - a couple of kilobytes where a picture will not fit. Character modes only, and the characters are matched against the fonts a BIOS, a UEFI console and a Linux console draw with - a machine drawing with some other font reads as nothing rather than as a guess |
 | Noticing a screen that is one flat colour | works; a stop screen or a blanked output has no characters, but it is one colour and it stays |
 | Watching the screen for words while nobody is looking | works; off by default. Give it phrases, it alerts in the log and in Home Assistant |
 | Guessing the target's OS from how it enumerates USB | works |
 | Wake-on-LAN | works |
 | WiFi - station or its own access point | works; on boards with an ESP32-C6. One link at a time, plus a rescue hotspot and a captive portal |
 | ATX power control (power, reset, power LED) | works; wiring in [docs/wiring.md](docs/wiring.md) |
-| Small status display (IP, link, capture, health) | works; optional. An I2C OLED or a round GC9A01, pins assigned from the console |
+| Small status display (IP, link, capture, health) | works; optional. An I2C OLED or a round GC9A01, pins assigned from the console, and the picture can be turned upside down for a panel mounted that way |
 | A viewing token for dashboards | works; off until you make one. Opens the stream and the figures, and nothing that can touch the target |
 | Home Assistant integration over MQTT | works; off by default, auto-discovered. Sensors, buttons, an update entity, a camera holding a still of the screen |
 | VPN - WireGuard or native Tailscale | works; off by default, pick one in Settings. Tailscale needs no port forward or gateway |
@@ -547,6 +547,9 @@ goes rather than in a list of numbers.
 </table>
 
 Both are off by default &mdash; turn the display on in Settings and choose its type.
+Either can be turned upside down there too: an enclosure does not always leave the
+connector facing the way the picture wants it, and the switch applies at once,
+without a restart.
 
 The LCD needs five free GPIOs, and which ones are free depends on the board - so
 a build offers a set that is known to work there, and you only change them if you
