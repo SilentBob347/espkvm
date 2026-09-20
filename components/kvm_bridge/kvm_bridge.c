@@ -4,9 +4,12 @@
  */
 #include "kvm_bridge.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static const char *TAG = "bridge";
 
@@ -49,6 +52,44 @@ size_t kvm_bridge_driver_count(void)
     return s_count;
 }
 
+/*
+ * Who else is on the bus, when no driver recognised anything.
+ *
+ * "Nothing answered" and "something answered, and this firmware does not know
+ * it" look the same from outside, and they send you to different places: a
+ * ribbon in the first case, a missing driver in the second.
+ */
+int kvm_bridge_scan(i2c_master_bus_handle_t bus, char *out, size_t out_len)
+{
+    int count = 0;
+    size_t len = 0;
+    if (out && out_len) {
+        out[0] = '\0';
+    }
+    for (uint8_t addr = 0x08; addr <= 0x77; addr++) {
+        if (i2c_master_probe(bus, addr, 50) != ESP_OK) {
+            continue;
+        }
+        count++;
+        if (out && len + 6 < out_len) {
+            len += (size_t)snprintf(out + len, out_len - len, " 0x%02x", addr);
+        }
+    }
+    return count;
+}
+
+static void log_bus_scan(i2c_master_bus_handle_t bus, const char *when)
+{
+    char found[96];
+    if (kvm_bridge_scan(bus, found, sizeof(found)) == 0) {
+        ESP_LOGE(TAG, "%s: nothing at all answers on the capture I2C bus - is the ribbon to "
+                      "the capture board seated?",
+                 when);
+    } else {
+        ESP_LOGE(TAG, "%s: on the bus, unrecognised:%s", when, found);
+    }
+}
+
 esp_err_t kvm_bridge_detect(i2c_master_bus_handle_t bus, kvm_bridge_t *out)
 {
     if (!bus || !out) {
@@ -64,17 +105,31 @@ esp_err_t kvm_bridge_detect(i2c_master_bus_handle_t bus, kvm_bridge_t *out)
         return ESP_ERR_INVALID_STATE;
     }
 
-    for (size_t i = 0; i < s_count; i++) {
-        esp_err_t err = s_drivers[i].detect(bus, out);
-        if (err == ESP_OK) {
-            ESP_LOGI(TAG, "%s found", out->name ? out->name : s_drivers[i].name);
-            return ESP_OK;
+    /*
+     * Ask more than once. A bridge that runs its own firmware can be seconds
+     * behind its reset line before it answers I2C at all, and a single probe
+     * taken too early reads exactly like an empty bus.
+     */
+    for (int waited_s = 0; waited_s <= 2; waited_s++) {
+        if (waited_s > 0) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
         }
-        if (err != ESP_ERR_NOT_FOUND) {
-            /* It answered and then went wrong, which is worth knowing: a chip
-             * that is present but unhappy reads as an absent one otherwise. */
-            ESP_LOGW(TAG, "%s: %s", s_drivers[i].name, esp_err_to_name(err));
+        for (size_t i = 0; i < s_count; i++) {
+            esp_err_t err = s_drivers[i].detect(bus, out);
+            if (err == ESP_OK) {
+                ESP_LOGI(TAG, "%s found", out->name ? out->name : s_drivers[i].name);
+                return ESP_OK;
+            }
+            if (err != ESP_ERR_NOT_FOUND) {
+                /* It answered and then went wrong, which is worth knowing: a
+                 * chip that is present but unhappy reads as an absent one
+                 * otherwise. */
+                ESP_LOGW(TAG, "%s: %s", s_drivers[i].name, esp_err_to_name(err));
+            }
         }
+        char when[32];
+        snprintf(when, sizeof(when), "%d s after reset", waited_s);
+        log_bus_scan(bus, when);
     }
     return ESP_ERR_NOT_FOUND;
 }

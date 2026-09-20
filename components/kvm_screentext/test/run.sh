@@ -9,5 +9,6 @@ cc -std=c11 -Wall -Wextra -O2 \
    "$here/test_screentext.c" "$here/../screentext.c" -o "$out/test_screentext"
 "$out/test_screentext" "$here/../fonts/ibm_vga_8x16.bin" \
                        "$here/../fonts/pcdos_cp437_8x16.bin" \
-                       "$here/../fonts/uefi_hii_8x19.txt"
+                       "$here/../fonts/uefi_hii_8x19.txt" \
+                       "$here/linux_console_1080p.txt"
 rm -rf "$out"

@@ -139,6 +139,39 @@ menu "ESP-KVM"
             range -1 ENV_GPIO_RANGE_MAX
             default 23
 
+        config KVM_BRIDGE_RST_ACTIVE_HIGH
+            bool "The capture bridge's reset line is active high"
+            default n
+            help
+                The TC358743's line is RESETN: held low to reset, released high to
+                run, which is the default here. M5Stack's Add-on Display In wires
+                its LT6911D the other way round - drive that pin high and the
+                bridge stays in reset and never answers I2C at all.
+
+        config KVM_LT6911
+            bool "LT6911D capture bridge (M5Stack Add-on Display In)"
+            default n
+            help
+                M5Stack's Add-on Display In. The chip raises its own lanes as
+                soon as it locks to HDMI - nothing here programs its output -
+                so this driver only finds it, reads its ID, and reads back the
+                mode it has measured, which follows the source on its own.
+
+                It opens the chip's register bus for one access at a time. Left
+                open, the bridge's own firmware is held off its registers and
+                the HDMI side goes down, which looks exactly like a chip that
+                never transmits.
+
+
+        config KVM_MIPI_LANE_MBPS
+            int "CSI lane rate (Mbit/s per lane)"
+            range 100 1500
+            default 972
+            help
+                What the capture bridge puts on each MIPI lane. The TC358743 is
+                driven at 972 by this firmware; an LT6911D picks its own and
+                Lontium's numbers are 714 at 720p60 and 1308 at 1080p60.
+
         config KVM_TC358743_REFCLK_HZ
             int "TC358743 reference clock (Hz)"
             default 27000000
@@ -278,6 +311,19 @@ menu "ESP-KVM"
                 Without it on, the card only reads at a low clock, and on pre-3.0
                 chips does not write at all. -1 on the M5Stack Unit PoE-P4, whose
                 card is on an add-on wired to other pins, and on unknown boards.
+
+        config KVM_SD_WRITE_NO_LDO
+            bool "This slot writes reliably without the on-chip IO LDO"
+            default y if KVM_BOARD_M5_POE_P4
+            default n
+            help
+                Below chip revision 3.0 the microSD is read-only unless the
+                slot's IO rail is fed by the P4's own LDO, because writes time
+                out otherwise. That ties the two together, and on a board whose
+                slot is fed from somewhere else the tie is wrong rather than
+                safe: the M5Stack add-on's card mounts at the full 40 MHz with
+                no bus errors and nothing here powers its rail. Turn this on
+                only for a board where that has been checked on hardware.
 
         config KVM_SD_MAX_KHZ
             int "Fastest microSD clock to try, kHz"

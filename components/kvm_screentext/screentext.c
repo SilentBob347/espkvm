@@ -22,6 +22,12 @@
 static const uint8_t k_cell_heights[] = SCREENTEXT_CELL_HEIGHTS;
 #define CELL_HEIGHTS_N (sizeof(k_cell_heights) / sizeof(k_cell_heights[0]))
 
+/*
+ * Each cell height can be proposed at two vertical origins, so this is the most
+ * layouts a mode can produce. See layouts_for().
+ */
+#define LAYOUTS_MAX (CELL_HEIGHTS_N * 2)
+
 /** Fewest columns that can be a text screen; 80 is what every one of them is. */
 #define MIN_COLS 80
 /** Fewest rows, so a band of noise across the top of a picture is not a screen. */
@@ -78,11 +84,15 @@ static uint32_t frame_stride(const screentext_frame_t *f)
     return f->width * (f->fmt == SCREENTEXT_FMT_RGB888 ? 3 : 2);
 }
 
-/** Luma of one pixel. UYVY carries it directly; BGR888 needs the usual mix. */
+/** Luma of one pixel. Either 4:2:2 order carries it directly - which byte of
+ *  the pair it is depends on the bridge; BGR888 needs the usual mix. */
 static inline uint8_t luma_at(const screentext_frame_t *f, const uint8_t *row, uint32_t x)
 {
     if (f->fmt == SCREENTEXT_FMT_UYVY) {
         return row[x * 2 + 1];
+    }
+    if (f->fmt == SCREENTEXT_FMT_YUYV) {
+        return row[x * 2];
     }
     /* Weighted towards the middle byte, which is green either way round: the
        capture hardware's three-byte order is not worth depending on for a
@@ -149,8 +159,8 @@ typedef struct {
     uint8_t cell_h;
     uint16_t cols;
     uint16_t rows;
-    uint16_t x0; /**< a text area that does not fill the frame is centred in it */
-    uint16_t y0;
+    uint16_t x0; /**< always 0: the columns fill the width exactly */
+    uint16_t y0; /**< top of the first row: 0, or the spare pixels halved */
     const screentext_glyph_t *font;
     size_t font_len;
 } layout_t;
@@ -200,9 +210,15 @@ static uint16_t cell_char(const screentext_frame_t *f, const layout_t *lay, uint
  * or, on a UEFI console at 1024 wide, 128. Anything wider than the grid we keep
  * is refused here, before a pixel is read.
  *
- * @return how many were written, at most CELL_HEIGHTS_N
+ * A height that the cell does not divide leaves a few spare pixels, and where
+ * they go is the console's choice, not ours: 1080 is 67 rows of 16 with 8 over,
+ * and a Linux framebuffer console puts all 8 at the bottom while a UEFI one
+ * splits them. Four pixels either way slices every glyph, so both origins are
+ * proposed and the probe picks.
+ *
+ * @return how many were written, at most LAYOUTS_MAX
  */
-static uint8_t layouts_for(uint32_t width, uint32_t height, layout_t out[CELL_HEIGHTS_N],
+static uint8_t layouts_for(uint32_t width, uint32_t height, layout_t out[LAYOUTS_MAX],
                            uint16_t max_cols)
 {
     /* 720 wide is 80 columns of 9; everything else is columns of 8. */
@@ -227,28 +243,37 @@ static uint8_t layouts_for(uint32_t width, uint32_t height, layout_t out[CELL_HE
         if (!font) {
             continue;
         }
-        out[n].cell_w = cell_w;
-        out[n].cell_h = cell_h;
-        out[n].cols = (uint16_t)cols;
-        out[n].rows = (uint16_t)rows;
-        out[n].x0 = (uint16_t)((width - cols * cell_w) / 2);
-        out[n].y0 = (uint16_t)((height - rows * cell_h) / 2);
-        out[n].font = font;
-        out[n].font_len = font_len;
-        n++;
+        const uint16_t spare = (uint16_t)(height - rows * cell_h);
+        /* Top-aligned first: it is what a framebuffer console does, and it is
+           the only layout when the rows fill the height exactly. */
+        const uint16_t origins[] = {0, (uint16_t)(spare / 2)};
+        for (size_t o = 0; o < sizeof(origins) / sizeof(origins[0]); o++) {
+            if (o && origins[o] == origins[0]) {
+                continue;
+            }
+            out[n].cell_w = cell_w;
+            out[n].cell_h = cell_h;
+            out[n].cols = (uint16_t)cols;
+            out[n].rows = (uint16_t)rows;
+            out[n].x0 = 0; /* cols * cell_w is width, so there is nothing spare */
+            out[n].y0 = origins[o];
+            out[n].font = font;
+            out[n].font_len = font_len;
+            n++;
+        }
     }
     return n;
 }
 
 bool screentext_mode_supported(uint32_t width, uint32_t height)
 {
-    layout_t discard[CELL_HEIGHTS_N];
+    layout_t discard[LAYOUTS_MAX];
     return layouts_for(width, height, discard, SCREENTEXT_MAX_COLS) > 0;
 }
 
 bool screentext_mode_unprompted(uint32_t width, uint32_t height)
 {
-    layout_t discard[CELL_HEIGHTS_N];
+    layout_t discard[LAYOUTS_MAX];
     return layouts_for(width, height, discard, SCREENTEXT_UNPROMPTED_MAX_COLS) > 0;
 }
 
@@ -383,7 +408,7 @@ bool screentext_scan(const screentext_frame_t *frame, screentext_grid_t *out)
     }
     /* The scanner reads whatever fits; whether a mode is worth reading unasked
        is the caller's call (screentext_mode_unprompted). */
-    layout_t layouts[CELL_HEIGHTS_N];
+    layout_t layouts[LAYOUTS_MAX];
     const uint8_t n = layouts_for(frame->width, frame->height, layouts, SCREENTEXT_MAX_COLS);
 
     /*

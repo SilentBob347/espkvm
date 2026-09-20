@@ -368,16 +368,23 @@ the target's end reboots the KVM.
 <td valign="top">
 
 **[M5Stack Unit PoE-P4](https://docs.m5stack.com/en/unit/Unit_PoE-P4)** &mdash;
-*and no picture yet*
+*the smallest complete one*
 
 The smallest of the lot, and the only one where the capture board is not a C790:
 M5Stack's own **[Add-on Display In](https://shop.m5stack.com/products/add-on-display-in-for-poe-p4-lt6911d)**
 plugs onto its 24-pin FPC and brings a microSD slot with it. 32 MB PSRAM, 16 MB
 flash, the same IP101 Ethernet on the same GPIOs as the P4-ETH, 802.3at PoE.
 
-The add-on's bridge is a **Lontium LT6911D**, not a TC358743, and that driver is
-not written - so these images give you the network, the console and updates, and
-no picture. Two products, two images: the **Unit PoE-P4** is pre-3.0
+The add-on's bridge is a **Lontium LT6911D**, not a TC358743, and it works:
+23 fps at 1280x720 over MJPEG, checked on hardware together with Ethernet and the
+console. One thing about it is unlike every other board here: its reset line is
+active high, the opposite way round from a TC358743. Otherwise it behaves - it
+measures the source's mode itself, so changing the resolution on the machine at
+the other end is all it takes.
+
+H.264 works here too - 15 frames a second at 720p, 6 at 1080p, each for about a
+third of MJPEG's bandwidth. The **PoE-P4X** pays neither cost. Two products,
+two images: the **Unit PoE-P4** is pre-3.0
 (`boards/m5_poe_p4.defaults`), the **Unit PoE-P4X** is rev 3.x
 (`boards/m5_poe_p4x.defaults`).
 

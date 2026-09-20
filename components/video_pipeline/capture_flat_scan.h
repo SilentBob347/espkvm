@@ -22,11 +22,14 @@ extern "C" {
  *
  * @param px      the frame, as the capture buffer holds it
  * @param pixels  how many pixels it has
- * @param bytes_per_px  3 for RGB888/BGR888, 2 for packed UYVY
+ * @param bytes_per_px  3 for RGB888/BGR888, 2 for packed 4:2:2
+ * @param luma_off      which byte of a 4:2:2 pair is the first luma: 1 for UYVY,
+ *                      0 for YUYV. Ignored for three-byte pixels.
  * @param dark    if not NULL, set when the colour is black or nearly: a blanked
  *                output rather than a stop screen
  */
-bool capture_flat_is_flat(const uint8_t *px, size_t pixels, uint8_t bytes_per_px, bool *dark);
+bool capture_flat_is_flat(const uint8_t *px, size_t pixels, uint8_t bytes_per_px,
+                          uint8_t luma_off, bool *dark);
 
 #ifdef __cplusplus
 }

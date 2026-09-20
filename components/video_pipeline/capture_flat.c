@@ -54,7 +54,8 @@ void capture_flat_tick(capture_ctx_t *c, const void *frame)
 {
     bool dark = false;
     if (!capture_flat_is_flat(frame, (size_t)c->hres * c->vres,
-                              (uint8_t)capture_pixfmt_bytes(), &dark)) {
+                              (uint8_t)capture_pixfmt_bytes(),
+                              capture_pixfmt()->luma_first ? 0u : 1u, &dark)) {
         s_flat_since_ms = 0;
         return;
     }

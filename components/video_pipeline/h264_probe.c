@@ -60,6 +60,9 @@
 #include "esp_timer.h"
 
 #include "kvm_caps.h"
+#include <stdio.h>
+
+
 
 /* Small enough not to compete with the capture buffers, large enough that
  * fixed overheads do not dominate the measurement. */
@@ -76,6 +79,7 @@ static uint32_t s_enc_us_per_mpx;
 /* Defined in capture_h264.c (same component). */
 const char *h264_err_name(esp_h264_err_t err);
 
+#if !CAPTURE_YUV_SWAP
 /** Content that neither converts nor compresses away to nothing. */
 static void fill_test_pattern(uint8_t *rgb, uint32_t w, uint32_t h)
 {
@@ -88,6 +92,7 @@ static void fill_test_pattern(uint8_t *rgb, uint32_t w, uint32_t h)
         }
     }
 }
+#endif
 
 uint32_t capture_h264_estimated_fps(uint32_t w, uint32_t h)
 {
@@ -106,7 +111,13 @@ uint32_t capture_h264_estimated_fps(uint32_t w, uint32_t h)
 
 void capture_h264_probe(void)
 {
+#if CAPTURE_YUV_SWAP
+    /* This board captures YUV422; the shuffle that feeds the encoder is on the
+     * CPU, so the probe measures that in the PPA's place. */
+    const size_t rgb_bytes = (size_t)PROBE_W * PROBE_H * 2u;
+#else
     const size_t rgb_bytes = (size_t)PROBE_W * PROBE_H * 3u;
+#endif
     const size_t yuv_bytes = (size_t)PROBE_W * PROBE_H * 3u / 2u;
 
     ppa_client_handle_t ppa = NULL;
@@ -117,16 +128,19 @@ void capture_h264_probe(void)
     uint32_t yuv_alloc = 0;
     uint32_t out_alloc = 0;
 
+    esp_err_t err __attribute__((unused)) = ESP_OK;
+#if !CAPTURE_YUV_SWAP
     const ppa_client_config_t ppa_cfg = {
         .oper_type = PPA_OPERATION_SRM,
         .max_pending_trans_num = 1,
     };
-    esp_err_t err = ppa_register_client(&ppa_cfg, &ppa);
+    err = ppa_register_client(&ppa_cfg, &ppa);
     if (err != ESP_OK) {
         kvm_cap_report(KVM_CAP_H264, false, "PPA unavailable for colour conversion (%s)",
                        esp_err_to_name(err));
         return;
     }
+#endif
 
     size_t align = 64;
     (void)esp_cache_get_alignment(MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA, &align);
@@ -138,9 +152,27 @@ void capture_h264_probe(void)
         kvm_cap_report(KVM_CAP_H264, false, "not enough PSRAM to probe the H.264 path");
         goto cleanup;
     }
+#if CAPTURE_YUV_SWAP
+    for (size_t i = 0; i < rgb_bytes; i += 4u) {
+        rgb[i] = (uint8_t)(i * 7u);      /* Y */
+        rgb[i + 1] = (uint8_t)(i * 3u);  /* U */
+        rgb[i + 2] = (uint8_t)(i * 11u); /* Y */
+        rgb[i + 3] = (uint8_t)(i * 5u);  /* V */
+    }
+#else
     fill_test_pattern(rgb, PROBE_W, PROBE_H);
+#endif
     (void)esp_cache_msync(rgb, rgb_bytes, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
 
+#if CAPTURE_YUV_SWAP
+    int64_t ppa_total_us = 0;
+    for (int i = 0; i < PROBE_ITERATIONS; i++) {
+        const int64_t t0 = esp_timer_get_time();
+        capture_yuv422_to_h264(rgb, yuv, PROBE_W, PROBE_H, PROBE_W);
+        (void)esp_cache_msync(yuv, yuv_alloc, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+        ppa_total_us += esp_timer_get_time() - t0;
+    }
+#else
     /* scale_x/scale_y stay at 1.0 - see the note about scaling above. */
     ppa_srm_oper_config_t srm = {
         .in = {.buffer = rgb,
@@ -173,6 +205,7 @@ void capture_h264_probe(void)
             goto cleanup;
         }
     }
+#endif
 
     esp_h264_enc_cfg_hw_t cfg = {
         .pic_type = ESP_H264_RAW_FMT_O_UYY_E_VYY,

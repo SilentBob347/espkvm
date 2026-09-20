@@ -99,6 +99,187 @@ The lesson for the firmware was the diagnosis, not a fix: the device knew the
 difference all along and did not say it. It says it now, in the console and in
 `GET /api/v1/system/usbprobe`.
 
+## M5Stack Unit PoE-P4 and its LT6911D add-on
+
+The Add-on Display In carries an LT6911D, and its reset line - CAM_RST on
+GPIO 18, the same pin the TC358743 boards use - works the other way round from
+the TC358743's RESETN. Drive it high, the way a TC358743 wants to be let go, and
+the whole capture I2C bus reads empty: not one address answers anywhere between
+0x08 and 0x77. Hold it low, or leave the pin floating, and the bridge is there at
+0x2b within half a second - which is 0x56, the address M5Stack publishes, written
+as an 8-bit one.
+
+Measured on a plain Unit PoE-P4 (chip rev v1.3) with the add-on fitted and
+powered over its USB-C, 2026-09-19, by scanning the bus under all three states of
+the pin. The ribbon is seated right, then: the same connector carries the I2C the
+bridge answers on, and a shifted or flipped one would take that with it. `CONFIG_KVM_BRIDGE_RST_ACTIVE_HIGH=y` in `boards/m5_poe_p4.defaults` is
+the fix. Everything else the scan ruled out first: the pins are M5Stack's own
+GPIO 0/1 and swapping them changes nothing, the bus has external pull-ups on both
+lines, the add-on carries its own 24 MHz crystal so nothing is owed on CAM_MCLK,
+and the bridge is no slower than its reset line - it answers on the first probe.
+
+**And it gives a picture.** What it says about itself, through Lontium's
+bank-switched register space (write 0xe0 to 0xff, 0x01 to 0xee, 0xe1 to 0xff,
+then read 0x00 and 0x01): **chip id 0x2102**. A PC on the other end of the HDMI
+cable sees a monitor and offers 1920x1080, 1280x720, 720x480 and 640x480, so the
+chip's own firmware runs, holds the EDID and locks to the source without this
+firmware saying a word to it - and it raises its lanes by itself too. Measured at
+**23 fps at 1280x720**, MJPEG, on 2026-09-19.
+
+Getting there cost a day, because two mistakes of our own each looked exactly
+like a bridge that does not transmit.
+
+**Close the register bus after every access.** 0xee in bank 0xe0 opens the
+chip's internal registers to I2C. Lontium's own Linux drivers open it for one
+access and close it again; this firmware opened it and left it open, and with it
+open the bridge's firmware is locked out of its own registers - the HDMI side
+goes down, a PC that saw a monitor loses it, and the CSI receiver counts zero DMA
+completions for ever. The chip comes back when the add-on is power-cycled.
+Driving GPIO 18 was blamed for this first, and is innocent: a build that never
+touched the pin behaved the same.
+
+**Read the CSI host, not just the bridge, when no frames arrive.**
+`MIPI_CSI_HOST.phy_rx.phy_rxclkactivehs` is 1 whenever the source drives the
+clock lane in high speed. That one bit separates "nothing on the lanes" from
+"data we are decoding wrong", and it said 1 through every run that looked dead.
+It is logged by `capture_debug_csi_timeout` behind `CONFIG_KVM_TC358743_ADV_DEBUG`
+and is the first thing to read on any board that captures nothing.
+
+**The LT6911 sends YUV422, not RGB888.** The CSI bridge's data-type filter was
+set to 0x24 and the wire carries 0x1e, so every packet was discarded. Set the
+filter right and the frames arrive.
+
+**And the bytes arrive in the reverse of the order the JPEG engine reads.** The
+bridge sends Y U Y V. The engine takes the two luma of a group from its second
+and fourth byte and emits them in the reverse of that order, and the chroma from
+the first and third - so what it wants is those same four bytes reversed. That
+was measured against a screenshot taken on the source machine, not read out of a
+manual: Y U Y V comes out flat green, U Y V Y comes out with the right luma but
+every pair of columns exchanged and red and blue swapped, and the reversal puts
+every pixel exactly where the source had it (mean difference 1.4 grey levels,
+against 6.6 for the version before it).
+
+Nothing else in the chain can do that reversal. The CSI bridge's endian bit
+reverses a whole 64-bit word - the field is two bits wide but has only those two
+states. The JPEG encoder's own `pixel_reverse` swaps the two bytes of a 16-bit
+one. The bridge's colour-mode block, which would simply be told the order, does
+not exist below rev 3.0. The PPA can: call each 4:2:2 pair one ARGB8888 pixel,
+which it is, and ask for the RGB swap, which reverses the four bytes. One pass,
+no scaling, nothing lost off the edge.
+`components/video_pipeline/capture_yuv_swap.c`.
+
+**H.264 works here too, up to 1280x720.** The encoder below rev 3.0 takes one
+layout only - YUV420 with a chroma byte in front of every two luma - and every
+block that could make it from YUV422 is revision-gated, the PPA's YUV inputs
+included. But the rearrangement needs no arithmetic: three of every four bytes
+are copied and the fourth, the odd row's chroma, is dropped. So the CPU does it,
+in place of the PPA pass MJPEG pays rather than on top of it.
+
+Three things about it were each found the hard way.
+
+**The triple is the reverse of what the PPA writes.** Reading the PPA's own
+YUV420 output says chroma first, then the two luma in natural order, U on the
+even rows. Feeding the encoder exactly that gives red for blue and every pair of
+columns exchanged; reversing the triple - the other chroma, the two luma the
+other way round - is what looks right. The same habit as the JPEG engine, which
+also reads its group backwards. What the PPA writes and what the encoder reads
+are not the same order, and only the second one matters.
+
+**It is bounded by memory, not by the processor.** Rewriting the loop to move
+whole words instead of bytes changed nothing, which puts it at about 84 MB/s,
+PSRAM's own speed for this pattern: 12.8 ms at 640x480, 37 ms at 720p, 86 ms at
+1080p.
+
+**And it must hand the core back.** Every other stage in this pipeline waits on
+hardware, and that wait is what lets the idle task run. This one does not, and at
+37 ms a frame against 33 ms between them the capture task stops blocking
+altogether: the idle task is never scheduled and the task watchdog reboots the
+device five seconds later. It cost two reboots to see. One `vTaskDelay(1)` a
+frame fixes it, at the price of a tick - 15 fps rather than 18.
+
+1080p runs too, at 6 fps, and whether it starts at all depends on memory rather
+than on speed: the encoder's reference frame wants one contiguous block, and this
+board's YUV422 path already holds a 6.2 MB capture ring and a 4 MB reordering
+buffer. On a fresh boot the block is there; after the heap has been worked it may
+not be, and the firmware says so and stays on MJPEG - the same intermittent
+shortage the other pre-3.0 boards have. Handing the reordering buffer back while
+H.264 runs does free the block reliably, and then MJPEG cannot get it again when
+it returns and serves a green picture, so the buffer is taken once and kept.
+
+Measured: 15 fps at 1280x720 against MJPEG's 24, and 6 fps at 1080p, each for
+roughly a third of MJPEG's bandwidth.
+
+**The memory budget on this board is the tightest in the project, and getting it
+wrong takes the picture away entirely.** Three things want contiguous PSRAM at
+once: the capture ring, the reordering buffer that every JPEG goes through, and
+the H.264 encoder. Two lessons, both paid for:
+
+The ring must be sized for the format actually captured. `CAPTURE_MAX_PIXEL_BYTES`
+keyed off the revision, so this board allocated three bytes a pixel for a
+two-byte format - 4.1 MB held from boot for nothing, and it showed up as the JPEG
+encoder failing to get its own 2.4 MB buffers, which leaves no codec running at
+all. Free PSRAM went from 10.0 to 13.5 MB when that was fixed.
+
+And the H.264 encoder is reserved at start-up for a reason that is not PSRAM: its
+reference frame wants one contiguous block of about 135 KB of *internal* RAM, and
+a few seconds later, once the network and TLS have run, the largest free internal
+block is 122 KB. Skip that reservation and H.264 can never be built again on that
+boot. It looked like the reservation was what starved MJPEG; it was the ring.
+
+With both right, 1080p H.264 holds: 6 fps at 0.2-1.5 Mbit/s against MJPEG's 8 fps
+at 9.7, on a screen playing video, at 40 C, with free memory flat over the run.
+
+**The picture comes out flat, and half of that is not ours.** Measured against a
+screenshot taken on the source machine itself, 2026-09-19: the capture is the
+source through `y = 0.70*y + 31`, and correcting it with `y = 1.42*y - 44` brings
+the two to within 1.5 grey levels of each other. That factor is two limited-range
+conversions in a row - 0.86*(0.86*x + 16) + 16 = 0.74x + 30. The first is the PC,
+which reads the add-on's EDID, decides it is talking to a television and sends
+RGB at 16-235; setting the graphics driver's HDMI output range to Full removes
+it. The second is the LT6911 converting that to YUV, and nothing here can undo
+it: the JPEG engine has no colour-range setting and takes YUV input through
+unchanged, and the PPA only applies a range when it converts between YUV and RGB,
+which is revision-gated. Boards with a TC358743 do not show this - they capture
+RGB888 and the JPEG engine converts it itself, full range.
+
+Comparing against that screenshot is also how the byte order was settled, and it
+is worth saying how, because looking at the picture was not enough: every wrong
+order still gave a picture that read as "a bit pixelated". What separated them
+was taking the error apart by column parity. With the wrong order the even
+columns were 1.5 grey levels off and the odd ones 9.9 - the picture was half
+right, which no eye reports as half right. With the reversal both parities sit at
+1.4.
+
+What is left after that is the flat contrast above, the 4:2:2 chroma the bridge
+sends, and JPEG quality: at the default 70 a 1280x720 frame is 176 KB and
+coloured text shows chroma blocks, at 80 it is 228 KB and clean.
+
+**The mode is readable after all.** M5Stack publishes nothing about it and
+Espressif's driver never asks, but the chip keeps what it has measured in bank
+0xe0, found by reading every bank with a known signal on the wire and looking for
+the numbers:
+
+| register | meaning |
+|---|---|
+| 0x80 | pixel clock, MHz |
+| 0x88-0x89 | htotal / 2, big-endian |
+| 0x8a-0x8b | vtotal |
+| 0x8c-0x8d | active pixels / 2 |
+| 0x8e-0x8f | active lines |
+
+The horizontal pair counts two pixels at a time, which is how the part moves
+them. The refresh rate is not published but follows from the clock and the
+totals. All five stay zero for about a second and a half after the chip locks,
+and go back to zero when the source leaves - which is what tells the driver there
+is no signal, so nothing here has to guess. Changing the mode on the machine at
+the other end is enough; the capture follows it within a second or two, with one
+torn frame at the moment of the change because the bridge reports the new mode
+only after the first frame of it has already gone through a receiver set up for
+the old one.
+
+A register dump of both banks, for whoever picks this up, is in
+`ignore/m5poe-lt6911-7-dump.log`.
+
 ## The bridge's audio output - read off the wiki, not off a board
 
 Everything above was measured here; this section was not. Nothing in the
@@ -153,14 +334,17 @@ Each of these cost real time. They are recorded so they are not rediscovered.
   BGR888, but the code gates RGB support behind `CHIP_SUPPORT_MIN_REV >= 300`.
   Below revision 3.0 the encoder takes only `O_UYY_E_VYY` (YUV420 with
   alternating `u y y` / `v y y` line prefixes).
-- **Capturing YUV422 on a pre-3.0 chip to save PSRAM does not work**, however
-  tempting it looks: a 1080p frame is 4.1 MB instead of 6.2, and the rev 3.x
-  boards do exactly that. Tried on a P4-ETH (rev 1.3) on 2026-09-17 and the
-  encoder refused the frames outright - `esp_h264_enc_hw_new(): Un-supported
+- **Capturing YUV422 on a pre-3.0 chip to save PSRAM does not work for H.264**,
+  however tempting it looks: a 1080p frame is 4.1 MB instead of 6.2, and the
+  rev 3.x boards do exactly that. (MJPEG is another matter - the M5Stack board
+  above captures YUV422 and serves it, with a PPA pass to put the bytes in
+  order. What follows is about H.264.) Tried on a P4-ETH (rev 1.3) on
+  2026-09-17 and the encoder refused the frames outright - `esp_h264_enc_hw_new(): Un-supported
   h264 picture type parameter, pic_type: 59565955` ("UYVY"), the same revision
   gate as the bullet above - so the device fell back to MJPEG, whose picture
   came out green and purple because without the rev 3.0 colour-mode block in
-  the CSI bridge the bytes land in another order. The PPA cannot take them
+  the CSI bridge the bytes land in another order - which is fixable, see the
+  M5Stack section, but was not known then. The PPA cannot take them
   either: all four of its YUV422 input modes sit behind the same revision gate
   (`ppa_ll_srm_is_color_mode_supported`, `#if HAL_CONFIG(CHIP_SUPPORT_MIN_REV)
   >= 300`), so capture YUV422 -> PPA -> YUV420 -> encoder is closed as well. On
@@ -304,6 +488,77 @@ log says `Not enough space to save core dump!` instead.
 Releases publish symbol maps, not ELFs, so a dump from someone else's device
 needs the ELF rebuilt from that tag - or the maps, which still turn the crash PC
 into a function name.
+
+## The microSD write ban was tied to the wrong thing
+
+Below chip revision 3.0 the card is read-only and capped at 4 MHz unless the
+slot's IO rail is fed by the P4's own LDO_VO4 - writes time out otherwise, which
+is measured and true on every board where that rail *is* the LDO's. The M5Stack
+add-on's slot is not: it is on the add-on, fed from there, and the firmware
+powers nothing. Tying "may write" to the LDO setting therefore gave the wrong
+answer here rather than a safe one.
+
+Checked on hardware, 2026-09-20, with a 128 GB card in the add-on: the ladder
+takes the full 40 MHz on the first try with no bus errors, and a screenshot
+lands on the card - free space drops by exactly one cluster's worth. So the two
+are now separate: `CONFIG_KVM_SD_WRITE_NO_LDO` says "this slot writes without
+the LDO", set only where that has been checked on a board. The LDO itself stays
+unset here and should stay that way without a schematic - driving that rail from
+inside while the add-on feeds it from outside is not something to try on
+someone else's hardware.
+
+What it opens up on this board: recording, screenshots, timelapse and the
+dashcam, and virtual media reads ten times faster than the 4 MHz floor.
+
+## The PPA will rearrange bytes for anything, if you lie to it about the format
+
+Worth knowing away from the board it was found on. The PPA converts colour only
+between formats the silicon allows - on pre-3.0 P4 the YUV modes are gated shut -
+but its *byte* rearrangement does not care what the bytes mean. Tell it the frame
+is RGB565 or ARGB8888, which only says how many bytes a pixel is, and it will
+permute them at DMA speed. Measured on real frames, input `36 95 3f 73`:
+
+| what to ask for | result | what it does |
+|---|---|---|
+| RGB565, `byte_swap` | `95 36 73 3f` | swaps the two bytes of each 16 bits |
+| ARGB8888, `rgb_swap` | `73 3f 95 36` | reverses all four bytes |
+| ARGB8888, both swaps | `3f 73 36 95` | swaps the two halves of 32 bits |
+| RGB565, `block_offset_x = 1` | the stream moves 2 bytes | a one-pixel shift |
+
+Those cover every rearrangement this firmware has needed. It costs about 27 ms a
+frame at 1280x720 and 16 bits a pixel, which is simply PSRAM bandwidth - 3.7 MB
+moved at around 136 MB/s. Two things to get right: invalidate the output buffer
+(`esp_cache_msync`, M2C) after the PPA writes it, or the encoder's own writeback
+puts the allocation's zeroed cache lines back over the frame; and keep the output
+picture the full width when the block is narrower than the source, or every row
+starts early and the picture shears.
+
+The other blocks that can move bytes around, for completeness: the CSI bridge's
+`endian_mode` reverses a whole 64-bit word and has no other state, and the JPEG
+encoder's `pixel_reverse` swaps the two bytes of a 16-bit unit rather than
+reversing pixels, whatever its name suggests. Both measured, not read.
+
+One more worth remembering: `JPEG_DECODE_OUT_FORMAT_YUV420` is `OUYY_EVYY`,
+which is exactly the layout the pre-3.0 H.264 encoder demands. So there is a
+hardware route from anything the JPEG decoder reads into that encoder - an
+expensive one, but it exists.
+
+## Proving a pixel-format fault instead of squinting at it
+
+Every wrong byte order above still produced a picture a person would describe as
+"a bit pixelated", and judging by eye cost hours. What settles it in minutes:
+
+1. Take a screenshot **on the source machine** and pull a frame from the device.
+   Same size, same content.
+2. Fit the levels first (`y = a*x + b`) or the comparison drowns in a contrast
+   mismatch. The fit is informative by itself - here it said the PC was sending
+   limited-range RGB.
+3. Split the error by column parity. With the wrong order the even columns were
+   1.5 grey levels off and the odd ones 9.9. Nobody reports a picture as half
+   right, but that is what it was.
+4. For each parity, find which source column it matches best. That names the
+   permutation outright - "the odd columns come from two to the right" - and the
+   fix follows from the name.
 
 ## Tools worth knowing about
 

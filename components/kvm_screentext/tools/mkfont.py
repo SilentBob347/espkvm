@@ -13,7 +13,7 @@ that draw 16-tall text do not all draw it the same way, and a bitmap is looked
 up by its shape, not by which font it came from. A bitmap that means different
 characters in different fonts is dropped rather than guessed at.
 
-Two input formats, picked by extension:
+Three input formats, picked by extension:
 
   .bin  a raw ROM dump: 256 glyphs of `--height` rows, one byte per row, most
         significant bit leftmost, indexed by code page 437. What every VGA BIOS
@@ -21,6 +21,12 @@ Two input formats, picked by extension:
   .txt  one glyph per line, `XXXX: hh hh ...`, the code point in hex followed by
         `--height` bytes. For fonts that are a list of Unicode glyphs rather
         than a code page - a UEFI firmware's font is one.
+  .psf  a Linux console font, PSF1 or PSF2, gzipped or not. This is what a
+        distribution actually loads into the framebuffer console, and what
+        `setfont -O` writes out, so it is the way to take the font off a machine
+        whose screen does not read. The Unicode table that maps each glyph to
+        its character is part of the file and is required: without it the glyph
+        order is the font's own business and nothing can be said about it.
 
     python3 tools/mkfont.py fonts/ibm_vga_8x16.bin fonts/pcdos_cp437_8x16.bin \\
         --height 16 > screentext_font_h16.h
@@ -33,6 +39,7 @@ The .txt for the UEFI font is itself generated, so the chain stays reproducible:
 """
 import argparse
 import re
+import struct
 import sys
 
 FNV_OFFSET = 0x811C9DC5
@@ -42,11 +49,14 @@ FNV_PRIME = 0x01000193
 PROVENANCE = {
     16: (
         "The 16-tall fonts, which is what a legacy BIOS and a Linux console draw\n"
-        "with. Two of them, because they are not the same font: the IBM VGA ROM\n"
-        "font (a dump of the ROM, no copyright of its own) and the PC-DOS code page\n"
-        "437 font, which is the one the Linux console carries and which differs in\n"
-        "28 glyphs - five of them printable ASCII, including f and v. Reading a\n"
-        "Linux console with the IBM table alone loses those letters."
+        "with. Three of them, because they are not the same font: the IBM VGA ROM\n"
+        "font (a dump of the ROM, no copyright of its own); the PC-DOS code page\n"
+        "437 font, which is what the kernel carries and which differs in 28 glyphs -\n"
+        "five of them printable ASCII, including f and v; and Uni2-Fixed16, which is\n"
+        "what a distribution loads over the kernel's own font, and which is a\n"
+        "different drawing again - one pixel of stroke where the other two use two.\n"
+        "A Linux console that has been through console-setup reads with none of the\n"
+        "others."
     ),
     19: (
         "The 19-tall font: the UEFI narrow font, what a firmware's own console\n"
@@ -94,6 +104,81 @@ def read_list(path, height):
         glyphs[int(m.group(1), 16)] = bytes(rows)
     if not glyphs:
         sys.exit("%s: no glyphs" % path)
+    return glyphs
+
+
+def read_psf(path, height):
+    """
+    A Linux console font: PSF1 or PSF2, optionally gzipped.
+
+    Only 8-wide fonts are of any use here - the scanner reads cells of 8 - and
+    only ones that carry the Unicode table, which is what says which character a
+    glyph is. Everything else the format allows (wider cells, no table) is
+    refused rather than guessed at.
+    """
+    blob = open(path, "rb").read()
+    if blob[:2] == b"\x1f\x8b":
+        import gzip
+        blob = gzip.decompress(blob)
+
+    if blob[:2] == b"\x36\x04":                       # PSF1
+        mode, charsize = blob[2], blob[3]
+        count = 512 if mode & 0x01 else 256
+        has_table = bool(mode & 0x06)
+        bitmaps, rest = blob[4:4 + count * charsize], blob[4 + count * charsize:]
+        width, glyph_h = 8, charsize
+        psf2 = False
+    elif blob[:4] == b"\x72\xb5\x4a\x86":            # PSF2
+        (_magic, _ver, headersize, flags, count, charsize,
+         glyph_h, width) = struct.unpack("<8I", blob[:32])
+        has_table = bool(flags & 0x01)
+        bitmaps = blob[headersize:headersize + count * charsize]
+        rest = blob[headersize + count * charsize:]
+        psf2 = True
+    else:
+        sys.exit("%s: not a PSF font" % path)
+
+    if width != 8:
+        sys.exit("%s: %d pixels wide; the scanner reads cells of 8" % (path, width))
+    if glyph_h != height:
+        sys.exit("%s: glyphs are %d rows, not %d" % (path, glyph_h, height))
+    if not has_table:
+        sys.exit("%s: no Unicode table, so nothing says which character a glyph is"
+                 % path)
+
+    stride = len(bitmaps) // count
+
+    # The table is one entry per glyph, in glyph order. PSF1 separates entries
+    # with 0xFFFF and stores code points little-endian 16-bit; PSF2 uses 0xFF and
+    # UTF-8. A glyph may be listed under several characters and under sequences
+    # (0xFFFE / 0xFE joins them); a sequence is not one character, so it is
+    # skipped, and of the plain ones the first is the glyph's own name.
+    glyphs = {}
+    if psf2:
+        entries = rest.split(b"\xff")
+        for idx, ent in enumerate(entries[:count]):
+            for part in ent.split(b"\xfe")[:1]:
+                for ch in part.decode("utf-8", "replace"):
+                    glyphs.setdefault(ord(ch), bitmaps[idx * stride:idx * stride + height])
+    else:
+        idx, i = 0, 0
+        while i + 1 < len(rest) and idx < count:
+            cps = []
+            while i + 1 < len(rest):
+                word = rest[i] | (rest[i + 1] << 8)
+                i += 2
+                if word == 0xFFFF:
+                    break
+                if word == 0xFFFE:
+                    cps = []            # a sequence follows; drop what it joins
+                    break
+                cps.append(word)
+            for cp in cps:
+                glyphs.setdefault(cp, bitmaps[idx * stride:idx * stride + height])
+            idx += 1
+
+    if not glyphs:
+        sys.exit("%s: the Unicode table named no characters" % path)
     return glyphs
 
 
@@ -201,7 +286,8 @@ def emit(tables, height, sources):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("font", nargs="*", help="the .bin or .txt fonts to merge into one table")
+    ap.add_argument("font", nargs="*",
+                    help="the .bin, .txt or .psf fonts to merge into one table")
     ap.add_argument("--height", type=int, default=16, help="rows per glyph (default 16)")
     ap.add_argument("--from-edk2", metavar="LaffStd.c",
                     help="convert EDK2's narrow glyph table to the .txt format instead")
@@ -217,7 +303,13 @@ def main():
 
     tables = []
     for path in args.font:
-        reader = read_rom if path.endswith(".bin") else read_list
+        if path.endswith(".bin"):
+            reader = read_rom
+        elif path.endswith(".psf") or path.endswith(".psf.gz") or path.endswith(".psfu") \
+                or path.endswith(".psfu.gz"):
+            reader = read_psf
+        else:
+            reader = read_list
         tables.append(font_table(reader(path, args.height)))
     emit(tables, args.height, [p.split("/")[-1] for p in args.font])
 

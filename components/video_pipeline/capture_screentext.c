@@ -310,7 +310,9 @@ void capture_screentext_tick(capture_ctx_t *c, const void *frame)
     const uint32_t generation = s_generation;
     const screentext_frame_t f = {
         .pixels = frame,
-        .fmt = (capture_pixfmt_bytes() == 3) ? SCREENTEXT_FMT_RGB888 : SCREENTEXT_FMT_UYVY,
+        .fmt = (capture_pixfmt_bytes() == 3) ? SCREENTEXT_FMT_RGB888
+               : capture_pixfmt()->luma_first ? SCREENTEXT_FMT_YUYV
+                                              : SCREENTEXT_FMT_UYVY,
         .width = c->hres,
         .height = c->vres,
         .stride = c->hres * capture_pixfmt_bytes(),

@@ -86,6 +86,7 @@ extern "C" {
 /** How the caller's frame stores a pixel. */
 typedef enum {
     SCREENTEXT_FMT_UYVY,  /**< packed 4:2:2, luma in the odd bytes */
+    SCREENTEXT_FMT_YUYV,  /**< packed 4:2:2, luma in the even bytes */
     SCREENTEXT_FMT_RGB888, /**< three bytes per pixel; the order does not matter
                             *   here, brightness is taken symmetrically */
 } screentext_fmt_t;

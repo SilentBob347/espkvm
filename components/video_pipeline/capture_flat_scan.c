@@ -25,7 +25,7 @@
 #define FLAT_DARK_MAX 40
 
 /** One pixel's three components, whatever the capture format calls them. */
-static inline void sample_at(const uint8_t *px, size_t i, uint8_t bytes_per_px,
+static inline void sample_at(const uint8_t *px, size_t i, uint8_t bytes_per_px, uint8_t luma_off,
                              uint8_t out[3])
 {
     if (bytes_per_px == 3) {
@@ -34,16 +34,20 @@ static inline void sample_at(const uint8_t *px, size_t i, uint8_t bytes_per_px,
         out[2] = px[i * 3 + 2];
         return;
     }
-    /* UYVY: two pixels share a chroma pair, so step in pairs and take the luma
-       of the first one. U and V carry the colour, which is what tells a blue
-       fill from a black one. */
+    /* Packed 4:2:2: two pixels share a chroma pair, so step in pairs and take
+       the luma of the first one. Which byte that is depends on the bridge -
+       UYVY puts it second, an LT6911D first. The two chroma bytes carry the
+       colour, which is what tells a blue fill from a black one; they swap
+       places with the luma, and for "is this one flat colour" it does not
+       matter which of them is U. */
     const size_t pair = (i / 2) * 4;
-    out[0] = px[pair + 1]; /* Y0 */
-    out[1] = px[pair];     /* U  */
-    out[2] = px[pair + 2]; /* V  */
+    out[0] = px[pair + luma_off];
+    out[1] = px[pair + (luma_off ? 0u : 1u)];
+    out[2] = px[pair + (luma_off ? 2u : 3u)];
 }
 
-bool capture_flat_is_flat(const uint8_t *px, size_t pixels, uint8_t bytes_per_px, bool *dark)
+bool capture_flat_is_flat(const uint8_t *px, size_t pixels, uint8_t bytes_per_px,
+                          uint8_t luma_off, bool *dark)
 {
     if (dark) {
         *dark = false;
@@ -65,7 +69,7 @@ bool capture_flat_is_flat(const uint8_t *px, size_t pixels, uint8_t bytes_per_px
     uint32_t sum[3] = {0, 0, 0};
     for (uint32_t n = 0; n < FLAT_SAMPLES; n++) {
         uint8_t c[3];
-        sample_at(px, (n * step) % pixels, bytes_per_px, c);
+        sample_at(px, (n * step) % pixels, bytes_per_px, luma_off, c);
         sum[0] += c[0];
         sum[1] += c[1];
         sum[2] += c[2];
@@ -81,7 +85,7 @@ bool capture_flat_is_flat(const uint8_t *px, size_t pixels, uint8_t bytes_per_px
     uint32_t near = 0;
     for (uint32_t n = 0; n < FLAT_SAMPLES; n++) {
         uint8_t c[3];
-        sample_at(px, (n * step) % pixels, bytes_per_px, c);
+        sample_at(px, (n * step) % pixels, bytes_per_px, luma_off, c);
         if (abs((int)c[0] - mean[0]) <= FLAT_TOLERANCE &&
             abs((int)c[1] - mean[1]) <= FLAT_TOLERANCE &&
             abs((int)c[2] - mean[2]) <= FLAT_TOLERANCE) {

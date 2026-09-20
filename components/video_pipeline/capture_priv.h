@@ -52,6 +52,14 @@
 #define CAPTURE_MAX_V_ALLOC (((CAPTURE_MAX_V_RES + 15u) / 16u) * 16u)
 /* rev >= 3.0 captures packed YUV422 at 2 bytes/px. */
 #define CAPTURE_MAX_PIXEL_BYTES 2u
+#elif CAPTURE_YUV_SWAP
+/* An LT6911D sends packed YUV422 whatever the revision, so the ring is two
+ * bytes a pixel here as well - sizing it for RGB888 would hold 4 MB of
+ * contiguous PSRAM that this board does not have to spare, and it showed:
+ * the JPEG encoder could not get its own buffers. No padding, because the
+ * rearrangement for H.264 writes into a buffer of its own. */
+#define CAPTURE_MAX_V_ALLOC CAPTURE_MAX_V_RES
+#define CAPTURE_MAX_PIXEL_BYTES 2u
 #else
 #define CAPTURE_MAX_V_ALLOC CAPTURE_MAX_V_RES
 /* rev < 3.0 captures RGB888 at 3 bytes/px. */
@@ -143,6 +151,9 @@ void capture_flat_tick(capture_ctx_t *c, const void *frame);
  * task only; costs nothing unless one is waiting. See capture_snapshot.c. */
 void capture_snapshot_tick(capture_ctx_t *c, const void *frame);
 
+/** Is a still picture waiting to be taken from the next frame? */
+bool capture_snapshot_wanted(void);
+
 /** Forget it, the way capture_screentext_forget() does when the signal goes. */
 void capture_flat_forget(void);
 
@@ -177,6 +188,20 @@ void capture_monitor_start(capture_ctx_t *c);
 /** Guard TC358743 I2C access. @return false on timeout. */
 bool capture_tc_lock(capture_ctx_t *c, uint32_t timeout_ms);
 void capture_tc_unlock(capture_ctx_t *c);
+
+#if CAPTURE_YUV_SWAP
+/** Reorder a captured YUV422 frame for the JPEG engine; NULL if the pass could
+ *  not run, because the captured order would encode as a green picture. */
+void *capture_yuv_swap(capture_ctx_t *c, void *src);
+
+/** Claim the reordering buffer up front, before the encoders take the PSRAM. */
+esp_err_t capture_yuv_swap_reserve(size_t max_frame_bytes);
+
+/** Rearrange a captured YUV422 frame into the packed YUV420 the pre-3.0 H.264
+ *  encoder takes. @p pad_w is the encoder picture's macroblock-aligned width. */
+void capture_yuv422_to_h264(const uint8_t *src, uint8_t *dst, uint32_t hres, uint32_t vres,
+                            uint32_t pad_w);
+#endif
 
 #if CONFIG_KVM_TC358743_ADV_DEBUG
 void capture_debug_csi_timeout(capture_ctx_t *c, unsigned bpp, size_t fb_bytes);

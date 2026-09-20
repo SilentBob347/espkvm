@@ -94,6 +94,14 @@ static esp_err_t encode(capture_ctx_t *c, const void *src, uint8_t **out, size_t
     return err;
 }
 
+bool capture_snapshot_wanted(void)
+{
+    portENTER_CRITICAL(&s_mu);
+    const bool wanted = s_wanted;
+    portEXIT_CRITICAL(&s_mu);
+    return wanted;
+}
+
 void capture_snapshot_tick(capture_ctx_t *c, const void *frame)
 {
     portENTER_CRITICAL(&s_mu);

@@ -39,7 +39,8 @@
  * rev 1.3 writes at 40 MHz (checked with CRC). So a pre-3.0 board writes when it
  * has that LDO set, and stays read-only otherwise.
  */
-#define SD_CAN_WRITE (CONFIG_ESP32P4_REV_MIN_300 || CONFIG_KVM_SD_IO_LDO_CHAN >= 0)
+#define SD_CAN_WRITE \
+    (CONFIG_ESP32P4_REV_MIN_300 || CONFIG_KVM_SD_IO_LDO_CHAN >= 0 || CONFIG_KVM_SD_WRITE_NO_LDO)
 #define SD_WRITE_UNAVAILABLE_REASON \
     "this board cannot write the microSD reliably; prepare the card in a reader"
 

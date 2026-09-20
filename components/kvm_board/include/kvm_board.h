@@ -18,7 +18,7 @@
 #define KVM_BOARD_MIPI_LDO_VOLTAGE_MV 2500
 #define KVM_BOARD_CSI_H_RES 1920u
 #define KVM_BOARD_CSI_V_RES 1080u
-#define KVM_BOARD_MIPI_LANE_MBPS 972
+#define KVM_BOARD_MIPI_LANE_MBPS CONFIG_KVM_MIPI_LANE_MBPS
 
 /*
  * The BOOT button, identified by probing the board rather than by reading a

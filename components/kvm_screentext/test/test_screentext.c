@@ -157,6 +157,7 @@ int main(int argc, char **argv)
     const char *vga_path = argc > 1 ? argv[1] : "fonts/ibm_vga_8x16.bin";
     const char *dos_path = argc > 2 ? argv[2] : "fonts/pcdos_cp437_8x16.bin";
     const char *uefi_path = argc > 3 ? argv[3] : "fonts/uefi_hii_8x19.txt";
+    const char *cells_path = argc > 4 ? argv[4] : "test/linux_console_1080p.txt";
     if (!load_rom(vga_path, 16, &vga) || !load_rom(dos_path, 16, &pcdos) ||
         !load_list(uefi_path, 19, &uefi)) {
         fprintf(stderr, "cannot read the fonts\n");
@@ -346,6 +347,124 @@ int main(int argc, char **argv)
     }
     free(buf);
     free(ltext);
+
+    /*
+     * --- 1080p, where the rows do not fill the height ---
+     *
+     * 67 rows of 16 leave 8 pixels over, and where they go is the console's
+     * choice: a Linux framebuffer console draws from the very top and leaves
+     * all 8 at the bottom, a UEFI one splits them. Four pixels either way
+     * slices every glyph, so both have to read.
+     */
+    const uint32_t wcols = 240, wrows = 67;
+    uint8_t *wtext = malloc(wcols * wrows);
+    memset(wtext, ' ', wcols * wrows);
+    const char *w0 = "Ubuntu 26.04.1 LTS spev-laptop tty3";
+    const char *w1 = "Welcome to Ubuntu 26.04.1 LTS (GNU/Linux 7.0.0-29-generic x86_64)";
+    const char *w2 = "spev@spev-laptop:~$";
+    memcpy(wtext + 0 * wcols, w0, strlen(w0));
+    memcpy(wtext + 4 * wcols, w1, strlen(w1));
+    memcpy(wtext + 15 * wcols, w2, strlen(w2));
+
+    buf = render(wtext, wcols, wrows, 8, SCREENTEXT_FMT_UYVY, pairs, &vga, 0, 8,
+                 &w, &h, &stride);
+    frame = (screentext_frame_t){buf, SCREENTEXT_FMT_UYVY, w, h, stride};
+    check(w == 1920 && h == 1080, "the wide frame is 1920x1080");
+    const bool gotw = screentext_scan(&frame, &grid);
+    check(gotw, "a top-aligned 1080p Linux console reads");
+    if (gotw) {
+        check(grid.cols == 240 && grid.rows == 67, "grid is 240x67");
+        check(grid.y0 == 0, "the text was found at the top, not centred");
+        screentext_to_utf8(&grid, out, sizeof out);
+        check(strstr(out, w1) != NULL, "the welcome line came back");
+    }
+    free(buf);
+
+    buf = render(wtext, wcols, wrows, 8, SCREENTEXT_FMT_UYVY, pairs, &vga, 4, 4,
+                 &w, &h, &stride);
+    frame = (screentext_frame_t){buf, SCREENTEXT_FMT_UYVY, w, h, stride};
+    const bool gotc = screentext_scan(&frame, &grid);
+    check(gotc, "the same screen centred reads too");
+    if (gotc) {
+        check(grid.y0 == 4, "and it was found 4 pixels down");
+    }
+    free(buf);
+    free(wtext);
+
+    /*
+     * --- the same screen, in pixels that came off a real one ---
+     *
+     * Everything above is rendered here from a font file, which proves the
+     * scanner against itself. These cells were read out of an ESP-KVM's capture
+     * buffer while an Ubuntu console was on the screen, so they carry whatever
+     * the real thing does - the font a distribution loads, and a text area that
+     * starts at the very top of a 1080p frame.
+     */
+    uint32_t rcols = 240, rrows = 67;
+    uint8_t *rtext = calloc(1, (size_t)rcols * rrows * 16);  /* cell bitmaps */
+    uint8_t *rink = calloc(1, (size_t)rcols * rrows);
+    FILE *cf = fopen(cells_path, "r");
+    check(cf != NULL, "the captured cells are there to read");
+    if (cf) {
+        char line[128];
+        uint32_t n = 0;
+        while (fgets(line, sizeof line, cf)) {
+            unsigned r, c;
+            int off = 0;
+            if (line[0] == '#' || sscanf(line, "%u %u%n", &r, &c, &off) != 2) {
+                continue;
+            }
+            const char *p2 = line + off;
+            for (int y = 0; y < 16; y++) {
+                unsigned b = 0;
+                int used = 0;
+                if (sscanf(p2, "%2x%n", &b, &used) != 1) {
+                    break;
+                }
+                rtext[((size_t)r * rcols + c) * 16 + y] = (uint8_t)b;
+                p2 += used;
+            }
+            rink[(size_t)r * rcols + c] = 1;
+            n++;
+        }
+        fclose(cf);
+        check(n == 120, "all 120 cells were read");
+    }
+
+    /* Paint them where they sat: cell (r,c) at (c*8, r*16), nothing centred. */
+    const uint32_t rw = rcols * 8, rh = rrows * 16 + 8, rstride = rw * 2;
+    uint8_t *rbuf = calloc(1, (size_t)rstride * rh);
+    for (uint32_t y = 0; y < rh; y++)
+        for (uint32_t x = 0; x < rw; x++)
+            put_px(rbuf, SCREENTEXT_FMT_UYVY, rstride, x, y, 20);
+    for (uint32_t r = 0; r < rrows; r++) {
+        for (uint32_t c = 0; c < rcols; c++) {
+            if (!rink[r * rcols + c]) {
+                continue;
+            }
+            const uint8_t *g = rtext + ((size_t)r * rcols + c) * 16;
+            for (uint32_t y = 0; y < 16; y++)
+                for (uint32_t x = 0; x < 8; x++)
+                    put_px(rbuf, SCREENTEXT_FMT_UYVY, rstride, c * 8 + x, r * 16 + y,
+                           (g[y] & (0x80 >> x)) ? 190 : 20);
+        }
+    }
+    frame = (screentext_frame_t){rbuf, SCREENTEXT_FMT_UYVY, rw, rh, rstride};
+    const bool gotr = screentext_scan(&frame, &grid);
+    check(gotr, "a real Ubuntu console at 1080p reads");
+    if (gotr) {
+        check(grid.cols == 240 && grid.rows == 67, "the real frame is 240x67");
+        check(grid.y0 == 0, "its text starts at the top of the frame");
+        check(grid.confidence == 100, "every inked cell was named");
+        screentext_to_utf8(&grid, out, sizeof out);
+        check(strstr(out, "Ubuntu 26.04.1 LTS") != NULL, "the first line came back");
+        check(strstr(out, "spev-laptop login:") != NULL, "so did the login prompt");
+        check(strstr(out, "Welcome to Ubuntu 26.04.1 LTS (GNU/Linux") != NULL,
+              "and the welcome line");
+    }
+    free(rbuf);
+    free(rtext);
+    free(rink);
 
     /*
      * --- a glyph in no table must be visible, not silently a space ---

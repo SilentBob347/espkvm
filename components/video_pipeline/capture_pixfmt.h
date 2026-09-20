@@ -31,6 +31,8 @@ typedef struct {
     int isp_color;       /* isp_color_t for the (bypassed) ISP in/out          */
     int h264_pic;        /* esp_h264_raw_format_t fed to the H.264 encoder     */
     int jpeg_src;        /* jpeg_enc_input_format_t fed to the JPEG encoder    */
+    bool swap_bytes;     /* reorder the captured bytes before the encoder?     */
+    bool luma_first;     /* packed 4:2:2 with Y in the even bytes (YUYV)?      */
     int jpeg_subsample;  /* jpeg_down_sampling_type_t: must match the input's
                           * chroma - the P4 JPEG engine can't resample a packed
                           * YUV422 input down to 4:2:0, so UYVY needs 4:2:2 out  */
@@ -46,6 +48,19 @@ typedef struct {
 #define CAPTURE_DIRECT_ENCODE 1
 #else
 #define CAPTURE_DIRECT_ENCODE 0
+#endif
+
+/*
+ * The third case: an LT6911D on pre-3.0 silicon (M5Stack Unit PoE-P4). That
+ * bridge sends YUV422 and nothing else, so RGB888 is not on offer - but the
+ * bytes arrive as Y U Y V and the JPEG engine wants them the other way round,
+ * and the colour-mode block that would fix it in the CSI bridge only exists
+ * from rev 3.0. A PPA pass reorders them instead; see capture_yuv_swap.c.
+ */
+#if CONFIG_KVM_LT6911 && !CAPTURE_DIRECT_ENCODE
+#define CAPTURE_YUV_SWAP 1
+#else
+#define CAPTURE_YUV_SWAP 0
 #endif
 
 /** The active capture pixel format, selected by chip revision at build time. */

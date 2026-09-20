@@ -15,9 +15,15 @@
 # P4-ETH, PHY reset included, so the base defaults already fit.
 #   Ethernet (IP101GRI): TX_EN 49, TXD0 34, TXD1 35, CRS_DV 28, RXD0 29,
 #                        RXD1 30, MDC 31, MDIO 52, REF_CLK 50, PHY reset 51.
-#   Capture bridge: SYS_SDA on GPIO 0, SYS_SCL on GPIO 1, reset on GPIO 18,
-#                   MCLK on GPIO 36. The bridge's own I2C runs at 1.8 V behind
-#                   a TXS0102 level shifter on the add-on.
+#   Capture bridge: SYS_SDA on GPIO 0, SYS_SCL on GPIO 1, reset on GPIO 18.
+#                   The pins are M5Stack's own: their ESP-IDF example for the
+#                   add-on opens I2C on GPIO 0/1 at 100 kHz and talks to 0x2b
+#                   (which is 0x56 written as an 8-bit address). That bus reaches
+#                   the add-on at 1.8 V through a TXS0102 on the base board. No
+#                   clock is owed to the bridge - the add-on carries its own
+#                   24 MHz crystal, confirmed on the board itself, and R28, which
+#                   would tie the P4's CAM_MCLK on GPIO 36 to that line, is not
+#                   fitted. The reset line is the trap: see below.
 #   microSD: on the add-on, CLK 12, CMD 13, D0 8, D1 9, D2 10, D3 11, with card
 #            detect on GPIO 37 (no power gate, and nothing here reads detect).
 #   User button: GPIO 45, a key of its own rather than one shared with Ethernet.
@@ -33,10 +39,22 @@
 # machine at the other end. The add-on's USB-A is a real host port - it sources
 # 5 V through an MT9700 - and is not the one to use.
 #
-# NOT YET VERIFIED ON HARDWARE.
+# Hardware, 2026-09-19, a plain Unit PoE-P4 with the add-on fitted and powered
+# over its USB-C: chip rev v1.3, Ethernet up on the first boot with a DHCP lease,
+# and the bridge answering at 0x2b once its reset line is driven the right way
+# round. Still open: the microSD slot, untried - there was no card in it, and the
+# mount timeouts in that boot log are only that; which USB-C a target plugs into;
+# whether 6 W of PoE carries a loaded encoder; and the panel/ATX pins, which
+# nothing is wired to.
 #
-# The capture driver is the other open piece: this build still expects a
-# TC358743, and the add-on carries an LT6911D. See the port issue.
+# Capture works: the add-on's LT6911D is found at 0x2b and its picture reaches
+# the console as MJPEG, measured at 23 fps at 1280x720 on 2026-09-19. Two things
+# had to be right for it. The bridge's register bus is opened for one access and
+# closed again - held open, its own firmware is locked out of its registers and
+# the HDMI side goes down, which reads exactly like a chip that never transmits.
+# And the frame is YUV422, not the RGB888 a TC358743 sends, with its four bytes
+# in the reverse of the order the JPEG engine reads; a PPA pass turns them round.
+# H.264 is not available on this silicon - see docs/HARDWARE-NOTES.md.
 
 # --- flash and partitions ---------------------------------------------------
 # 16 MB here against 32 MB on the P4-ETH, so the shared 16 MB table applies -
@@ -60,6 +78,20 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_16mb.csv"
 CONFIG_KVM_I2C_SDA_GPIO=0
 CONFIG_KVM_I2C_SCL_GPIO=1
 CONFIG_KVM_TC358743_RST_GPIO=18
+# And it is active HIGH here, unlike the TC358743's RESETN. Found on hardware:
+# with GPIO 18 released high the way a TC358743 wants it, the whole bus reads
+# empty - not one address answers. Hold it low, or leave it floating, and the
+# bridge appears at 0x2b within half a second.
+CONFIG_KVM_BRIDGE_RST_ACTIVE_HIGH=y
+# The LT6911D driver. The chip locks to HDMI and raises its lanes by itself, and
+# it does publish the mode it measured, in bank 0xe0 - so the capture follows the
+# source the way it does on a TC358743 board, with nothing to set by hand.
+CONFIG_KVM_LT6911=y
+# Lontium's own lane rate at 720p60; 1308 is theirs for 1080p.
+CONFIG_KVM_MIPI_LANE_MBPS=714
+# The CSI lane rate stays the TC358743's 972 Mbit/s, which is a placeholder here:
+# an LT6911D sets its own output rate, and Lontium's settings are 714 at 720p60
+# and 1308 at 1080p. That number belongs to the driver when it is written.
 
 # --- microSD ----------------------------------------------------------------
 # The slot is on the add-on, wired to the base board's SDIO header. There is no
@@ -71,6 +103,13 @@ CONFIG_KVM_SD_D1_GPIO=9
 CONFIG_KVM_SD_D2_GPIO=10
 CONFIG_KVM_SD_D3_GPIO=11
 CONFIG_KVM_SD_PWR_GPIO=-1
+# The IO LDO stays unset: this slot is on the add-on, wired to pins the P4's
+# LDO_VO4 does not feed, and driving that rail from inside while M5Stack feeds
+# it from outside is not something to try on someone else's board. But the
+# 4 MHz ceiling that comes with leaving it unset is about the LDO, not about
+# this card - so let the speed ladder try the whole range and step itself down
+# if the pins cannot take it.
+CONFIG_KVM_SD_MAX_KHZ=40000
 
 # --- button -----------------------------------------------------------------
 # The user key, and unlike the P4-ETH's BOOT button it does not share a pin with

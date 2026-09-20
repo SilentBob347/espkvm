@@ -118,6 +118,9 @@ void kvm_web_security_headers(httpd_req_t *req)
                        "form-action 'self'; frame-ancestors 'none'");
     httpd_resp_set_hdr(req, "X-Content-Type-Options", "nosniff");
     httpd_resp_set_hdr(req, "Referrer-Policy", "no-referrer");
+    /* The same refusal to be framed, for a browser too old to read the policy
+       above. It says nothing the CSP does not, and costs a few bytes. */
+    httpd_resp_set_hdr(req, "X-Frame-Options", "DENY");
 }
 
 /* Defined further down, next to the other gates; used by the status handler

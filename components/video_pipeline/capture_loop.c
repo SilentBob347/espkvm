@@ -102,6 +102,11 @@ void capture_loop_run(capture_ctx_t *c)
          */
         if (!codec) {
             vTaskDelay(pdMS_TO_TICKS(2000));
+            /* Opening a codec waits for clients to let go of their frames and
+             * then asks for megabytes; between the two, one turn through here
+             * can outlast the task watchdog, which reboots a device that is
+             * only short of memory. */
+            esp_task_wdt_reset();
             codec = codec_switch(NULL, codec_wanted());
             if (codec) {
                 ESP_LOGW(CAPTURE_LOG_TAG, "codec recovered: %s", codec->name);
@@ -179,6 +184,18 @@ void capture_loop_run(capture_ctx_t *c)
                  * the loop instead ended the capture task, and the watchdog then
                  * restarted the whole device. */
                 ESP_LOGE(CAPTURE_LOG_TAG, "codec switch left nothing running; retrying");
+                /*
+                 * Retrying alone is not enough when the setting is the reason:
+                 * codec_wanted() would ask for H.264 again every two seconds
+                 * for ever, and MJPEG - which had just been closed to make room
+                 * for it - would never come back. Take H.264 off the table for
+                 * this run and the next turn settles on a picture.
+                 */
+                if (want == capture_codec_h264()) {
+                    kvm_cap_report(KVM_CAP_H264, false,
+                                   "the encoder could not be built at this resolution; using "
+                                   "MJPEG until the next restart");
+                }
                 codec = NULL;
                 continue;
             }
@@ -250,7 +267,38 @@ void capture_loop_run(capture_ctx_t *c)
          * text mode that has stopped moving. */
         capture_screentext_tick(c, src);
         capture_flat_tick(c, src);
+
+#if CAPTURE_YUV_SWAP
+        /*
+         * The readers above want the captured bytes as they came. The JPEG
+         * engine wants them reordered; the H.264 path wants them as they came
+         * too, because its own rearrangement starts from the wire order. So the
+         * pass runs for one codec and not the other, and a snapshot - which is
+         * a JPEG whatever is streaming - pays for the pass itself on the rare
+         * frame someone asks for a picture of.
+         */
+        const bool h264_running = (codec == capture_codec_h264());
+        if (!h264_running) {
+            void *ordered = capture_yuv_swap(c, src);
+            if (!ordered) {
+                continue; /* it said why; a green frame helps nobody */
+            }
+            src = ordered;
+        }
+#endif
+
+#if CAPTURE_YUV_SWAP
+        if (h264_running && capture_snapshot_wanted()) {
+            void *ordered = capture_yuv_swap(c, src);
+            if (ordered) {
+                capture_snapshot_tick(c, ordered);
+            }
+        } else {
+            capture_snapshot_tick(c, src);
+        }
+#else
         capture_snapshot_tick(c, src);
+#endif
 
         esp_err_t ee = codec->encode(c, src, force_publish);
         if (ee == ESP_OK) {

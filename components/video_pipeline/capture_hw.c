@@ -36,6 +36,7 @@
 #include "soc/clk_tree_defs.h"
 #include "soc/isp_struct.h"
 #include "soc/mipi_csi_bridge_struct.h"
+#include "soc/mipi_csi_host_struct.h"
 
 #include "kvm_caps.h"
 #include "kvm_settings.h"
@@ -83,6 +84,31 @@ i2c_master_bus_handle_t capture_i2c_bus(void)
     return s_i2c_bus;
 }
 
+
+/*
+ * Are there external pull-ups on the capture I2C at all?
+ *
+ * The internal ones are on, so both lines read high whether or not anything is
+ * out there. An internal pull-down settles it: a real 10k pull-up on the other
+ * end wins against the chip's ~45k, so the line stays high. If it falls, nothing
+ * out there is holding the bus up - an add-on that is not seated, or its level
+ * shifter with no power.
+ */
+static void log_i2c_pin_pulls(void)
+{
+    const int pins[2] = {KVM_BOARD_TC358743_I2C_SDA_GPIO, KVM_BOARD_TC358743_I2C_SCL_GPIO};
+    const char *names[2] = {"SDA", "SCL"};
+    for (int i = 0; i < 2; i++) {
+        gpio_set_pull_mode(pins[i], GPIO_PULLDOWN_ONLY);
+        vTaskDelay(pdMS_TO_TICKS(5));
+        const int high = gpio_get_level(pins[i]);
+        gpio_set_pull_mode(pins[i], GPIO_PULLUP_ONLY);
+        ESP_LOGE(CAPTURE_LOG_TAG, "%s (GPIO %d) reads %s against an internal pull-down: %s",
+                 names[i], pins[i], high ? "high" : "low",
+                 high ? "an external pull-up is there" : "nothing out there pulls this line up");
+    }
+}
+
 static void bridge_resetn_pulse(void)
 {
 #if CONFIG_KVM_TC358743_RST_GPIO >= 0
@@ -95,11 +121,20 @@ static void bridge_resetn_pulse(void)
         .intr_type = GPIO_INTR_DISABLE,
     };
     ESP_ERROR_CHECK(gpio_config(&io));
-    gpio_set_level(rst, 0);
+    /* Which level holds the bridge in reset is the board's business: the
+     * TC358743 has a RESETN, the LT6911D on M5Stack's add-on the other way
+     * round, and driving the wrong one keeps the chip silent on I2C. */
+#if CONFIG_KVM_BRIDGE_RST_ACTIVE_HIGH
+    const int in_reset = 1;
+#else
+    const int in_reset = 0;
+#endif
+    gpio_set_level(rst, in_reset);
     vTaskDelay(pdMS_TO_TICKS(10));
-    gpio_set_level(rst, 1);
+    gpio_set_level(rst, !in_reset);
     vTaskDelay(pdMS_TO_TICKS(200));
-    ESP_LOGI(CAPTURE_LOG_TAG, "capture board RESETN released on GPIO %d", rst);
+    ESP_LOGI(CAPTURE_LOG_TAG, "capture board reset released on GPIO %d (%s)", rst,
+             in_reset ? "active high" : "active low");
 #else
     ESP_LOGW(CAPTURE_LOG_TAG, "capture RESETN not wired - waiting 500 ms for internal POR");
     vTaskDelay(pdMS_TO_TICKS(500));
@@ -166,6 +201,20 @@ void capture_debug_csi_timeout(capture_ctx_t *c, unsigned bpp, size_t fb_bytes)
                                  " | st: vadr_gt:%u vadr_lt:%u discard:%u overrun:%u fifo_ovf:%u dma_upd:%u",
                  ir, ist, iena, (unsigned)(m >> 0) & 1u, (unsigned)(m >> 1) & 1u, (unsigned)(m >> 2) & 1u, (unsigned)(m >> 3) & 1u,
                  (unsigned)(m >> 4) & 1u, (unsigned)(m >> 5) & 1u);
+    }
+    {
+        /* The bridge only ever sees what the host decodes, so when nothing
+         * arrives the question is whether the source transmits at all. The
+         * clock lane says it: in HS it is active, otherwise every lane sits in
+         * stop state and the error counters stay clean. */
+        uint32_t rx = MIPI_CSI_HOST.phy_rx.val;
+        uint32_t stop = MIPI_CSI_HOST.phy_stopstate.val;
+        ESP_LOGW(CAPTURE_LOG_TAG,
+                 "  HOST phy_rx=0x%08" PRIx32 " (clk_hs=%u ulps_clk_not=%u) stopstate=0x%08" PRIx32
+                 " (d0=%u d1=%u clk=%u) | err phy_fatal=0x%08" PRIx32 " pkt_fatal=0x%08" PRIx32 " phy=0x%08" PRIx32,
+                 rx, (unsigned)((rx >> 17) & 1u), (unsigned)((rx >> 16) & 1u), stop, (unsigned)(stop & 1u),
+                 (unsigned)((stop >> 1) & 1u), (unsigned)((stop >> 16) & 1u), MIPI_CSI_HOST.int_st_phy_fatal.val,
+                 MIPI_CSI_HOST.int_st_pkt_fatal.val, MIPI_CSI_HOST.int_st_phy.val);
     }
     {
         uint32_t bfc = MIPI_CSI_BRIDGE.buf_flow_ctl.val;
@@ -416,12 +465,23 @@ capture_ctx_t *capture_hw_init_start(void)
         /* Nothing answered, so say the thing an operator can act on: the board
            or its ribbon, not an error code. Any other failure keeps the code. */
         if (probe_err == ESP_ERR_NOT_FOUND) {
-            kvm_cap_report(KVM_CAP_VIDEO, false,
-                           "no capture board found - check the ribbon between it and the device");
+            /* If something did answer, the ribbon is fine and the driver is the
+               thing that is missing - say that instead of sending someone to
+               reseat a cable that is already seated. */
+            char found[96];
+            if (kvm_bridge_scan(i2c_bus, found, sizeof(found)) > 0) {
+                kvm_cap_report(KVM_CAP_VIDEO, false,
+                               "a chip answers on the capture bus (%s) but no driver here knows it",
+                               found + 1);
+            } else {
+                kvm_cap_report(KVM_CAP_VIDEO, false,
+                               "no capture board found - check the ribbon between it and the device");
+            }
         } else {
             kvm_cap_report(KVM_CAP_VIDEO, false, "capture bridge not responding on I2C (%s)",
                            esp_err_to_name(probe_err));
         }
+        log_i2c_pin_pulls();
         ESP_LOGE(CAPTURE_LOG_TAG, "bridge detect failed: %s", esp_err_to_name(probe_err));
         return NULL;
     }

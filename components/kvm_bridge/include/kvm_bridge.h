@@ -129,6 +129,13 @@ esp_err_t kvm_bridge_register(const char *name, kvm_bridge_detect_fn fn);
  */
 esp_err_t kvm_bridge_detect(i2c_master_bus_handle_t bus, kvm_bridge_t *out);
 
+/*
+ * Every address that answers on the bus: the count, and into out a printable
+ * list like " 0x2b". Bring-up tool - "nothing answered" and "something answered
+ * that this firmware does not know" send you to different places.
+ */
+int kvm_bridge_scan(i2c_master_bus_handle_t bus, char *out, size_t out_len);
+
 /** How many drivers registered. For the log line at start-up. */
 size_t kvm_bridge_driver_count(void);
 

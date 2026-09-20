@@ -32,6 +32,38 @@ bumps the patch).
   sends a notification a set number of days before - fourteen by default.
 
 ### Changed
+- **The boot log now says what is on the capture I2C bus.** When no driver
+  recognises anything, the firmware scans the bus and prints every address that
+  answers, and the console says "a chip answers on the capture bus (0x2b) but no
+  driver here knows it" instead of sending someone to reseat a ribbon that is
+  already seated. It also asks three times over two seconds, since a bridge with
+  its own firmware can be slower than its reset line. New setting for a board
+  whose reset is the other way round: the capture bridge's reset line can be
+  active high - which is how M5Stack's Add-on Display In wires its LT6911D, and
+  why that bridge looked absent until now.
+- **The M5Stack Unit PoE-P4 shows a picture.** Its Add-on Display In carries an
+  LT6911D rather than a TC358743, and it now works: 23 fps at 1280x720 over
+  MJPEG, on a matchbox that takes power, network and video on two cables. The
+  chip locks to HDMI, raises its lanes and measures the mode by itself, and the
+  capture follows the machine at the other end the way it does on the other
+  boards - change the resolution there and the picture comes back a second
+  later. H.264 works on it too - 15 frames a second at 1280x720 and 6 at 1080p,
+  each for about a third of MJPEG's bandwidth: the encoder on this silicon wants
+  YUV420 with line prefixes and no hardware here converts YUV422 into it, so the
+  firmware rearranges the bytes itself, in place of the pass MJPEG pays rather
+  than on top of it. At 1080p the encoder needs a large contiguous block and does
+  not always get one; the picture then stays MJPEG, which the console says. The
+  rev 3.x Unit PoE-P4X has neither cost.
+
+  Its microSD works too, at the full 40 MHz and with writes - so recording,
+  screenshots, the timelapse and the dashcam are all available on it. They were
+  refused before because "may write" was tied to the on-chip LDO that feeds the
+  slot's IO rail on every other board; this slot is on the add-on and fed from
+  there, so the two are separate settings now.
+
+  One thing to set on the machine at the other end: the add-on's EDID makes a PC
+  think it is driving a television, so graphics drivers send HDMI at 16-235 and
+  the picture arrives flat. Set the driver's output range to Full.
 - **Settings open in a window instead of the side panel.** There are over a
   hundred of them, and a 340 px column was a scroll with no shape. The window
   has the sections in a column on the left and the settings beside them, a box
@@ -47,9 +79,23 @@ bumps the patch).
   the keys and that block. The ready-made combinations fold away too.
 
 ### Fixed
+- **A Linux console would not read as text.** Two things were wrong at once, and
+  a real Ubuntu screen needed both. 67 rows of 16 pixels leave 8 over in a 1080p
+  frame, and the reader assumed the console split them above and below; a
+  framebuffer console draws from the very top, so every letter was cut four
+  pixels off. Both positions are tried now. And the font was one the firmware did
+  not have: a distribution loads its own over the one the kernel carries, drawn
+  with a single pixel of stroke where the two tables held used two. Uni2-Fixed16
+  is in the table now, which takes it from 282 bitmaps to 782 and reads a real
+  console at 100%. The cells off that screen are kept as a test.
 - **The browser filled the settings filter with a saved username.** The search
   box sits above password fields, which was enough for the browser to take it
   for a login form.
+
+### Security
+- **X-Frame-Options on every answer.** The console already refused to be put in
+  a frame through its content policy; this says the same thing to a browser too
+  old to read it.
 
 ## [0.51.2] - 2026-09-17
 

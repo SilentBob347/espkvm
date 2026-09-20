@@ -750,8 +750,9 @@ esp_err_t tc358743_probe(i2c_master_bus_handle_t bus, const tc358743_cfg_t *cfg,
     if (err != ESP_OK) {
         i2c_master_bus_rm_device(d->i2c);
         free(d);
-        ESP_LOGE(TAG, "no TC358743 at 0x%02x - is the ribbon to the capture board seated?",
-                 TC358743_I2C_ADDR);
+        /* Quietly: this runs on every board, several times, and the bridge
+           layer is the one that knows whether anything answered at all. */
+        ESP_LOGD(TAG, "no TC358743 at 0x%02x", TC358743_I2C_ADDR);
         return err;
     }
 

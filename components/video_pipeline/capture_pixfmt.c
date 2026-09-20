@@ -9,7 +9,7 @@
 #include "esp_h264_enc_single_hw.h"
 #include "driver/jpeg_encode.h"
 
-#if !CAPTURE_DIRECT_ENCODE
+#if !CAPTURE_DIRECT_ENCODE && !CAPTURE_YUV_SWAP
 /*
  * rev < 3.0 (Waveshare): capture RGB888 at 0x24, and a PPA pass turns it into
  * YUV420 for whichever encoder is running. This is the original, shared path.
@@ -60,10 +60,39 @@ static const capture_pixfmt_t k_direct = {
 };
 #endif
 
+#if CAPTURE_YUV_SWAP
+/*
+ * rev < 3.0 with an LT6911D: capture the YUV422 the bridge sends, then let the
+ * PPA put the bytes in the order the JPEG engine reads. H.264 is out of reach
+ * on this silicon whatever we do - its encoder takes only YUV420 with line
+ * prefixes, and every PPA mode that would produce it from YUV422 is gated on
+ * rev 3.0 as well.
+ */
+static const capture_pixfmt_t k_yuv422_swap = {
+    .name = "yuv422+swap",
+    .csi_dt = 0x1eu,
+    .bpp = 16u,
+    .v_align_mb = false,
+    .direct = false,
+    .swap_bytes = true,
+    /* The LT6911D puts luma in the even bytes; the TC358743 profile above does
+     * not, and everything that reads the captured frame without an encoder -
+     * the screen-text reader, the blank-screen check - has to know which. */
+    .luma_first = true,
+    .cam_color = CAM_CTLR_COLOR_YUV422_UYVY,
+    .isp_color = ISP_COLOR_YUV422,
+    .h264_pic = ESP_H264_RAW_FMT_O_UYY_E_VYY, /* never reached: no H.264 here */
+    .jpeg_src = JPEG_ENCODE_IN_FORMAT_YUV422,
+    .jpeg_subsample = JPEG_DOWN_SAMPLING_YUV422,
+};
+#endif
+
 const capture_pixfmt_t *capture_pixfmt(void)
 {
 #if CAPTURE_DIRECT_ENCODE
     return &k_direct;
+#elif CAPTURE_YUV_SWAP
+    return &k_yuv422_swap;
 #else
     return &k_rgb888;
 #endif

@@ -19,6 +19,21 @@ machine's firmware turns out to draw with a font we do not have:
 <https://github.com/viler-int10h/vga-text-mode-fonts>. Not from the kernel
 itself, whose copy of it is GPL-2.0.
 
+`uni2_fixed_8x16.psf.gz` is Uni2-Fixed16, the console font a distribution loads
+over the one the kernel carries - `console-setup` renders it at boot, and on an
+Ubuntu machine it is what is actually on the screen. It is a third drawing
+again, not a variant of the two above: one pixel of stroke where they use two,
+so a console that has been through `console-setup` reads with neither of them.
+Copied unchanged from the `console-setup` package
+(`/usr/share/consolefonts/Uni2-Fixed16.psf.gz`), and byte-identical to the
+`cached_Uni2-Fixed16.psf.gz` that the machine it was taken from had loaded. That
+package's own copyright file settles the licence in one line - "All console
+fonts are public domain by nature" - and says separately that the BDF sources
+they are built from vary, which is in `copyright.fonts` if a particular one ever
+needs tracing. Only hashes of these bitmaps reach the firmware in any case. PSF
+carries its own Unicode table, so the file says which character each bitmap is;
+`mkfont.py` reads PSF1 and PSF2, gzipped or not.
+
 `uefi_hii_8x19.txt` is the UEFI narrow font: one glyph per line, the Unicode
 code point in hex followed by 19 rows. This is what a firmware's own console
 draws with, so it is what a UEFI boot menu or setup screen is written in - and
@@ -33,22 +48,27 @@ The tables the scanner searches are generated from these:
 
 ```sh
 python3 tools/mkfont.py fonts/ibm_vga_8x16.bin fonts/pcdos_cp437_8x16.bin \
-    --height 16 > screentext_font_h16.h
+    fonts/uni2_fixed_8x16.psf.gz --height 16 > screentext_font_h16.h
 python3 tools/mkfont.py fonts/uefi_hii_8x19.txt --height 19 > screentext_font_h19.h
 ```
 
-Only hashes are compiled in, never the bitmaps, so a table costs about 2 KB
-whatever the font, and a second font of the same height costs only the glyphs it
-draws differently - the two 16-tall fonts together come to 282 entries against
-254 for one, or 224 bytes for the pair of them.
+Only hashes are compiled in, never the bitmaps, so a table costs six bytes a
+bitmap whatever the font, and another font of the same height costs only the
+glyphs it draws differently. One font is 254 entries; the two VGA-descended ones
+together are 282, 224 bytes for the pair; adding Uni2-Fixed16, which shares
+nothing with them and carries far more of Unicode, takes it to 782, about 4.7 KB
+in all.
 
 Merging has one rule: where two fonts draw the same bitmap for different
 characters there is no honest answer, so the bitmap is dropped and a cell that
-hits it reads as unreadable. The two here disagree about nothing. Do not merge
-indiscriminately for the same reason - all 401 hardware fonts in that collection
-come to 16112 entries with 2069 of them ambiguous, which would trade the whole
-guarantee for coverage nobody asked for.
+hits it reads as unreadable. The three here disagree about nothing, so nothing
+was dropped. Do not merge indiscriminately for the same reason - all 401
+hardware fonts in that collection come to 16112 entries with 2069 of them
+ambiguous, which would trade the whole guarantee for coverage nobody asked
+for.
 
-A machine whose firmware draws with a font that is in neither table will not be
-read - the scanner reports too few matches rather than guessing - so the way to
-support one is to dump its font, drop it in here and regenerate the table.
+A machine that draws with a font in no table will not be read - the scanner
+reports too few matches rather than guessing - so the way to support one is to
+dump its font, drop it in here and regenerate the table. `setfont -O` writes a
+PSF of whatever is on the console; the file `console-setup` cached is under
+/etc/console-setup, and the ones it chooses from are in /usr/share/consolefonts.

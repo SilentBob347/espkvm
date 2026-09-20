@@ -92,6 +92,7 @@ static ppa_client_handle_t s_ppa;
 static uint8_t *s_yuv[H264_YUV_BUFS];
 static uint32_t s_yuv_alloc[H264_YUV_BUFS];
 
+
 typedef struct {
     int slot; /* index into s_yuv, or -1 as the shutdown sentinel */
     uint32_t hres;
@@ -869,7 +870,11 @@ static esp_err_t h264_encode(capture_ctx_t *c, const void *src, bool force_publi
     if (s_enc_broken) {
         return ESP_ERR_NO_MEM;
     }
+#if CAPTURE_YUV_SWAP
+    if (!s_yuv[0] || !s_free_slots || !s_jobs) {
+#else
     if (!s_ppa || !s_yuv[0] || !s_free_slots || !s_jobs) {
+#endif
         return ESP_ERR_INVALID_STATE;
     }
     if (c->hres == 0 || c->vres == 0) {
@@ -897,6 +902,21 @@ static esp_err_t h264_encode(capture_ctx_t *c, const void *src, bool force_publi
      * block is the real one, which puts each row at the stride the encoder
      * expects and leaves the padding rows untouched.
      */
+#if CAPTURE_YUV_SWAP
+    (void)padded_h;
+    capture_yuv422_to_h264((const uint8_t *)src, s_yuv[slot], c->hres, c->vres, padded_w);
+    (void)esp_cache_msync(s_yuv[slot], s_yuv_alloc[slot], ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+    capture_status_add_ppa_time((uint32_t)(esp_timer_get_time() - ppa_started_us));
+    /*
+     * Hand the core back for a tick. Every other path here waits on hardware -
+     * the PPA and both encoders block on a DMA - and that wait is what lets the
+     * idle task run. This one is the only pure CPU pass in the pipeline, and at
+     * 37 ms a frame against 33 ms between them the capture task would never
+     * block again: the idle task stops being scheduled, and five seconds later
+     * the task watchdog reboots the device. Measured, twice.
+     */
+    vTaskDelay(1);
+#else
     ppa_srm_oper_config_t srm = {
         .in = {.buffer = (void *)src,
                .pic_w = c->hres,
@@ -923,6 +943,7 @@ static esp_err_t h264_encode(capture_ctx_t *c, const void *src, bool force_publi
         xQueueSend(s_free_slots, &slot, 0); /* return the unused buffer */
         return err;
     }
+#endif
 
     const h264_job_t job = {.slot = slot, .hres = c->hres, .vres = c->vres};
     if (xQueueSend(s_jobs, &job, pdMS_TO_TICKS(1000)) != pdTRUE) {
