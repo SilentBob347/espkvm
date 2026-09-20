@@ -241,3 +241,24 @@ void capture_start(void)
     const uint32_t cam_stack = 10240;
     xTaskCreatePinnedToCore(camera_task, "cam", cam_stack, NULL, 5, NULL, 0);
 }
+
+/*
+ * Every software restart parks the capture DMA first.
+ *
+ * Linked with --wrap=esp_restart, so this covers the OTA reboot, the console's
+ * restart button and every other deliberate restart in the firmware, without
+ * each of them having to remember. The panic path does not come through here -
+ * it calls esp_restart_noos() directly - which is why the stop lives in a
+ * normal context and can use the driver rather than poking registers.
+ *
+ * The 20 ms is for whatever the encoder or the PPA had in flight when the
+ * receiver stopped; both work a frame at a time and finish well inside it.
+ */
+void __real_esp_restart(void) __attribute__((noreturn));
+
+void __wrap_esp_restart(void)
+{
+    capture_hw_quiesce();
+    vTaskDelay(pdMS_TO_TICKS(20));
+    __real_esp_restart();
+}

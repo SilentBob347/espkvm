@@ -385,6 +385,28 @@ static esp_err_t csi_create(capture_ctx_t *c, uint32_t hres, uint32_t vres)
     return ESP_OK;
 }
 
+/*
+ * Park the capture DMA before a warm restart.
+ *
+ * The CSI receiver writes every frame into PSRAM over AXI, and with a live
+ * source it is busy nearly all the time. A warm esp_restart() does not
+ * power-cycle it: IDF aborts the channel and resets the CPUs, which can cut a
+ * burst in half, and a started AXI transaction cannot be cancelled - IDF says
+ * as much in esp_system_reset_modules_on_exit(). The next boot then hangs
+ * before it logs anything, until the RTC watchdog resets the board; after an
+ * OTA that reads as "the new image does not run" and it is rolled back.
+ *
+ * Stopping the receiver closes the bridge first and then disables the channel,
+ * so it ends where it is allowed to. Called from __wrap_esp_restart(); a panic
+ * goes straight to esp_restart_noos() and cannot be helped this way.
+ */
+void capture_hw_quiesce(void)
+{
+    if (s_cam) {
+        (void)esp_cam_ctlr_stop(s_cam);
+    }
+}
+
 static void csi_destroy(void)
 {
     if (s_cam) {

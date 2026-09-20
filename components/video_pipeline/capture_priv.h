@@ -123,6 +123,9 @@ typedef struct {
  */
 capture_ctx_t *capture_hw_init_start(void);
 
+/** Stop the CSI receiver so its DMA is idle. See capture_hw.c. */
+void capture_hw_quiesce(void);
+
 /**
  * Reprogram the CSI bridge for a new active size and restart the receiver.
  * Call from the capture task only. @p hres / @p vres must fit the buffers.

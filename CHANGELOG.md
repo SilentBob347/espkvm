@@ -5,6 +5,20 @@ All notable changes to ESP-KVM are recorded here. The format follows
 semantic versioning while it is pre-1.0 (a new feature bumps the minor, a fix
 bumps the patch).
 
+## [0.52.1] - 2026-09-20
+
+### Fixed
+- **An update could come back as the old version.** With a picture coming in,
+  the reboot at the end of an OTA left the new image unable to start: the boot
+  hung before it could log a line, the RTC watchdog reset the board, and the
+  bootloader read that as "the new image does not run" and went back to the
+  previous one. The capture receiver is the reason - it writes every frame into
+  PSRAM over AXI, a warm restart cuts that in half, and a half-finished AXI
+  transaction cannot be cancelled. It is now stopped before any deliberate
+  restart. Seen on a Function EV with a 1080p30 source: three updates in a row
+  rolled back, and eighteen in a row went through with the stop in. This is what
+  was behind the unexplained rollbacks of 2026-08-30 and 2026-09-16 as well.
+
 ## [0.52.0] - 2026-09-20
 
 ### Added

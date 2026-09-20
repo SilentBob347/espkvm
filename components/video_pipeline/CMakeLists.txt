@@ -38,3 +38,7 @@ idf_component_register(
         esp_timer
         nvs_flash
 )
+
+# capture.c parks the CSI DMA before every deliberate restart; see the comment
+# on __wrap_esp_restart there.
+target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=esp_restart")
