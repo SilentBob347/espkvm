@@ -5,6 +5,38 @@ All notable changes to ESP-KVM are recorded here. The format follows
 semantic versioning while it is pre-1.0 (a new feature bumps the minor, a fix
 bumps the patch).
 
+## [0.52.3] - 2026-09-21
+
+### Fixed
+- **Install from Home Assistant works (#58).** Pressing Install gave
+  "Failed to perform the action update/install. 'payload_install'". The update
+  entity did not say what to send, and Home Assistant has no default for it.
+- **The rest of the Home Assistant side, made sturdier:**
+  - The update check no longer runs on the firmware's timer task. It is an
+    HTTPS request with a 20-second timeout, and while it ran every timer in
+    the device waited. It now has a short-lived task of its own.
+  - Home Assistant shows install progress, and the release notes link.
+    Versions go to it without the `v.` prefix, which its version parser
+    does not understand.
+  - A runbook with a long name made a discovery message bigger than its
+    buffer. Now the buffer is bigger, and a message that still does not fit
+    is dropped, not sent cut off.
+  - A command sent with the retain flag by mistake is ignored. A retained
+    `restart` would have restarted the device on every connect.
+  - When Home Assistant restarts, the device publishes everything again, so a
+    broker that does not keep retained messages loses nothing.
+  - Entities for a feature that is off (the update check, power buttons,
+    Wake-on-LAN, runbooks) are removed, not left behind as unavailable.
+  - Screen and runbook text is cut to 255 characters, the most a Home
+    Assistant state can hold.
+  - Number sensors keep long-term statistics, and a temperature below zero
+    keeps its minus sign.
+  - A new diagnostic sensor shows the firmware version, also when the update
+    check is off.
+- **The browser no longer fills the MQTT user and password with the console's
+  own login.** Settings fields now tell password managers they are not a
+  login form, and a secret field stays read-only until you click into it.
+
 ## [0.52.2] - 2026-09-21
 
 ### Fixed

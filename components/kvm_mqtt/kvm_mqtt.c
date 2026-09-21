@@ -134,6 +134,13 @@ static const char *boot_reason(void)
     }
 }
 
+/* The running firmware, as the release page names it. */
+static const char *fw_version(void)
+{
+    const esp_app_desc_t *app = esp_app_get_description();
+    return app ? app->version : "?";
+}
+
 /* Returns what snprintf would have written; the caller checks it fit. */
 static int build_state(char *b, size_t n)
 {
@@ -153,8 +160,9 @@ static int build_state(char *b, size_t n)
     } else {
         snprintf(res, sizeof(res), "no signal");
     }
-    const int t_int = (int)t;
-    const unsigned t_dec = (unsigned)((t < 0 ? -t : t) * 10.0f) % 10u;
+    /* Tenths, sign kept separately: -0.5 would otherwise print as "0.5". */
+    const int t10 = (int)(t * 10.0f);
+    const unsigned t_abs = (unsigned)(t10 < 0 ? -t10 : t10);
     const unsigned long long uptime = (unsigned long long)(esp_timer_get_time() / 1000000);
     const unsigned psram_kb = (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024);
     /* Static for the same reason the payload below is: this runs on the
@@ -184,7 +192,7 @@ static int build_state(char *b, size_t n)
     kvm_record_status(&rec);
 
     return snprintf(b, n,
-             "{\"tempC\":%d.%u,\"thermal\":\"%s\",\"viewers\":%d,\"signal\":\"%s\","
+             "{\"tempC\":%s%u.%u,\"thermal\":\"%s\",\"viewers\":%d,\"signal\":\"%s\","
              "\"resolution\":\"%s\",\"fps\":%u.%02u,\"codec\":\"%s\",\"kbps\":%u,"
              "\"usb\":\"%s\",\"usbBus\":\"%s\",\"power\":\"%s\",\"uptime\":%llu,"
              "\"psramKb\":%u,"
@@ -199,12 +207,12 @@ static int build_state(char *b, size_t n)
                 the longest run is too short - which is how H.264 came to refuse
                 to start after a spell on MJPEG. */
              "\"internalKb\":%u,\"internalLargestKb\":%u,\"skippedFps\":%u.%02u,"
-             "\"slot\":\"%s\",\"bootReason\":\"%s\","
+             "\"slot\":\"%s\",\"bootReason\":\"%s\",\"version\":\"%s\","
              "\"jiggler\":\"%s\",\"jigglerSec\":%d,\"jigglerNudges\":%u,"
              "\"runbook\":\"%s\",\"runbookText\":\"%s\","
              /* The recorder: whether it runs, and the file it writes to. */
              "\"recording\":\"%s\",\"recordingFile\":\"%s\",\"timelapseSec\":%d}",
-             t_int, t_dec, kvm_thermal_state_name(kvm_thermal_state()), viewers,
+             t10 < 0 ? "-" : "", t_abs / 10u, t_abs % 10u, kvm_thermal_state_name(kvm_thermal_state()), viewers,
              v.signal ? "ON" : "OFF", res, (unsigned)(v.fps_x100 / 100),
              (unsigned)(v.fps_x100 % 100), codec, (unsigned)v.kbps,
              usb_hid_ready() ? "ON" : "OFF", usb_hid_bus_alive() ? "ON" : "OFF",
@@ -214,7 +222,7 @@ static int build_state(char *b, size_t n)
              (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
              (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024),
              (unsigned)(v.skipped_fps_x100 / 100u), (unsigned)(v.skipped_fps_x100 % 100u),
-             running_slot(), boot_reason(), jiggle_s > 0 ? "ON" : "OFF", (int)jiggle_s,
+             running_slot(), boot_reason(), fw_version(), jiggle_s > 0 ? "ON" : "OFF", (int)jiggle_s,
              (unsigned)usb_hid_jiggler_nudges(), k_rb_states[rb.state], rb_json,
              rec.recording ? "ON" : "OFF", rec.file, (int)kvm_setting_int("rec_tl_every"));
 }
@@ -278,6 +286,14 @@ static void alert_cb(void *arg)
     screentext_alert_get(NULL, 0, &seq);
     /* A runbook moving a step is news too. */
     const uint32_t rb_seq = runbook_seq();
+    /* An install started from Home Assistant: show its progress there, and
+     * one last message when it ends, so the bar does not hang at a number. */
+    static bool s_fw_busy;
+    const bool fw_busy = fw_install_busy();
+    if (fw_busy || s_fw_busy) {
+        s_fw_busy = fw_busy;
+        publish_update_state(false);
+    }
     if (rb_seq != s_rb_seen) {
         s_rb_seen = rb_seq;
         publish_state();
@@ -303,33 +319,66 @@ static void timer_cb(void *arg)
 
 /* ---- Home Assistant discovery ------------------------------------------- */
 
+/*
+ * One discovery config. The worst case is a runbook button: its name goes in
+ * twice, escaped, next to a 224-byte device object - over 600 bytes, and 512
+ * used to be the size. Past the end, the next snprintf got a negative size
+ * turned into a huge one. Now there is room, and a config that still does not
+ * fit is dropped rather than sent cut off.
+ */
+#define DISCO_JSON_MAX 1024
+
+static bool disco_fits(int o, const char *obj)
+{
+    if (o >= DISCO_JSON_MAX) {
+        ESP_LOGW(TAG, "discovery config for %s did not fit; not published", obj);
+        return false;
+    }
+    return true;
+}
+
 /* One sensor/binary_sensor config. @p val_tpl is the full value template, e.g.
  * "{{ value_json.tempC }}"; optional fields are NULL when unused. */
 static void disco_sensor(const char *comp, const char *obj, const char *name, const char *val_tpl,
                          const char *dev_cla, const char *unit, const char *icon,
                          const char *ent_cat)
 {
-    char j[512];
+    /* A sensor with a unit is a number: "measurement" gets it long-term
+     * statistics and a graph instead of a list of values. */
+    const bool numeric = unit && strcmp(comp, "sensor") == 0;
+    char j[DISCO_JSON_MAX];
     int o = snprintf(j, sizeof(j),
                      "{\"~\":\"%s\",\"name\":\"%s\",\"stat_t\":\"~/state\",\"avty_t\":\"~/availability\","
                      "\"val_tpl\":\"%s\",\"uniq_id\":\"%s_%s\"",
                      s_base_topic, name, val_tpl, s_devid, obj);
     if (dev_cla) o += snprintf(j + o, sizeof(j) - o, ",\"dev_cla\":\"%s\"", dev_cla);
     if (unit) o += snprintf(j + o, sizeof(j) - o, ",\"unit_of_meas\":\"%s\"", unit);
+    if (numeric) o += snprintf(j + o, sizeof(j) - o, ",\"stat_cla\":\"measurement\"");
     if (icon) o += snprintf(j + o, sizeof(j) - o, ",\"ic\":\"%s\"", icon);
     if (ent_cat) o += snprintf(j + o, sizeof(j) - o, ",\"ent_cat\":\"%s\"", ent_cat);
     o += snprintf(j + o, sizeof(j) - o, ",\"dev\":%s}", s_dev_json);
 
     char topic[128];
     snprintf(topic, sizeof(topic), "%s/%s/%s/%s/config", s_disco, comp, s_devid, obj);
-    pub(topic, j, 1);
+    if (disco_fits(o, obj)) {
+        pub(topic, j, 1);
+    }
+}
+
+/* Take an entity away: an empty retained config is how Home Assistant is told
+ * it is gone. Without it a feature switched off leaves a dead entity behind. */
+static void disco_clear(const char *comp, const char *obj)
+{
+    char topic[128];
+    snprintf(topic, sizeof(topic), "%s/%s/%s/%s/config", s_disco, comp, s_devid, obj);
+    pub(topic, "", 1);
 }
 
 /* One button. @p cmd is the command suffix published to <base>/cmd/<cmd>. */
 static void disco_button(const char *obj, const char *name, const char *cmd, const char *icon,
                          const char *ent_cat)
 {
-    char j[512];
+    char j[DISCO_JSON_MAX];
     int o = snprintf(j, sizeof(j),
                      "{\"~\":\"%s\",\"name\":\"%s\",\"cmd_t\":\"~/cmd/%s\",\"avty_t\":\"~/availability\","
                      "\"uniq_id\":\"%s_%s\"",
@@ -340,7 +389,9 @@ static void disco_button(const char *obj, const char *name, const char *cmd, con
 
     char topic[128];
     snprintf(topic, sizeof(topic), "%s/button/%s/%s/config", s_disco, s_devid, obj);
-    pub(topic, j, 1);
+    if (disco_fits(o, obj)) {
+        pub(topic, j, 1);
+    }
 }
 
 /* One button per saved runbook. They all press the same command with the
@@ -361,7 +412,7 @@ static void disco_runbooks(void)
         }
         char name[RUNBOOK_NAME_MAX * 2];
         json_escape(name, sizeof(name), jn->valuestring);
-        char j[512];
+        char j[DISCO_JSON_MAX];
         int o = snprintf(j, sizeof(j),
                          "{\"~\":\"%s\",\"name\":\"Runbook: %s\",\"cmd_t\":\"~/cmd/runbook\","
                          "\"pl_prs\":\"%s\",\"avty_t\":\"~/availability\","
@@ -370,7 +421,9 @@ static void disco_runbooks(void)
         o += snprintf(j + o, sizeof(j) - o, ",\"dev\":%s}", s_dev_json);
         char topic[128];
         snprintf(topic, sizeof(topic), "%s/button/%s/rb%u/config", s_disco, s_devid, i);
-        pub(topic, j, 1);
+        if (disco_fits(o, "runbook")) {
+            pub(topic, j, 1);
+        }
         i++;
     }
     cJSON_Delete(list);
@@ -386,7 +439,7 @@ static void disco_runbooks(void)
 static void disco_switch(const char *obj, const char *name, const char *cmd, const char *val_tpl,
                          const char *icon, const char *ent_cat)
 {
-    char j[512];
+    char j[DISCO_JSON_MAX];
     int o = snprintf(j, sizeof(j),
                      "{\"~\":\"%s\",\"name\":\"%s\",\"stat_t\":\"~/state\",\"cmd_t\":\"~/cmd/%s\","
                      "\"avty_t\":\"~/availability\",\"val_tpl\":\"%s\",\"uniq_id\":\"%s_%s\"",
@@ -397,14 +450,16 @@ static void disco_switch(const char *obj, const char *name, const char *cmd, con
 
     char topic[128];
     snprintf(topic, sizeof(topic), "%s/switch/%s/%s/config", s_disco, s_devid, obj);
-    pub(topic, j, 1);
+    if (disco_fits(o, obj)) {
+        pub(topic, j, 1);
+    }
 }
 
 /* A number box. The payload is the value itself. */
 static void disco_number(const char *obj, const char *name, const char *cmd, const char *val_tpl,
                          int min, int max, const char *unit, const char *icon, const char *ent_cat)
 {
-    char j[640];
+    char j[DISCO_JSON_MAX];
     int o = snprintf(j, sizeof(j),
                      "{\"~\":\"%s\",\"name\":\"%s\",\"stat_t\":\"~/state\",\"cmd_t\":\"~/cmd/%s\","
                      "\"avty_t\":\"~/availability\",\"val_tpl\":\"%s\",\"min\":%d,\"max\":%d,"
@@ -417,13 +472,15 @@ static void disco_number(const char *obj, const char *name, const char *cmd, con
 
     char topic[128];
     snprintf(topic, sizeof(topic), "%s/number/%s/%s/config", s_disco, s_devid, obj);
-    pub(topic, j, 1);
+    if (disco_fits(o, obj)) {
+        pub(topic, j, 1);
+    }
 }
 
 /* An MQTT camera: HA shows whatever JPEG last landed on the topic. */
 static void disco_camera(const char *obj, const char *name, const char *icon)
 {
-    char j[512];
+    char j[DISCO_JSON_MAX];
     int o = snprintf(j, sizeof(j),
                      "{\"~\":\"%s\",\"name\":\"%s\",\"t\":\"~/snapshot\","
                      "\"avty_t\":\"~/availability\",\"uniq_id\":\"%s_%s\"",
@@ -433,7 +490,9 @@ static void disco_camera(const char *obj, const char *name, const char *icon)
 
     char topic[128];
     snprintf(topic, sizeof(topic), "%s/camera/%s/%s/config", s_disco, s_devid, obj);
-    pub(topic, j, 1);
+    if (disco_fits(o, obj)) {
+        pub(topic, j, 1);
+    }
 }
 
 /*
@@ -456,7 +515,11 @@ static void publish_snapshot(void)
     }
     char topic[96];
     snprintf(topic, sizeof(topic), "%s/snapshot", s_base_topic);
-    esp_mqtt_client_publish(s_client, topic, (const char *)jpeg, (int)len, 0, 0);
+    xSemaphoreTake(s_mtx, portMAX_DELAY); /* apply() may be tearing the client down */
+    if (s_client) {
+        esp_mqtt_client_publish(s_client, topic, (const char *)jpeg, (int)len, 0, 0);
+    }
+    xSemaphoreGive(s_mtx);
     ESP_LOGI(TAG, "snapshot published (%u bytes)", (unsigned)len);
     free(jpeg);
 }
@@ -481,7 +544,7 @@ static void publish_discovery(void)
                  "diagnostic");
     disco_sensor("binary_sensor", "alert", "Screen alert", "{{ value_json.screenAlert }}",
                  "problem", NULL, "mdi:message-alert", NULL);
-    disco_sensor("sensor", "alerttext", "Screen alert text", "{{ value_json.screenText }}", NULL,
+    disco_sensor("sensor", "alerttext", "Screen alert text", "{{ value_json.screenText[:255] }}", NULL,
                  NULL, "mdi:text-recognition", "diagnostic");
     disco_sensor("binary_sensor", "flat", "Screen one colour", "{{ value_json.screenFlat }}",
                  "problem", NULL, "mdi:square-rounded", NULL);
@@ -504,9 +567,16 @@ static void publish_discovery(void)
         disco_button("btn_power", "Power button", "power", "mdi:power", NULL);
         disco_button("btn_reset", "Reset", "reset", "mdi:restart-alert", NULL);
         disco_button("btn_forceoff", "Force off (hold)", "forceoff", "mdi:power-plug-off", NULL);
+    } else {
+        disco_clear("binary_sensor", "power");
+        disco_clear("button", "btn_power");
+        disco_clear("button", "btn_reset");
+        disco_clear("button", "btn_forceoff");
     }
     if (kvm_cap_available(KVM_CAP_WOL) && kvm_setting_str("pwr_wol_mac")[0]) {
         disco_button("btn_wol", "Wake on LAN", "wol", "mdi:lan-connect", NULL);
+    } else {
+        disco_clear("button", "btn_wol");
     }
     disco_button("btn_restart", "Restart ESP-KVM", "restart", "mdi:restart", "diagnostic");
 
@@ -542,6 +612,9 @@ static void publish_discovery(void)
                  NULL, "diagnostic");
     disco_sensor("sensor", "slot", "Firmware slot", "{{ value_json.slot }}", NULL, NULL,
                  "mdi:chip", "diagnostic");
+    /* Always there, unlike the update entity, which needs fw_fetch. */
+    disco_sensor("sensor", "version", "Firmware version", "{{ value_json.version }}", NULL, NULL,
+                 "mdi:tag-outline", "diagnostic");
     disco_sensor("sensor", "bootreason", "Last boot", "{{ value_json.bootReason }}", NULL, NULL,
                  "mdi:restart", "diagnostic");
 
@@ -550,8 +623,16 @@ static void publish_discovery(void)
         disco_runbooks();
         disco_sensor("sensor", "runbook", "Runbook", "{{ value_json.runbook }}", NULL, NULL,
                      "mdi:script-text-play", NULL);
-        disco_sensor("sensor", "runbooktext", "Runbook progress", "{{ value_json.runbookText }}",
+        disco_sensor("sensor", "runbooktext", "Runbook progress", "{{ value_json.runbookText[:255] }}",
                      NULL, NULL, "mdi:script-text", NULL);
+    } else {
+        for (unsigned i = 0; i < RUNBOOK_BUTTONS_MAX; i++) {
+            char obj[8];
+            snprintf(obj, sizeof(obj), "rb%u", i);
+            disco_clear("button", obj);
+        }
+        disco_clear("sensor", "runbook");
+        disco_clear("sensor", "runbooktext");
     }
 
     /* A still of the target's screen, and the button that asks for one. The
@@ -563,16 +644,21 @@ static void publish_discovery(void)
      * fw_fetch off it cannot see what has been published, and an update entity
      * that never knows the answer is worse than none. */
     if (kvm_setting_bool("fw_fetch")) {
-        char j[640];
+        char j[DISCO_JSON_MAX];
         int o = snprintf(j, sizeof(j),
                          "{\"~\":\"%s\",\"name\":\"Firmware\",\"stat_t\":\"~/update\","
-                         "\"cmd_t\":\"~/cmd/install\",\"avty_t\":\"~/availability\","
-                         "\"dev_cla\":\"firmware\",\"ent_cat\":\"config\",\"uniq_id\":\"%s_fw\"",
+                         "\"cmd_t\":\"~/cmd/install\",\"pl_inst\":\"install\","
+                         "\"avty_t\":\"~/availability\","
+                         "\"dev_cla\":\"firmware\",\"ent_cat\":\"config\",\"tit\":\"ESP-KVM firmware\",\"uniq_id\":\"%s_fw\"",
                          s_base_topic, s_devid);
         o += snprintf(j + o, sizeof(j) - o, ",\"dev\":%s}", s_dev_json);
         char topic[128];
         snprintf(topic, sizeof(topic), "%s/update/%s/fw/config", s_disco, s_devid);
-        pub(topic, j, 1);
+        if (disco_fits(o, "fw")) {
+            pub(topic, j, 1);
+        }
+    } else {
+        disco_clear("update", "fw");
     }
 }
 
@@ -583,27 +669,109 @@ static void publish_discovery(void)
  * day of a release and never in between, and this is a device that is meant to
  * be able to sit on a network with no internet at all.
  */
+/* "v.0.52.1" -> "0.52.1"; anything else as it is. */
+static const char *ha_version(const char *v)
+{
+    return strncmp(v, "v.", 2) == 0 ? v + 2 : v;
+}
+
+/*
+ * The manifest is read over HTTPS with a 20 s timeout, so it runs on a task of
+ * its own. It used to run on the esp_timer task, where it held up every timer
+ * in the firmware for as long as the request took, on a 3.5 KB stack; and on
+ * the MQTT task, where it held up the connection. The task starts when it is
+ * needed and ends when it is done.
+ */
+static char s_latest[FW_INSTALL_VERSION_MAX]; /* the manifest's tag; under s_mtx */
+static volatile bool s_fw_task;               /* the check task is running */
+static volatile bool s_fw_want_install;       /* Home Assistant pressed Install */
+
+static void publish_update_json(void);
+
+static void fw_task(void *arg)
+{
+    (void)arg;
+    do {
+        char latest[FW_INSTALL_VERSION_MAX] = {0};
+        if (fw_latest_version(latest, sizeof(latest)) == ESP_OK) {
+            xSemaphoreTake(s_mtx, portMAX_DELAY);
+            snprintf(s_latest, sizeof(s_latest), "%s", latest);
+            xSemaphoreGive(s_mtx);
+        }
+        if (s_fw_want_install) {
+            s_fw_want_install = false;
+            if (latest[0]) {
+                const esp_err_t err = fw_install_start(latest);
+                ESP_LOGW(TAG, "install %s requested from Home Assistant: %s", latest,
+                         esp_err_to_name(err));
+            } else {
+                ESP_LOGW(TAG, "install requested but the manifest could not be read");
+            }
+        }
+        publish_update_json();
+    } while (s_fw_want_install); /* pressed again while this one ran */
+    s_fw_task = false;
+    vTaskDelete(NULL);
+}
+
+static void fw_task_kick(bool install)
+{
+    if (install) {
+        s_fw_want_install = true;
+    }
+    if (s_fw_task) {
+        return; /* the running one reads s_fw_want_install before it ends */
+    }
+    s_fw_task = true;
+    if (xTaskCreate(fw_task, "mqtt_fw", 8192, NULL, 3, NULL) != pdPASS) {
+        s_fw_task = false;
+        s_fw_want_install = false;
+        ESP_LOGW(TAG, "no memory for the update check");
+    }
+}
+
 static void publish_update_state(bool force)
 {
     if (!s_connected || !kvm_setting_bool("fw_fetch")) {
         return;
     }
     static int64_t s_checked_us;
-    static char s_latest[FW_INSTALL_VERSION_MAX];
     const int64_t now = esp_timer_get_time();
     if (force || s_checked_us == 0 || now - s_checked_us > (int64_t)6 * 3600 * 1000000) {
         s_checked_us = now;
-        char latest[FW_INSTALL_VERSION_MAX] = {0};
-        if (fw_latest_version(latest, sizeof(latest)) == ESP_OK) {
-            snprintf(s_latest, sizeof(s_latest), "%s", latest);
-        }
+        fw_task_kick(false);
     }
+    publish_update_json(); /* what is known now; the task sends the answer */
+}
 
+static void publish_update_json(void)
+{
+    if (!s_connected || !kvm_setting_bool("fw_fetch")) {
+        return;
+    }
     const esp_app_desc_t *app = esp_app_get_description();
     const char *installed = app ? app->version : "?";
-    char j[192];
-    snprintf(j, sizeof(j), "{\"installed_version\":\"%s\",\"latest_version\":\"%s\"}",
-             installed, s_latest[0] ? s_latest : installed);
+    char latest[FW_INSTALL_VERSION_MAX];
+    xSemaphoreTake(s_mtx, portMAX_DELAY);
+    snprintf(latest, sizeof(latest), "%s", s_latest[0] ? s_latest : installed);
+    xSemaphoreGive(s_mtx);
+
+    /* Home Assistant compares versions itself, and "v.0.52.1" is not a shape
+     * its parser knows: it falls back to "different means newer". So it gets
+     * the plain numbers; the tag stays for the release link. */
+    fw_install_status_t st;
+    fw_install_get_status(&st);
+    const bool busy = st.state == FW_INSTALL_RUNNING || st.state == FW_INSTALL_DONE;
+    char pct[12] = "null";
+    if (busy && st.percent >= 0) {
+        snprintf(pct, sizeof(pct), "%d", st.percent);
+    }
+    char j[384];
+    snprintf(j, sizeof(j),
+             "{\"installed_version\":\"%s\",\"latest_version\":\"%s\","
+             "\"release_url\":\"https://github.com/espkvm/espkvm/releases/tag/%s\","
+             "\"in_progress\":%s,\"update_percentage\":%s}",
+             ha_version(installed), ha_version(latest), latest, busy ? "true" : "false", pct);
     char topic[96];
     snprintf(topic, sizeof(topic), "%s/update", s_base_topic);
     pub(topic, j, 1);
@@ -616,6 +784,14 @@ static bool payload_is(esp_mqtt_event_handle_t e, const char *want)
 {
     const size_t n = strlen(want);
     return e->data_len == (int)n && strncasecmp(e->data, want, n) == 0;
+}
+
+/** Is this Home Assistant's own online/offline message? */
+static bool is_ha_status(esp_mqtt_event_handle_t e)
+{
+    const size_t n = strlen(s_disco);
+    return e->topic_len == (int)(n + 7) && strncmp(e->topic, s_disco, n) == 0 &&
+           strncmp(e->topic + n, "/status", 7) == 0;
 }
 
 static void handle_command(esp_mqtt_event_handle_t e)
@@ -646,17 +822,10 @@ static void handle_command(esp_mqtt_event_handle_t e)
         vTaskDelay(pdMS_TO_TICKS(300)); /* let the offline notice go out first */
         esp_restart();
     } else if (strcmp(action, "install") == 0) {
-        /* HA sends "install" here. The version to install is whatever the
-         * manifest last named; fw_install_start does the fetching, the writing
-         * and the restart, and refuses if the device may not fetch. */
-        char latest[FW_INSTALL_VERSION_MAX] = {0};
-        if (fw_latest_version(latest, sizeof(latest)) == ESP_OK) {
-            const esp_err_t err = fw_install_start(latest);
-            ESP_LOGW(TAG, "install %s requested from Home Assistant: %s", latest,
-                     esp_err_to_name(err));
-        } else {
-            ESP_LOGW(TAG, "install requested but the manifest could not be read");
-        }
+        /* HA sends "install" here. The manifest is read fresh first, on the
+         * check task; fw_install_start does the fetching, the writing and the
+         * restart, and refuses if the device may not fetch. */
+        fw_task_kick(true);
     } else if (strcmp(action, "snapshot") == 0) {
         publish_snapshot();
     } else if (strcmp(action, "record") == 0) {
@@ -757,9 +926,12 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         publish_update_state(true);
         char sub[104];
         snprintf(sub, sizeof(sub), "%s/cmd/+", s_base_topic);
+        char ha_status[48];
+        snprintf(ha_status, sizeof(ha_status), "%s/status", s_disco);
         xSemaphoreTake(s_mtx, portMAX_DELAY);
         if (s_client) {
             esp_mqtt_client_subscribe(s_client, sub, 1);
+            esp_mqtt_client_subscribe(s_client, ha_status, 1);
         }
         xSemaphoreGive(s_mtx);
         publish_state();
@@ -770,6 +942,31 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         s_connected = false;
         break;
     case MQTT_EVENT_DATA:
+        /* Only whole messages: a command is a few bytes, and a fragment of a
+         * big one on these topics is nothing we sent for. */
+        if (e->current_data_offset != 0 || e->data_len != e->total_data_len) {
+            break;
+        }
+        if (is_ha_status(e)) {
+            /* Home Assistant came back. Discovery is retained, but a broker
+             * without persistence forgets it, so say everything again. */
+            /* A retained copy arrives on every subscribe, right after the
+             * connect handler has already said everything. */
+            if (!e->retain && payload_is(e, "online")) {
+                pub(s_avail_topic, "online", 1);
+                publish_discovery();
+                publish_update_state(false);
+                publish_state();
+            }
+            break;
+        }
+        /* A retained command is one somebody published by mistake with the
+         * retain flag - and the broker hands it back on every connect. A
+         * retained "restart" would then restart the device forever. */
+        if (e->retain) {
+            ESP_LOGW(TAG, "ignored a retained command");
+            break;
+        }
         handle_command(e);
         break;
     default:

@@ -145,6 +145,18 @@ clock lane in high speed. That one bit separates "nothing on the lanes" from
 It is logged by `capture_debug_csi_timeout` behind `CONFIG_KVM_TC358743_ADV_DEBUG`
 and is the first thing to read on any board that captures nothing.
 
+**It loses the mode when the source changes one, and only its reset pin gets it
+back (2026-09-20).** Switching an Ubuntu target to a text console left the chip
+answering I2C, reporting a pixel clock, and returning all zeros for the timings
+- for ten minutes, and through the target going back to the desktop. Pulling
+CAM_RST recovers it. Two things that matters for. The chip needs about two and
+a half seconds with its register bus to itself after a reset, or the mode reads
+stop it re-locking: the same reset at start-up works because nothing polls yet.
+And the pixel clock at 0x80 is not a stand-in for DDC5V - with the target's
+screen asleep it still read 37 MHz, the mode that had been playing - so nothing
+this chip reports tells a sleeping source from a wedged one. The driver dumps
+bank 0xe0 0x80..0x9f on each loss so the two can be compared.
+
 **The LT6911 sends YUV422, not RGB888.** The CSI bridge's data-type filter was
 set to 0x24 and the wire carries 0x1e, so every packet was discarded. Set the
 filter right and the frames arrive.
