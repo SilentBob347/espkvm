@@ -5,6 +5,36 @@ All notable changes to ESP-KVM are recorded here. The format follows
 semantic versioning while it is pre-1.0 (a new feature bumps the minor, a fix
 bumps the patch).
 
+## [0.52.2] - 2026-09-21
+
+### Fixed
+- **The capture bridge on the M5Stack Unit PoE-P4 can be recovered without
+  pulling the power.** Switch an Ubuntu target to a text console and its
+  LT6911D loses the mode and does not take it back - not in ten minutes, and
+  not when the target returns to the desktop. The firmware has had an answer to
+  this since the beginning, a fresh hotplug offered to a source that has gone
+  quiet, but on this board it could never run: the check is a DDC5V line only
+  the TC358743 reports. Now a bridge says whether its DDC5V means anything, one
+  that cannot tell is tried anyway - three times and then it stops, so a
+  sleeping machine is not poked all night - and a bridge with no hotplug line
+  of its own is nudged by pulling its reset pin. Two things the board taught
+  while this was written: the chip needs about two and a half seconds with its
+  register bus to itself after a reset, or the mode reads stop it re-locking,
+  and its reset pin is configured once now rather than on every pulse, which
+  was earning a GPIO warning each time. The pixel clock is not a stand-in for
+  DDC5V either - with the target's screen asleep it still reads the mode that
+  was playing.
+- **A console left open overnight signed back in under "The device is
+  restarting."** The notice belonged to a session that had ended hours before;
+  it was only hidden by the sign-in page, not dropped, and the timer that
+  should have dropped it does not run in a tab the browser has frozen.
+- **No keyboard or mouse for half a minute after signing in.** The console's
+  control socket backs off when the device refuses it, which is what happens
+  all the while nobody is signed in - and by morning that back-off is at its
+  30-second ceiling. Signing in now reconnects at once instead of waiting the
+  ceiling out. It is also why the stale notice sat there: nothing arrived to
+  replace it.
+
 ## [0.52.1] - 2026-09-20
 
 ### Fixed

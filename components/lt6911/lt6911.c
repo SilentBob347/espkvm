@@ -31,6 +31,7 @@
  * CONFIG_KVM_LT6911 says otherwise - left in because the next attempt
  * starts here, and the next attempt is about firmware, not registers.
  */
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -88,6 +89,7 @@ typedef struct {
     i2c_master_dev_handle_t i2c;
     bool had_mode; /* so a signal coming and going is said once, not per poll */
     int64_t read_us;            /* when the timings below were read */
+    int64_t quiet_until_us;     /* leave the register bus alone until then */
     int64_t tx_kick_us;         /* when the transmitter was last checked */
     kvm_bridge_timings_t last;  /* what that read returned */
 } lt6911_t;
@@ -163,8 +165,20 @@ static esp_err_t init_streaming(void *dev)
     access_close(d);
     ESP_RETURN_ON_ERROR(err, TAG, "b0");
     ESP_LOGI(TAG, "MIPI TX 0x%02x -> 0x%02x", before, after);
-    /* Give the bridge's own firmware time to take the bus back and re-lock. */
+    /*
+     * Give the bridge's own firmware time to take the bus back and re-lock.
+     *
+     * The delay is not enough on its own. Locking takes this chip about two and
+     * a half seconds, and every mode read takes its register bus away for the
+     * length of thirteen I2C transactions - so a poll landing in the middle of
+     * an attempt stops it, and the next poll stops the next one. At start-up
+     * that never showed, because the monitor task is not running yet. Resetting
+     * the chip to recover it is the same situation without the quiet: three
+     * resets in a row each failed to bring a live 1080p15 source back
+     * (hardware, 2026-09-20). So say when the bus is the chip's own.
+     */
     vTaskDelay(pdMS_TO_TICKS(500));
+    d->quiet_until_us = esp_timer_get_time() + 2500000;
     return ESP_OK;
 }
 
@@ -191,7 +205,7 @@ static esp_err_t get_timings(void *dev, kvm_bridge_timings_t *out)
      */
     const int64_t now_us = esp_timer_get_time();
     const int64_t period_us = d->had_mode ? 500000 : 2000000;
-    if (d->read_us && now_us - d->read_us < period_us) {
+    if ((d->read_us && now_us - d->read_us < period_us) || now_us < d->quiet_until_us) {
         *out = d->last;
         return ESP_OK;
     }
@@ -212,6 +226,15 @@ static esp_err_t get_timings(void *dev, kvm_bridge_timings_t *out)
     const uint16_t vtotal = (uint16_t)((r[2] << 8) | r[3]);
     const uint16_t hact = (uint16_t)(((r[4] << 8) | r[5]) * 2u);
     const uint16_t vact = (uint16_t)((r[6] << 8) | r[7]);
+
+    /*
+     * No ddc5v is reported here, and the pixel clock is not a stand-in for it:
+     * with the target's screen asleep this register still read 37 MHz, the
+     * value of the mode that had been playing. Reading it as "a source is on
+     * the wire" had the firmware reset the bridge at an empty room. Which
+     * register does tell the two apart is not known yet - the dump below is
+     * there to find out.
+     */
 
     /*
      * Nothing locked yet, or the source went away. Either way there is no mode,
@@ -248,6 +271,27 @@ static esp_err_t get_timings(void *dev, kvm_bridge_timings_t *out)
             d->had_mode = false;
             ESP_LOGW(TAG, "no mode from the chip: clk %u MHz, %02x %02x %02x %02x %02x %02x %02x %02x",
                      (unsigned)clk, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]);
+            /*
+             * A picture of bank 0xe0 at the moment the mode went, once per
+             * loss. A screen going to sleep and a chip that has wedged look the
+             * same from the outside, and telling them apart needs a register
+             * that differs between the two - which nothing documents. Two of
+             * these dumps, one of each, is what finding it takes.
+             */
+            uint8_t d0[32] = {0};
+            if (access_open(d) == ESP_OK) {
+                for (unsigned i = 0; i < sizeof(d0); i++) {
+                    if (reg_read(d, (uint8_t)(0x80 + i), &d0[i]) != ESP_OK) {
+                        break;
+                    }
+                }
+                access_close(d);
+                char hex[sizeof(d0) * 3 + 1];
+                for (unsigned i = 0; i < sizeof(d0); i++) {
+                    snprintf(hex + i * 3, 4, "%02x ", d0[i]);
+                }
+                ESP_LOGW(TAG, "bank e0 0x80..0x9f: %s", hex);
+            }
             uint8_t hi = 0, lo = 0;
             if (access_open(d) == ESP_OK) {
                 if (reg_write(d, LT6911_REG_BANK, LT6911_BANK_ID) == ESP_OK) {

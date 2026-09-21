@@ -113,14 +113,21 @@ static void bridge_resetn_pulse(void)
 {
 #if CONFIG_KVM_TC358743_RST_GPIO >= 0
     const int rst = CONFIG_KVM_TC358743_RST_GPIO;
-    gpio_config_t io = {
-        .pin_bit_mask = 1ULL << rst,
-        .mode = GPIO_MODE_OUTPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE,
-    };
-    ESP_ERROR_CHECK(gpio_config(&io));
+    /* Once. The pin is in the board's reserved list, and configuring it a
+     * second time - which a reset used as a recovery does - only earns a
+     * "conflict found for GPIO[18]" from the driver on every nudge. */
+    static bool configured;
+    if (!configured) {
+        gpio_config_t io = {
+            .pin_bit_mask = 1ULL << rst,
+            .mode = GPIO_MODE_OUTPUT,
+            .pull_up_en = GPIO_PULLUP_DISABLE,
+            .pull_down_en = GPIO_PULLDOWN_DISABLE,
+            .intr_type = GPIO_INTR_DISABLE,
+        };
+        ESP_ERROR_CHECK(gpio_config(&io));
+        configured = true;
+    }
     /* Which level holds the bridge in reset is the board's business: the
      * TC358743 has a RESETN, the LT6911D on M5Stack's add-on the other way
      * round, and driving the wrong one keeps the chip silent on I2C. */
@@ -734,6 +741,34 @@ esp_err_t capture_hw_hdmi_recover(capture_ctx_t *c)
 
 
 /*
+ * Offer the source a reason to start again.
+ *
+ * A TC358743 owns its hotplug line and can cycle it. The LT6911D cannot: its
+ * own firmware holds HPD, and nothing this side can pull. What the board has
+ * instead is the chip's reset pin, so pull that - the source sees the monitor
+ * go away and come back, which is the same offer made with a bigger hammer.
+ *
+ * It is needed. Switching an Ubuntu target to a text console left the LT6911D
+ * with a pixel clock and all-zero timings, and it never locked again: not in
+ * ten minutes, and not when the target switched back to the desktop. A reset
+ * brought the picture straight back (hardware, 2026-09-20).
+ *
+ * After the pulse the chip comes up with its MIPI transmitter off, so put it
+ * back on. The receiver is left alone: the monitor task restarts it when a mode
+ * appears, the same as any other signal coming back.
+ */
+static esp_err_t bridge_nudge(capture_ctx_t *c)
+{
+    if (kvm_bridge_has_hotplug_reset(&c->bridge)) {
+        return kvm_bridge_hotplug_reset(&c->bridge);
+    }
+    ESP_LOGW(CAPTURE_LOG_TAG, "%s has no hotplug line - resetting the chip instead",
+             c->bridge.name ? c->bridge.name : "bridge");
+    bridge_resetn_pulse();
+    return kvm_bridge_init_streaming(&c->bridge);
+}
+
+/*
  * Polls the bridge rather than using its interrupt line: the INT pin is not
  * wired on this adapter, and 200 ms is fast enough that a mode switch is
  * invisible next to the source's own retraining time.
@@ -791,8 +826,15 @@ static void capture_monitor_task(void *arg)
              * from it is worth doing something about. Without it the target is
              * off or nothing is plugged in, and hotplug cycles would be shouting
              * at an empty room.
+             *
+             * A bridge that cannot read it at all gets the benefit of the doubt.
+             * The LT6911D is one: nothing it reports separates a screen that
+             * has gone to sleep from a chip that has lost its lock for good. So
+             * it is tried, and the count is what keeps that honest - three
+             * resets and it stops, rather than poking a sleeping machine every
+             * few minutes for the rest of the night.
              */
-            const bool ddc5v = t.ddc5v;
+            const bool ddc5v = t.ddc5v || !c->bridge.knows_ddc5v;
             if (ddc5v != had_ddc5v) {
                 had_ddc5v = ddc5v;
                 quiet_since_us = (int64_t)esp_timer_get_time();
@@ -807,13 +849,13 @@ static void capture_monitor_task(void *arg)
             }
             nudges++;
             ESP_LOGW(CAPTURE_LOG_TAG,
-                     "powered source, no picture for %lld s - offering it a fresh hotplug (%d/%d)",
+                     "no picture for %lld s - offering the source a fresh hotplug (%d/%d)",
                      (long long)(due_ms / 1000), nudges, HDMI_NUDGE_MAX);
             if (capture_tc_lock(c, 1000)) {
-                esp_err_t ner = kvm_bridge_hotplug_reset(&c->bridge);
+                esp_err_t ner = bridge_nudge(c);
                 capture_tc_unlock(c);
                 if (ner != ESP_OK) {
-                    ESP_LOGW(CAPTURE_LOG_TAG, "hotplug: %s", esp_err_to_name(ner));
+                    ESP_LOGW(CAPTURE_LOG_TAG, "nudge: %s", esp_err_to_name(ner));
                 }
             }
             continue;

@@ -95,6 +95,13 @@ typedef struct {
     const char *name; /**< what to call it in a log or the console */
     const kvm_bridge_ops_t *ops;
     void *dev; /**< the driver's handle, passed back to every op */
+    /**
+     * Whether @c ddc5v in the timings means anything from this chip. A bridge
+     * that cannot tell a sleeping source from an unplugged cable leaves it
+     * false always, and the capture side must not read that as "nothing is
+     * attached".
+     */
+    bool knows_ddc5v;
 } kvm_bridge_t;
 
 /**
@@ -161,6 +168,12 @@ static inline void kvm_bridge_set_csi_uyvy422(const kvm_bridge_t *b, bool uyvy42
 static inline esp_err_t kvm_bridge_enable_hdmi_output(const kvm_bridge_t *b)
 {
     return b->ops->enable_hdmi_output ? b->ops->enable_hdmi_output(b->dev) : ESP_OK;
+}
+/* Whether the bridge can cycle its own hotplug line. One that cannot leaves the
+ * board holding the only lever there is, its reset pin. */
+static inline bool kvm_bridge_has_hotplug_reset(const kvm_bridge_t *b)
+{
+    return b->ops->hotplug_reset != NULL;
 }
 static inline esp_err_t kvm_bridge_hotplug_reset(const kvm_bridge_t *b)
 {

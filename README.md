@@ -112,8 +112,12 @@ What is coming next is in the [roadmap](ROADMAP.md).
 <p align="center"><em>The device in Home Assistant &mdash; every value reported live over MQTT, discovered automatically.</em></p>
 
 **Still: do not put this on the public internet.** There is a login now, and
-TLS. But nothing here has been through a security review, and a device that
-holds the keyboard of someone else's machine is worth attacking. Keep it on a
+TLS, and the code has been through a security review of my own - but not an
+external audit, and a device that holds the keyboard of someone else's machine
+is worth attacking. Two things I would fix before exposing one anywhere:
+secure boot and flash encryption are not switched on, so physical access to the
+board gives up the TLS key and the network passwords, and OTA images are not
+signature-checked, so anyone with a session can flash anything. Keep it on a
 network you trust, or reach it over a VPN. It has two built in, in Settings
 &rarr; VPN.
 
@@ -1172,6 +1176,15 @@ and press a key. Two ways to hand that to one:
 The keyboard, pointer and snapshot endpoints are off until **Agent REST API** is
 turned on in Settings &rarr; Security: it grants a program the same control the
 console has. Reading the screen, runbooks, virtual media and power do not need it.
+
+### Built by other people
+
+- **[guacamole-espkvm](https://github.com/Crisspii/guacamole-espkvm)** by
+  [Crisspii](https://github.com/Crisspii) - an Apache Guacamole protocol plugin,
+  so several devices sit in one Guacamole as ordinary connections, with the
+  credentials held on the server. It speaks this device's own protocol rather
+  than wrapping a browser: H.264 and MJPEG, keyboard, pointer and virtual media.
+  Experimental, v0.1.0, tested against Guacamole 1.6.0.
 
 ## Repository layout
 
