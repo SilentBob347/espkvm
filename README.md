@@ -550,12 +550,16 @@ buttons just as well, but cannot sense the LED. Wiring for both is in
 <tr>
 <td valign="top">
 
-**I2C OLED (SSD1306 / SH1106)**
+**I2C OLED (SSD1306 / SH1106 / SSD1315)**
 
 A mono OLED on four wires (VCC, GND, SCL, SDA). It shares the capture chip's I2C
 bus and needs no pins of its own. SSD1306 works as 128&times;64, 128&times;32,
 96&times;16, 72&times;40, 64&times;48 and 64&times;32; SH1106 as 128&times;64,
-128&times;32, 96&times;16 and 64&times;48. Under Settings &rarr; Display you pick
+128&times;32, 96&times;16 and 64&times;48; SSD1315 as 128&times;64 and 72&times;40.
+On the M5Stack Unit PoE-P4 the M5Stack Mini OLED Unit (0.42&Prime;, 72&times;40)
+plugs into the Grove port: that port is a bus of its own, and the firmware for
+that board already knows its pins. On another board, an OLED on its own two pins
+works too - set OLED SDA and SCL in Settings &rarr; Display. Under Settings &rarr; Display you pick
 the panel by controller and size in one list, because these controllers cannot
 be asked how big the glass is. The shorter the panel, the fewer status
 lines it shows, and the address is the line it keeps. A line that does not fit

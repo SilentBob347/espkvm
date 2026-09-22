@@ -152,9 +152,12 @@ answering I2C, reporting a pixel clock, and returning all zeros for the timings
 CAM_RST recovers it. Two things that matters for. The chip needs about two and
 a half seconds with its register bus to itself after a reset, or the mode reads
 stop it re-locking: the same reset at start-up works because nothing polls yet.
-And the pixel clock at 0x80 is not a stand-in for DDC5V - with the target's
-screen asleep it still read 37 MHz, the mode that had been playing - so nothing
-this chip reports tells a sleeping source from a wedged one. The driver dumps
+And 0x80 is not a stand-in for DDC5V. It is not a pixel clock at all, whatever
+the Linux drivers call it: 0x80..0x83 read 25 05 13 01 always - with a mode, with
+none, with the screen asleep, with the cable out - which looks like a firmware
+date, 2025-05-13 (checked 2026-09-22). The "37 MHz" was 0x25. So nothing this
+chip is known to report tells a sleeping source from a wedged one, and the
+refresh rate is unknown on this board. The driver dumps
 bank 0xe0 0x80..0x9f on each loss so the two can be compared.
 
 **The LT6911 sends YUV422, not RGB888.** The CSI bridge's data-type filter was

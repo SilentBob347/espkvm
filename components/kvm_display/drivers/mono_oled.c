@@ -520,6 +520,40 @@ static void render_status(mono_oled_t *m, const kvm_display_status_t *st, uint8_
     }
 }
 
+/*
+ * The bus the panel is on. Most boards have no OLED socket, so the panel shares
+ * the capture chip's bus and needs no pins. Where the operator names two pins -
+ * the Grove port on the M5Stack Unit PoE-P4 is its own bus - it gets a bus of
+ * its own on I2C_NUM_1; the capture path holds I2C_NUM_0. The pins need a
+ * restart to change, so the bus is made once and kept.
+ */
+static i2c_master_bus_handle_t s_own_bus;
+
+static i2c_master_bus_handle_t oled_bus(void)
+{
+    const int sda = (int)kvm_setting_int("disp_sda");
+    const int scl = (int)kvm_setting_int("disp_scl");
+    if (sda < 0 || scl < 0) {
+        return capture_i2c_bus();
+    }
+    if (!s_own_bus) {
+        const i2c_master_bus_config_t cfg = {
+            .i2c_port = I2C_NUM_1,
+            .sda_io_num = sda,
+            .scl_io_num = scl,
+            .clk_source = I2C_CLK_SRC_DEFAULT,
+            .glitch_ignore_cnt = 7,
+            .flags = {.enable_internal_pullup = 1},
+        };
+        const esp_err_t err = i2c_new_master_bus(&cfg, &s_own_bus);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "OLED bus on SDA %d / SCL %d: %s", sda, scl, esp_err_to_name(err));
+            s_own_bus = NULL;
+        }
+    }
+    return s_own_bus;
+}
+
 static esp_err_t flush(mono_oled_t *m)
 {
     for (uint8_t page = 0; page < m->pages; page++) {
@@ -543,7 +577,7 @@ static esp_err_t flush(mono_oled_t *m)
 esp_err_t mono_oled_attach(mono_oled_t **out, const uint8_t *init_cmds, size_t init_len,
                            uint8_t base_col)
 {
-    i2c_master_bus_handle_t bus = capture_i2c_bus();
+    i2c_master_bus_handle_t bus = oled_bus();
     if (!bus) {
         return ESP_ERR_INVALID_STATE; /* capture path not up yet - caller retries */
     }

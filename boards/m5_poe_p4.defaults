@@ -127,6 +127,11 @@ CONFIG_KVM_DISP_DC_GPIO=22
 CONFIG_KVM_DISP_RST_GPIO=23
 CONFIG_KVM_ATX_PWR_GPIO=39
 CONFIG_KVM_ATX_RST_GPIO=40
+# The Grove port (HY2.0-4P) is an I2C bus of its own, yellow SDA on 53 and
+# white SCL on 54 - M5Unified lists the same pair as this board's Port A. The
+# M5Stack Mini OLED Unit plugs in there with nothing to solder.
+CONFIG_KVM_DISP_I2C_SDA_GPIO=53
+CONFIG_KVM_DISP_I2C_SCL_GPIO=54
 
 # --- console ----------------------------------------------------------------
 # The download USB-C is a serial-JTAG, and UART0 (GPIO 37/38) is on the ISP bus

@@ -2683,14 +2683,9 @@ static void ws_broadcast_update(uint8_t phase, uint8_t percent)
     }
 }
 
-/** Push target-attached state and keyboard LEDs to the connected client. */
-static void ws_send_status(void)
+/** Target-attached state and keyboard LEDs, to one console. */
+static void ws_send_status_to(int fd)
 {
-    if (!s_ws_mu || xSemaphoreTake(s_ws_mu, pdMS_TO_TICKS(200)) != pdTRUE) {
-        return;
-    }
-    const int fd = s_ws_fd;
-    xSemaphoreGive(s_ws_mu);
     if (fd < 0) {
         return;
     }
@@ -2701,6 +2696,27 @@ static void ws_send_status(void)
     const uint8_t flags = (uint8_t)((usb_hid_ready() ? 1u : 0u) | (usb_hid_bus_alive() ? 2u : 0u));
     const uint8_t msg[] = {WS_D2C_STATUS, flags, usb_hid_leds()};
     ws_send_binary(fd, msg, sizeof(msg));
+}
+
+/*
+ * The same, to every console. It used to go to the one in control only, so a
+ * console that was watching showed the USB icon grey - "no power on the
+ * target's port" - until someone pressed "take control", however well the
+ * target saw the keyboard.
+ */
+static void ws_send_status(void)
+{
+    int fds[TX_MAX_SOCKETS];
+    if (!s_ws_mu || xSemaphoreTake(s_ws_mu, pdMS_TO_TICKS(200)) != pdTRUE) {
+        return;
+    }
+    memcpy(fds, s_ctrl_fds, sizeof(fds));
+    xSemaphoreGive(s_ws_mu);
+    for (int i = 0; i < TX_MAX_SOCKETS; i++) {
+        if (fds[i] > 0) {
+            ws_send_status_to(fds[i]);
+        }
+    }
 }
 
 static void on_hid_leds(uint8_t leds, void *user)
@@ -2894,6 +2910,7 @@ static esp_err_t ws_input_handler(httpd_req_t *req)
          * but drop any input. */
         if (op == WS_C2D_PING) {
             ws_send_pong(my_fd);
+            ws_send_status_to(my_fd);
         }
         return ESP_OK;
     }
@@ -2937,7 +2954,7 @@ static esp_err_t ws_input_handler(httpd_req_t *req)
         ws_send_pong(my_fd);
         /* Doubles as "what is the current state?", which is what a client wants
          * right after connecting. */
-        ws_send_status();
+        ws_send_status_to(my_fd);
         break;
     case WS_C2D_TAKEOVER:
         /* Control was already transferred above; nothing more to do. */

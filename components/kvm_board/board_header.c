@@ -305,7 +305,7 @@ static const kvm_board_pin_t s_m5_isp[] = {
 _Static_assert(sizeof(s_m5_isp) / sizeof(s_m5_isp[0]) == 6,
                "s_m5_isp: the row must hold exactly 6 pins");
 static const kvm_board_pin_t s_m5_grove[] = {
-    PWR("GND"), PWR("5V"), IO(53), IO(54),
+    PWR("GND"), PWR("5V"), IO_NOTE(53, "Grove SDA (yellow)"), IO_NOTE(54, "Grove SCL (white)"),
 };
 _Static_assert(sizeof(s_m5_grove) / sizeof(s_m5_grove[0]) == 4,
                "s_m5_grove: the port has exactly 4 pins");

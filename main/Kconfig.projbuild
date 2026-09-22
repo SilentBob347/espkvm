@@ -42,8 +42,9 @@ menu "ESP-KVM"
             help
                 Drive a small status display that shows the device's IP, link,
                 capture status and health. Two kinds are supported: an I2C OLED
-                (SSD1306/SH1106) that shares the capture chip's I2C bus and is
-                auto-detected with no dedicated pins; and a round colour SPI LCD
+                (SSD1306/SH1106/SSD1315) that shares the capture chip's I2C bus
+                and is auto-detected with no dedicated pins, or sits on a bus of
+                its own where a board has one; and a round colour SPI LCD
                 (GC9A01, e.g. the Waveshare 1.28"), which needs the SPI pins set
                 below. Off unless switched on in settings, and it does nothing
                 when no panel is connected, so it is safe to build into every board.
@@ -95,6 +96,21 @@ menu "ESP-KVM"
             depends on KVM_ENABLE_DISPLAY
             range -1 ENV_GPIO_RANGE_MAX
             default 33
+
+        # An I2C OLED normally shares the capture chip's bus and needs no pins.
+        # A board whose OLED socket is a bus of its own - the Grove port on the
+        # M5Stack Unit PoE-P4 - names its pins here. -1 keeps the shared bus.
+        config KVM_DISP_I2C_SDA_GPIO
+            int "I2C OLED default SDA GPIO (-1 = the capture chip's bus)"
+            depends on KVM_ENABLE_DISPLAY
+            range -1 ENV_GPIO_RANGE_MAX
+            default -1
+
+        config KVM_DISP_I2C_SCL_GPIO
+            int "I2C OLED default SCL GPIO (-1 = the capture chip's bus)"
+            depends on KVM_ENABLE_DISPLAY
+            range -1 ENV_GPIO_RANGE_MAX
+            default -1
 
         # The ATX pins are offered the same way, and for the same reason: which
         # pins are free differs per board. They are kept clear of the display's

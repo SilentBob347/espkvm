@@ -34,6 +34,7 @@ static const kvm_panel_t k_panels[] = {
     {KVM_PANEL_DRV_SH1106, 64, 48, 32},
     /* Appended, and it has to stay appended: the index is what NVS holds. */
     {KVM_PANEL_DRV_SSD1315, 128, 64, 0}, /* 0.96", untested */
+    {KVM_PANEL_DRV_SSD1315, 72, 40, 28}, /* 0.42", the M5Stack Mini OLED Unit */
 };
 
 const kvm_panel_t *kvm_panel_selected(void)

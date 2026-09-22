@@ -5,6 +5,26 @@ All notable changes to ESP-KVM are recorded here. The format follows
 semantic versioning while it is pre-1.0 (a new feature bumps the minor, a fix
 bumps the patch).
 
+## [0.53.0] - 2026-09-22
+
+### Added
+- **The M5Stack Mini OLED Unit on the Unit PoE-P4.** The 0.42" 72x40 OLED plugs
+  into the Grove port. That port is an I2C bus of its own (SDA 53, SCL 54), not
+  the capture chip's bus the OLED used to need, so an OLED can now have a bus
+  of its own: two new settings, OLED SDA and OLED SCL, and the M5Stack firmware
+  sets them to the Grove pins. The panel is "SSD1315 72x40" in the list.
+  Not tried on the unit yet.
+
+### Fixed
+- **The USB icon is green in every open console, not only in the one in
+  control.** The device sent the target's USB state only to the console that
+  held control, so a console that was just watching showed "no power on the
+  target's port" until you pressed Take control.
+- **M5Stack Unit PoE-P4: no more "1920x1080p15".** The refresh rate was worked
+  out from a register the drivers call a pixel clock. On this board it is not
+  one - it reads the same bytes whatever the source does - so a 60 Hz source
+  showed as 15 Hz. The rate now shows as unknown.
+
 ## [0.52.3] - 2026-09-21
 
 ### Fixed

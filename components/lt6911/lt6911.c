@@ -73,7 +73,9 @@ static const char *TAG = "lt6911";
  * these, and Espressif's driver does not read them at all. The horizontal pair
  * counts two pixels at a time, which is how the part moves them.
  *
- *   0x80        pixel clock, MHz
+ *   0x80..0x83  NOT a pixel clock, whatever the Linux drivers call it: on this
+ *               add-on it reads 25 05 13 01 always - with a mode, with none,
+ *               with the source asleep. It looks like a firmware date.
  *   0x88..0x89  htotal / 2, big-endian
  *   0x8a..0x8b  vtotal
  *   0x8c..0x8d  active pixels / 2
@@ -88,6 +90,7 @@ static const char *TAG = "lt6911";
 typedef struct {
     i2c_master_dev_handle_t i2c;
     bool had_mode; /* so a signal coming and going is said once, not per poll */
+    bool tell_empty; /* no mode since start-up or a reset: say what the chip reads, once */
     int64_t read_us;            /* when the timings below were read */
     int64_t quiet_until_us;     /* leave the register bus alone until then */
     int64_t tx_kick_us;         /* when the transmitter was last checked */
@@ -179,6 +182,7 @@ static esp_err_t init_streaming(void *dev)
      */
     vTaskDelay(pdMS_TO_TICKS(500));
     d->quiet_until_us = esp_timer_get_time() + 2500000;
+    d->tell_empty = true;
     return ESP_OK;
 }
 
@@ -228,12 +232,11 @@ static esp_err_t get_timings(void *dev, kvm_bridge_timings_t *out)
     const uint16_t vact = (uint16_t)((r[6] << 8) | r[7]);
 
     /*
-     * No ddc5v is reported here, and the pixel clock is not a stand-in for it:
-     * with the target's screen asleep this register still read 37 MHz, the
-     * value of the mode that had been playing. Reading it as "a source is on
-     * the wire" had the firmware reset the bridge at an empty room. Which
-     * register does tell the two apart is not known yet - the dump below is
-     * there to find out.
+     * No ddc5v is reported here, and 0x80 is not a stand-in for it: it reads
+     * 25 05 13 01 whatever the source does (see above). Reading it as "a
+     * source is on the wire" had the firmware reset the bridge at an empty
+     * room. Which register does tell the two apart is not known yet - the dump
+     * below is there to find out.
      */
 
     /*
@@ -267,10 +270,15 @@ static esp_err_t get_timings(void *dev, kvm_bridge_timings_t *out)
                 access_close(d);
             }
         }
-        if (d->had_mode) {
-            d->had_mode = false;
-            ESP_LOGW(TAG, "no mode from the chip: clk %u MHz, %02x %02x %02x %02x %02x %02x %02x %02x",
+        /* Also once after start-up and after each reset, when there has never
+           been a mode: a clock of 0 there means nothing on the wire at all,
+           anything else a source the chip cannot lock to. */
+        if (d->had_mode || d->tell_empty) {
+            ESP_LOGW(TAG, "%s: 0x80 %02x, timings %02x %02x %02x %02x %02x %02x %02x %02x",
+                     d->had_mode ? "no mode from the chip" : "no mode yet",
                      (unsigned)clk, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]);
+            d->had_mode = false;
+            d->tell_empty = false;
             /*
              * A picture of bank 0xe0 at the moment the mode went, once per
              * loss. A screen going to sleep and a chip that has wedged look the
@@ -307,17 +315,18 @@ static esp_err_t get_timings(void *dev, kvm_bridge_timings_t *out)
     }
     if (!d->had_mode) {
         d->had_mode = true;
-        ESP_LOGI(TAG, "mode back: %ux%u, clk %u MHz", (unsigned)hact, (unsigned)vact, (unsigned)clk);
+        ESP_LOGI(TAG, "mode back: %ux%u", (unsigned)hact, (unsigned)vact);
     }
 
     out->hact = hact;
     out->vact = vact;
     out->htotal = htotal;
     out->vtotal = vtotal;
-    /* The refresh rate is not published, but it follows from the clock and the
-     * totals, and only the "does this fit the lanes" check reads it. */
-    const uint32_t lines = (uint32_t)htotal * (uint32_t)vtotal;
-    out->hz = lines ? (uint8_t)(((uint32_t)clk * 1000000u + lines / 2u) / lines) : 0u;
+    /* The refresh rate is not known: there is no pixel clock to work it out
+     * from (see 0x80 above). Worked out from that byte it read 15 Hz for a
+     * 1080p60 source. 0 is the honest answer, and the capture reads it as
+     * "rate unknown". */
+    out->hz = 0;
     out->ddc5v = true;
     out->tmds = true;
     out->hdmi_mode = true;

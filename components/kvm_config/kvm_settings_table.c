@@ -71,6 +71,7 @@ static const char *const s_display_choices[] = {
     "SSD1306 64x48",  "SSD1306 64x32", "SH1106 128x32",
     "SH1106 96x16",   "SH1106 64x48",
     "SSD1315 128x64 (untested)",
+    "SSD1315 72x40 (M5Stack Mini OLED)",
 };
 /* "auto" follows the OS guessed from USB enumeration; the rest force it. */
 static const char *const s_targetos_choices[] = {"auto", "windows", "macos", "linux", "android"};
@@ -1060,6 +1061,19 @@ static const kvm_setting_t s_settings[] = {
         .help = "Reset GPIO for the GC9A01. -1 (None) if RST is tied to 3V3.",
         .min = -1, .max = 54, .def = CONFIG_KVM_DISP_RST_GPIO, .requires_cap = -1, .flags = KVM_SF_PIN | KVM_SF_REBOOT,
         .visible_key = "disp_type", .visible_val = 2, /* GC9A01 only */
+    },
+    {
+        .key = "disp_sda", .section = "display", .group = "Wiring", .type = KVM_VT_INT, .title = "OLED SDA",
+        .help = "I2C data GPIO for an OLED on a bus of its own, such as the Grove port of the "
+                "M5Stack Unit PoE-P4. -1 (None) puts the OLED on the capture chip's bus, where "
+                "most boards have it. Set both SDA and SCL, or neither.",
+        .min = -1, .max = 54, .def = CONFIG_KVM_DISP_I2C_SDA_GPIO, .requires_cap = -1, .flags = KVM_SF_PIN | KVM_SF_REBOOT,
+    },
+    {
+        .key = "disp_scl", .section = "display", .group = "Wiring", .type = KVM_VT_INT, .title = "OLED SCL",
+        .help = "I2C clock GPIO for an OLED on a bus of its own. -1 (None) puts it on the "
+                "capture chip's bus.",
+        .min = -1, .max = 54, .def = CONFIG_KVM_DISP_I2C_SCL_GPIO, .requires_cap = -1, .flags = KVM_SF_PIN | KVM_SF_REBOOT,
     },
     {
         .key = "disp_bl", .section = "display", .group = "Wiring", .type = KVM_VT_INT, .title = "LCD backlight",
