@@ -5,6 +5,19 @@ All notable changes to ESP-KVM are recorded here. The format follows
 semantic versioning while it is pre-1.0 (a new feature bumps the minor, a fix
 bumps the patch).
 
+## [Unreleased]
+
+### Added
+- **Alt+Tab, Ctrl+W and the Windows key can go to the target.** A browser keeps
+  those for itself, so they never reached the far machine and Ctrl+W closed the
+  console instead. In full screen, with control taken, the console now asks
+  Chromium for them ("All keys", beside the full-screen button; Firefox and
+  Safari have nothing like it and do not show it). Esc hands control back and
+  the keys with it.
+- **Closing the tab while you are driving asks first.** The browser's own "leave
+  site?" question, and only with control taken - a tab left open to watch still
+  closes without a word.
+
 ## [0.53.0] - 2026-09-22
 
 ### Added

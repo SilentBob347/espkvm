@@ -71,6 +71,7 @@ Useful for what it does today, and honest about the rest.
 | MJPEG streaming | works |
 | H.264 streaming | works; needs HTTPS in the browser |
 | Keyboard, absolute and relative pointer, media keys | works |
+| Alt+Tab, Ctrl+W and the Windows key reaching the target | works in Chrome and Edge; full screen, with control taken, and the "All keys" button on. Firefox and Safari have no way to give a page those keys |
 | Waking a sleeping target from the keyboard | works; over USB, if the machine allows it. Otherwise Wake-on-LAN or the ATX button |
 | Pasting text with a keyboard layout | works; US English, Russian, Czech, Ukrainian, Lithuanian |
 | Use from a phone or tablet | works; touch trackpad and on-screen keyboard |
@@ -544,8 +545,9 @@ buttons just as well, but cannot sense the LED. Wiring for both is in
 
 <table>
 <tr>
-<td width="50%"><img src="docs/SSD1306.jpg" alt="SSD1306/SH1106 I2C OLED module"></td>
-<td width="50%"><img src="docs/GC9A01.webp" alt="GC9A01 240x240 round colour SPI LCD module"></td>
+<td width="33%"><img src="docs/SSD1306.jpg" alt="SSD1306/SH1106 I2C OLED module"></td>
+<td width="33%"><img src="docs/m5-mini-oled.webp" alt="M5Stack Mini OLED Unit, a 0.42-inch 72x40 panel with a Grove connector"></td>
+<td width="33%"><img src="docs/GC9A01.webp" alt="GC9A01 240x240 round colour SPI LCD module"></td>
 </tr>
 <tr>
 <td valign="top">
@@ -556,11 +558,7 @@ A mono OLED on four wires (VCC, GND, SCL, SDA). It shares the capture chip's I2C
 bus and needs no pins of its own. SSD1306 works as 128&times;64, 128&times;32,
 96&times;16, 72&times;40, 64&times;48 and 64&times;32; SH1106 as 128&times;64,
 128&times;32, 96&times;16 and 64&times;48; SSD1315 as 128&times;64 and 72&times;40.
-On the M5Stack Unit PoE-P4 the M5Stack Mini OLED Unit (0.42&Prime;, 72&times;40)
-plugs into the Grove port: that port is a bus of its own, and the firmware for
-that board already knows its pins. On another board, an OLED on its own two pins
-works too - set OLED SDA and SCL in Settings &rarr; Display. Under Settings &rarr; Display you pick
-the panel by controller and size in one list, because these controllers cannot
+Under Settings &rarr; Display you pick the panel by controller and size in one list, because these controllers cannot
 be asked how big the glass is. The shorter the panel, the fewer status
 lines it shows, and the address is the line it keeps. A line that does not fit
 the width steps along a character at a time, and the screen waits until it has
@@ -568,6 +566,20 @@ been read to the end. In hotspot mode it shows the
 network and its password as a QR code, alternating with the same thing as text,
 so a phone can join from what is on the glass. Panels too short for a readable
 code show only the text.
+
+</td>
+<td valign="top">
+
+**M5Stack Mini OLED Unit**
+
+A 0.42&Prime; 72&times;40 SSD1315 panel with a Grove cable. On the M5Stack Unit
+PoE-P4 it plugs into the Grove port and there is nothing to solder and nothing
+to set: that port is an I2C bus of its own, and the firmware for that board
+already knows its pins. Any board can use an OLED on a bus of its own the same
+way &mdash; name the two pins as OLED SDA and OLED SCL under Settings &rarr;
+Display. Twelve characters to a line and four lines under the heading, so it
+shows the address, the link, the picture's size and the health figures, one
+screen at a time.
 
 </td>
 <td valign="top">
@@ -1262,6 +1274,10 @@ Waveshare, the maker of the capture adapter, links ESP-KVM from its
 [HDMI to CSI adapter wiki](https://www.waveshare.com/wiki/HDMI_to_CSI_Adapter),
 and from the documentation for its
 [ESP32-P4-WIFI6-POE-ETH board](https://docs.waveshare.com/ESP32-P4-WIFI6-POE-ETH/Resources-And-Documents).
+
+## Star history
+
+[![Star History Chart](https://api.star-history.com/chart?repos=espkvm/espkvm&type=date&legend=bottom-right)](https://www.star-history.com/?repos=espkvm%2Fespkvm&type=date&legend=bottom-right)
 
 ## Credits
 
