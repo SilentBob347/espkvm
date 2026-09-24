@@ -160,6 +160,19 @@ chip is known to report tells a sleeping source from a wedged one, and the
 refresh rate is unknown on this board. The driver dumps
 bank 0xe0 0x80..0x9f on each loss so the two can be compared.
 
+**The JPEG engine cannot take the LT6911D's byte order, and the header trick
+that looked like it could does not survive a real decoder (tried 2026-09-23).**
+`pixel_reverse` in the encode config gets the luma, the geometry and the
+sharpness right and leaves Cb and Cr exchanged, which would remove the PPA pass
+and take 1080p MJPEG from 10 to 24 fps. Exchanging the second and third
+component numbers in the JPEG's SOF0 does swap the channels back, and lenient
+viewers show a perfect picture - but libjpeg and the browser refuse the file
+outright ("broken data stream"), so the console shows nothing at all. Moving the
+swap to the SOS component selectors is refused the same way. The 2D-DMA's
+scramble, which would do it in the encoder's own input path, is documented for
+3-byte pixels only. So the PPA pass stays: 73 ms a frame at 1080p, and the
+measurements below are what it buys.
+
 **The LT6911 sends YUV422, not RGB888.** The CSI bridge's data-type filter was
 set to 0x24 and the wire carries 0x1e, so every packet was discarded. Set the
 filter right and the frames arrive.
@@ -243,6 +256,25 @@ boot. It looked like the reservation was what starved MJPEG; it was the ring.
 
 With both right, 1080p H.264 holds: 6 fps at 0.2-1.5 Mbit/s against MJPEG's 8 fps
 at 9.7, on a screen playing video, at 40 C, with free memory flat over the run.
+
+**What this board does, measured 2026-09-23.** One viewer on the WebSocket, a
+screen playing video, the console's second stream fixed (it used to pull the
+picture twice), and the numbers taken from `/api/v1/video/status`, which reports
+each stage per frame:
+
+| Codec | Mode  | fps       | Byte reordering | Encode   | Bitrate        |
+|-------|-------|-----------|-----------------|----------|----------------|
+| MJPEG | 1080p | 8.7 - 9.4 | 75 - 79 ms      | 28-30 ms | 17-18 Mbit/s   |
+| MJPEG | 720p  | 21 - 23.6 | 24 - 28 ms      | 14-15 ms | 21-23 Mbit/s   |
+| H.264 | 1080p | 5.8 - 6.1 | 160 - 164 ms    | 60 ms    | 0.5-1.2 Mbit/s |
+| H.264 | 720p  | 16.7      | 54 ms           | 20 ms    | 1-1.8 Mbit/s   |
+
+720p is the mode to give this board: both codecs are about three times livelier
+there, because the reordering costs four times less. Between the two at 720p,
+H.264 is the one to use over a network - 17 fps at a fifteenth of the bandwidth.
+The encoder reads 93-100% busy in every line of that table: the board is at its
+limit whatever it is doing, and the reordering is most of it (see the note above
+on why that cannot be moved off the CPU).
 
 **The picture comes out flat, and half of that is not ours.** Measured against a
 screenshot taken on the source machine itself, 2026-09-19: the capture is the

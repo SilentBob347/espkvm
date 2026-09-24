@@ -53,6 +53,16 @@ typedef void (*capture_memory_pressure_cb_t)(void);
 void capture_set_memory_pressure_cb(capture_memory_pressure_cb_t cb);
 
 /**
+ * The other way round: give back what an idle codec keeps for a quick restart
+ * (MJPEG's 4.8 MB of output buffers while H.264 runs). For the recorder.
+ */
+void capture_release_idle_buffers(void);
+
+/** One PSRAM block this size must stay free for screenshots (the byte-reorder
+ *  buffer on pre-3.0 YUV boards, when not already held); 0 when not needed. */
+size_t capture_psram_keep_block(void);
+
+/**
  * Probe the codecs and build the H.264 encoder while internal RAM is still in
  * one piece. Call early in boot, before the network starts. capture_start()
  * does it itself when this was not called.

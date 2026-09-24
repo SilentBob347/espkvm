@@ -126,6 +126,11 @@ capture_ctx_t *capture_hw_init_start(void);
 /** Stop the CSI receiver so its DMA is idle. See capture_hw.c. */
 void capture_hw_quiesce(void);
 
+/** Around each frame's DMA work (capture loop, H.264 encoder task). begin
+ *  returns false once a restart is parking the pipeline; skip the frame then. */
+bool capture_park_frame_begin(void);
+void capture_park_frame_end(void);
+
 /**
  * Reprogram the CSI bridge for a new active size and restart the receiver.
  * Call from the capture task only. @p hres / @p vres must fit the buffers.
@@ -192,6 +197,11 @@ void capture_monitor_start(capture_ctx_t *c);
 bool capture_tc_lock(capture_ctx_t *c, uint32_t timeout_ms);
 void capture_tc_unlock(capture_ctx_t *c);
 
+/** Give back the MJPEG output buffers, which outlive a close so the codec that
+ *  always works can always restart. Ignored while MJPEG is running. Every board
+ *  has this one: the H.264 path asks for the memory back on any of them. */
+void capture_mjpeg_release_buffers(void);
+
 #if CAPTURE_YUV_SWAP
 /** Reorder a captured YUV422 frame for the JPEG engine; NULL if the pass could
  *  not run, because the captured order would encode as a green picture. */
@@ -199,6 +209,15 @@ void *capture_yuv_swap(capture_ctx_t *c, void *src);
 
 /** Claim the reordering buffer up front, before the encoders take the PSRAM. */
 esp_err_t capture_yuv_swap_reserve(size_t max_frame_bytes);
+
+/** Give the buffer back; H.264 does not need it. MJPEG takes it again on open. */
+void capture_yuv_swap_release(void);
+
+/** True while the buffer is allocated at full size. */
+bool capture_yuv_swap_held(void);
+
+/** Bytes of the largest captured frame, which is what the buffer is sized for. */
+size_t capture_yuv_swap_max_bytes(void);
 
 /** Rearrange a captured YUV422 frame into the packed YUV420 the pre-3.0 H.264
  *  encoder takes. @p pad_w is the encoder picture's macroblock-aligned width. */

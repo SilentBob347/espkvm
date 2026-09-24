@@ -62,6 +62,23 @@ esp_err_t capture_yuv_swap_reserve(size_t max_frame_bytes)
     return ESP_OK;
 }
 
+size_t capture_yuv_swap_max_bytes(void)
+{
+    return (size_t)CAPTURE_MAX_H_RES * CAPTURE_MAX_V_RES * capture_pixfmt()->bpp / 8u;
+}
+
+bool capture_yuv_swap_held(void)
+{
+    return s_buf && s_buf_bytes >= capture_yuv_swap_max_bytes();
+}
+
+void capture_yuv_swap_release(void)
+{
+    free(s_buf);
+    s_buf = NULL;
+    s_buf_bytes = 0;
+}
+
 void *capture_yuv_swap(capture_ctx_t *c, void *src)
 {
     if (!s_ppa) {

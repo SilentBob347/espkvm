@@ -243,6 +243,25 @@ const char *h264_err_name(esp_h264_err_t err)
  * succeeded. A rebuild checks the longest free run against it. */
 static size_t s_enc_internal_bytes;
 
+/*
+ * Reserving the reference frame's block does not work on this chip, tried three
+ * ways on hardware 2026-09-23 and each one measured.
+ *
+ * The encoder wants one contiguous internal block - 151 KB at 1080p, 101 at
+ * 720p - and internal RAM fragments as the device runs, so a rebuild after a
+ * resolution change finds the longest run at 132 KB and H.264 is gone until a
+ * restart. Holding that block from the side does not save it: a round 160 KB
+ * can never be taken, because the space an encoder frees is exactly its own
+ * size; a smaller stand-in sits in the middle of that space and stops it
+ * merging; and holding the whole 151 KB permanently starves TLS - the device
+ * answered HTTP and reset every HTTPS handshake, which is the web interface
+ * gone. Internal RAM is not ours to hoard.
+ *
+ * What is left is what happens now: the switch falls back to MJPEG and says
+ * why, in both heaps' numbers. A device that needs H.264 after changing
+ * resolution has to be restarted.
+ */
+
 static void encoder_release(void)
 {
     if (s_enc) {
@@ -523,7 +542,46 @@ static void h264_free_buffers(void)
     }
 }
 
+/*
+ * MJPEG keeps its output buffers across a close so that it can always come
+ * back (see capture_mjpeg.c). They are 4.8 MB together, which on a tight board
+ * is the difference between this encoder starting and not, so a failure here
+ * asks for them once and tries again.
+ */
+static esp_err_t h264_open_once(void);
+
 static esp_err_t h264_open(void)
+{
+    esp_err_t err = h264_open_once();
+    if (err == ESP_ERR_NO_MEM) {
+#if !CAPTURE_DIRECT_ENCODE
+        /* MJPEG's space holds one YUV buffer at most; the other must already
+         * fit, or go where the reorder buffer was (M5Stack). Otherwise giving
+         * MJPEG's buffers away only loses them: freed, the heap breaks up and
+         * they do not come back (P4-ETH at 1080p). */
+        const size_t yuv_bytes = (size_t)H264_MAX_W * H264_MAX_H * 3u / 2u;
+        bool second_home = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) >= yuv_bytes;
+#if CAPTURE_YUV_SWAP
+        second_home = second_home || capture_yuv_swap_held();
+#endif
+        if (!second_home) {
+            ESP_LOGW(CAPTURE_LOG_TAG, "H.264 does not fit next to MJPEG; MJPEG keeps its buffers");
+            return err;
+        }
+#endif
+        capture_mjpeg_release_buffers();
+#if CAPTURE_YUV_SWAP
+        /* 4 MB next to MJPEG's buffers; alone, their space is too broken up
+         * for the 3 MB YUV buffers. */
+        capture_yuv_swap_release();
+#endif
+        ESP_LOGW(CAPTURE_LOG_TAG, "took MJPEG's buffers back and tried again");
+        err = h264_open_once();
+    }
+    return err;
+}
+
+static esp_err_t h264_open_once(void)
 {
     size_t align = 64;
     (void)esp_cache_get_alignment(MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA, &align);
@@ -533,7 +591,7 @@ static esp_err_t h264_open(void)
         s_buf[i] = esp_h264_aligned_calloc(align, 1, H264_SLOT_CAP, &s_buf_alloc[i],
                                            ESP_H264_MEM_SPIRAM);
         if (!s_buf[i]) {
-            ESP_LOGE(CAPTURE_LOG_TAG, "not enough PSRAM for the H.264 output buffers");
+            ESP_LOGW(CAPTURE_LOG_TAG, "not enough PSRAM for the H.264 output buffers");
             h264_free_buffers();
             return ESP_ERR_NO_MEM;
         }
@@ -554,7 +612,7 @@ static esp_err_t h264_open(void)
     for (int i = 0; i < H264_YUV_BUFS; i++) {
         s_yuv[i] = esp_h264_aligned_calloc(align, 1, yuv_bytes, &s_yuv_alloc[i], ESP_H264_MEM_SPIRAM);
         if (!s_yuv[i]) {
-            ESP_LOGE(CAPTURE_LOG_TAG, "not enough PSRAM for the H.264 YUV buffers");
+            ESP_LOGW(CAPTURE_LOG_TAG, "not enough PSRAM for the H.264 YUV buffers");
             h264_free_buffers();
             ppa_unregister_client(s_ppa);
             s_ppa = NULL;
@@ -782,7 +840,10 @@ static void h264_encode_task(void *arg)
         if (job.slot < 0) {
             break; /* shutdown sentinel from h264_close() */
         }
-        h264_encode_job(&job);
+        if (capture_park_frame_begin()) {
+            h264_encode_job(&job);
+            capture_park_frame_end();
+        }
         /* Hand the YUV buffer back so the PPA stage can fill it again. */
         xQueueSend(s_free_slots, &job.slot, 0);
         /* Give the core away for a tick. When a job is always waiting this task

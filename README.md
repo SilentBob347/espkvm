@@ -87,7 +87,7 @@ Useful for what it does today, and honest about the rest.
 | Bring your own TLS certificate | works; Settings, or `PUT /api/v1/tls/cert` |
 | Login, and a physical password reset | works |
 | Thermal protection | works |
-| Virtual media: boot the target from a disk image | works; from a FAT32 card, or a small image in the device's own flash |
+| Virtual media: boot the target from a disk image | works; from a microSD card (FAT32 or exFAT, MBR or GPT), or a small image in the device's own flash |
 | Recording the screen to the microSD card, and screenshots | works; the stream the viewers already get, so nothing is encoded twice. A panel lists them, plays them and downloads them |
 | A dashcam: the last minutes kept, saved when something happens | works; in memory, or on the card for boards short of PSRAM. Saves an MP4 with chapters on a stop screen, a watched phrase, the power going off, or a button - and sends it to Telegram |
 | Timelapse | works; one frame every few seconds, played back at 25 fps |
@@ -294,9 +294,10 @@ M5Stack's own **[Add-on Display In](https://shop.m5stack.com/products/add-on-dis
 plugs onto its 24-pin FPC and brings a microSD slot with it. 32 MB PSRAM, 16 MB
 flash, the same IP101 Ethernet on the same GPIOs as the P4-ETH, 802.3at PoE.
 
-The add-on's bridge is a **Lontium LT6911D**, not a TC358743, and it works:
-23 fps at 1280x720 over MJPEG, checked on hardware together with Ethernet and the
-console. One thing about it is unlike every other board here: its reset line is
+The add-on's bridge is a **Lontium LT6911D**, not a TC358743, and it works.
+Measured on hardware: at 1280&times;720 about 22 fps over MJPEG and 17 over
+H.264; at 1920&times;1080 about 9 and 6. 720p is the mode to give it - the
+conversion its bridge needs costs four times less there. One thing about it is unlike every other board here: its reset line is
 active high, the opposite way round from a TC358743. Otherwise it behaves - it
 measures the source's mode itself, so changing the resolution on the machine at
 the other end is all it takes.
@@ -518,8 +519,8 @@ ribbon in the picture - 24-pin, and it plugs onto M5Stack's own units and onto
 nothing else. It is not the 15-pin Raspberry Pi camera cable every other board
 on this page uses, so it will not fit them, and they will not drive it.
 
-Checked on hardware: 23 fps at 1280x720 over MJPEG, H.264 as well, and the card
-slot reads and writes at 40 MHz.
+Checked on hardware: at 1280&times;720 about 22 fps over MJPEG and 17 over H.264
+(9 and 6 at 1080p), and the card slot reads and writes at 40 MHz.
 
 </td>
 </tr>
@@ -947,7 +948,7 @@ same stream the viewers get, so it costs no second encode: on the Function EV th
 picture stays at 21-22 fps with a video playing on the target, and no frame is
 lost. A .ts plays in VLC and most players, and a file cut off by a pulled card or
 a power cut plays up to the last few seconds. Files over 3.9 GB continue in a
-second file, as FAT32 has a 4 GB limit. The camera button saves a JPEG into
+second file, as FAT32 has a 4 GB limit; on an exFAT card they run on. The camera button saves a JPEG into
 SCREENSHOTS/, on either codec. Both are listed in their own panel, where they can
 be downloaded and deleted. Recording needs H.264 and a card the device can write,
 and not the whole card handed to the target.
@@ -993,10 +994,10 @@ screen, does.
 boot from - a rescue system, an installer, a live image. The console lists what
 is there and lets you pick which one the target sees. Images live in two places.
 
-A **microSD card** holds the large ones: format it FAT32, up to 4 GB per file,
-and partition it **MBR, not GPT** - the FAT driver here has no 64-bit LBA and so
-cannot read a GPT card at all. Tools default to GPT above 32 GB, which is why a
-large card can be formatted correctly and still not be seen.
+A **microSD card** holds the large ones. FAT32 and exFAT both work, and so do
+MBR and GPT, so a card as it comes out of the packet is usually fine: above
+32 GB that means exFAT on a GPT card, which older firmware could not read at
+all. A file on FAT32 still cannot pass 4 GB; on exFAT there is no such limit.
 The console uploads images to the card and deletes them - but check the card
 can be written at all before relying on it. A 256 GB SDXC card here mounted,
 read and served images perfectly and refused every single write (a CRC error

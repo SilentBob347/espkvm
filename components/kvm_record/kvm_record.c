@@ -542,34 +542,66 @@ static bool ring_alloc(bool dashcam)
     const size_t min = dashcam ? RING_BYTES_MIN : REC_RING_BYTES_MIN;
     const size_t max = dashcam ? RING_BYTES_MAX : REC_RING_BYTES_MAX;
     /* The write chunk is already taken by the time a recording gets here. */
-    const size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     const size_t entries = RING_FRAMES * sizeof(frame_ring_entry_t);
     const size_t overhead = reserve + entries;
-    /* The ring and a scratch copy of its biggest frame, which is never bigger
-     * than the ring: so a small ring costs twice its size, a big one its size
-     * plus FRAME_MAX. */
-    const size_t avail = free_psram > overhead ? free_psram - overhead : 0;
-    size_t bytes = avail >= 2 * FRAME_MAX ? avail - FRAME_MAX : avail / 2;
-    if (bytes > max) {
-        bytes = max;
+    size_t free_psram = 0;
+    size_t bytes = 0;
+    for (int attempt = 0; attempt < 2; attempt++) {
+        if (attempt) {
+            /* Short of a full ring: MJPEG keeps its buffers while H.264
+             * runs, so ask for them. */
+            capture_release_idle_buffers();
+        }
+        free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+        /* The ring and a scratch copy of its biggest frame, which is never
+         * bigger than the ring: so a small ring costs twice its size, a big one
+         * its size plus FRAME_MAX. */
+        const size_t avail = free_psram > overhead ? free_psram - overhead : 0;
+        bytes = avail >= 2 * FRAME_MAX ? avail - FRAME_MAX : avail / 2;
+        if (bytes > max) {
+            bytes = max;
+        }
+        /* Free is not contiguous: after a few codec switches 5 MB is free in
+         * pieces and the malloc below would fail. */
+        const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+        if (bytes > largest) {
+            bytes = largest;
+        }
+        if (bytes >= (attempt ? min : max)) {
+            break;
+        }
     }
     if (bytes < min) {
         ESP_LOGW(TAG, "%u KB of PSRAM free; a %s frame ring needs %u KB", (unsigned)(free_psram / 1024),
                  dashcam ? "full dashcam" : "small", (unsigned)((overhead + 2 * min) / 1024));
         return false;
     }
-    s_frame_cap = bytes < FRAME_MAX ? bytes : FRAME_MAX;
-    s_ring_buf = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM);
-    s_ring_entries = heap_caps_malloc(RING_FRAMES * sizeof(frame_ring_entry_t), MALLOC_CAP_SPIRAM);
-    s_frame = heap_caps_malloc(s_frame_cap, MALLOC_CAP_SPIRAM);
-    if (!s_ring_buf || !s_ring_entries || !s_frame) {
+    /* On boards where a screenshot needs one 4 MB block, the ring stays small
+     * and must not take that block: the operator chose screenshots over a
+     * longer look-back (2026-09-23). */
+    const size_t keep = capture_psram_keep_block();
+    if (keep && bytes > REC_RING_BYTES_MAX) {
+        bytes = REC_RING_BYTES_MAX;
+    }
+    for (;;) {
+        s_frame_cap = bytes < FRAME_MAX ? bytes : FRAME_MAX;
+        s_ring_buf = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM);
+        s_ring_entries = heap_caps_malloc(RING_FRAMES * sizeof(frame_ring_entry_t), MALLOC_CAP_SPIRAM);
+        s_frame = heap_caps_malloc(s_frame_cap, MALLOC_CAP_SPIRAM);
+        const bool got = s_ring_buf && s_ring_entries && s_frame;
+        if (got && (!keep || heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) >= keep)) {
+            break;
+        }
         heap_caps_free(s_ring_buf);
         heap_caps_free(s_ring_entries);
         heap_caps_free(s_frame);
         s_ring_buf = NULL;
         s_ring_entries = NULL;
         s_frame = NULL;
-        return false;
+        if (!got || bytes / 2 < min) {
+            return false;
+        }
+        bytes /= 2;
     }
     frame_ring_init(&s_ring, s_ring_buf, bytes, s_ring_entries, RING_FRAMES);
     ESP_LOGI(TAG, "frame ring: %u KB", (unsigned)(bytes / 1024));

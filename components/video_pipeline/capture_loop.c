@@ -24,6 +24,7 @@
 #include "kvm_caps.h"
 #include "kvm_settings.h"
 #include "kvm_thermal.h"
+#include "esp_heap_caps.h"
 #include "kvm_bridge.h"
 #include "video_frame.h"
 
@@ -52,13 +53,21 @@ static const capture_codec_t *codec_switch(const capture_codec_t *from, const ca
             return from;
         }
         from->close();
+        if (from == capture_codec_h264()) {
+            /* The dashcam only runs on H.264; its ring is dead weight now and
+             * sits in the space the next codec wants. */
+            (void)capture_release_memory();
+        }
     }
     esp_err_t err = to->open();
     if (err == ESP_OK) {
         ESP_LOGI(CAPTURE_LOG_TAG, "codec: %s", to->name);
         return to;
     }
-    ESP_LOGE(CAPTURE_LOG_TAG, "%s codec failed to start (%s)", to->name, esp_err_to_name(err));
+    ESP_LOGE(CAPTURE_LOG_TAG, "%s codec failed to start (%s); PSRAM %u KB free, largest block %u KB",
+             to->name, esp_err_to_name(err),
+             (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024u),
+             (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) / 1024u));
     if (to != capture_codec_mjpeg()) {
         /* Falling back is better than a black screen, and the reason is
          * already in the log. The setting is left alone, for the same reason
@@ -71,6 +80,25 @@ static const capture_codec_t *codec_switch(const capture_codec_t *from, const ca
             ESP_LOGW(CAPTURE_LOG_TAG, "codec: %s (fallback)", mjpeg->name);
             return mjpeg;
         }
+    }
+    /*
+     * Both refused, and the one that was running is now closed - which is how
+     * the device ended up with no picture at all until it was restarted, seen
+     * twice while measuring on the M5Stack board. Each codec wants several
+     * megabytes of PSRAM in a few large pieces, and after a close and a failed
+     * open the heap is not always the shape it was.
+     *
+     * Going back is the one thing likely to work: the same buffers were there a
+     * moment ago. If even that fails there is nothing left to try, and the
+     * caller idles and retries rather than pretending a codec is running.
+     */
+    if (from && from != to) {
+        if (from->open() == ESP_OK) {
+            ESP_LOGW(CAPTURE_LOG_TAG, "codec: %s again - %s could not be started", from->name,
+                     to->name);
+            return from;
+        }
+        ESP_LOGE(CAPTURE_LOG_TAG, "no codec could be started; the picture stops until memory frees up");
     }
     return NULL;
 }
@@ -87,6 +115,7 @@ void capture_loop_run(capture_ctx_t *c)
     }
 
     int64_t hdmi_recover_cooldown_until_us = 0;
+    int64_t switch_retry_us = 0; /* after a refused codec switch */
     int64_t last_encode_us = 0;
     /* Set after anything that invalidates what clients are holding. */
     bool force_publish = true;
@@ -177,7 +206,7 @@ void capture_loop_run(capture_ctx_t *c)
          * nobody watching costs one open and one close.
          */
         const capture_codec_t *want = codec_wanted();
-        if (want != codec) {
+        if (want != codec && esp_timer_get_time() >= switch_retry_us) {
             const capture_codec_t *now_running = codec_switch(codec, want);
             if (!now_running) {
                 /* Usually memory. The loop's top retries every two seconds; leaving
@@ -200,7 +229,18 @@ void capture_loop_run(capture_ctx_t *c)
                 continue;
             }
             if (now_running == codec) {
-                continue; /* still busy; try again on the next frame */
+                /* Refused, and the old codec is back. Trying again on the next
+                 * frame closed and reopened codecs twice a second until the
+                 * task watchdog reset the board (M5Stack, 2026-09-23). */
+                switch_retry_us = esp_timer_get_time() + 10 * 1000 * 1000;
+                if (want == capture_codec_h264()) {
+                    /* Nearly always memory, and it will not get better on its
+                     * own; say so instead of retrying every 10 s. */
+                    kvm_cap_report(KVM_CAP_H264, false,
+                                   "not enough memory to switch to H.264 at this resolution; "
+                                   "it starts after a restart");
+                }
+                continue;
             }
             codec = now_running;
             force_publish = true;
@@ -258,6 +298,14 @@ void capture_loop_run(capture_ctx_t *c)
         if (hidx < 0) {
             continue;
         }
+        if (!capture_park_frame_begin()) {
+            /* A restart is coming: start nothing the DMA would be cut off in. */
+            portENTER_CRITICAL(&c->fb_lock);
+            c->held_fb_idx = -1;
+            portEXIT_CRITICAL(&c->fb_lock);
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
         void *src = c->fb[hidx];
 
         ESP_ERROR_CHECK(esp_cache_msync(src, c->frame_bytes, ESP_CACHE_MSYNC_FLAG_DIR_M2C));
@@ -281,6 +329,7 @@ void capture_loop_run(capture_ctx_t *c)
         if (!h264_running) {
             void *ordered = capture_yuv_swap(c, src);
             if (!ordered) {
+                capture_park_frame_end();
                 continue; /* it said why; a green frame helps nobody */
             }
             src = ordered;
@@ -293,6 +342,9 @@ void capture_loop_run(capture_ctx_t *c)
             if (ordered) {
                 capture_snapshot_tick(c, ordered);
             }
+            /* Only for this picture: kept, its 4 MB is what MJPEG can no
+             * longer find in one piece when the operator switches back. */
+            capture_yuv_swap_release();
         } else {
             capture_snapshot_tick(c, src);
         }
@@ -345,6 +397,7 @@ void capture_loop_run(capture_ctx_t *c)
             }
         }
 
+        capture_park_frame_end();
         portENTER_CRITICAL(&c->fb_lock);
         c->held_fb_idx = -1;
         portEXIT_CRITICAL(&c->fb_lock);

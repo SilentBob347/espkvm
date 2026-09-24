@@ -60,13 +60,22 @@
 
 #define COOKIE_NAME "kvm_session"
 
-#define MAX_SESSIONS 4
+/*
+ * Eight, because four was too few in practice: a laptop, a phone, a second
+ * browser and one script are four, and the fifth sign-in threw one of them out.
+ * A session is fifty bytes.
+ */
+#define MAX_SESSIONS 8
 /** A console left open should not have to log in again mid-shift. */
 #define SESSION_TTL_US ((int64_t)12 * 60 * 60 * 1000000)
 
 typedef struct {
     char token[TOKEN_CHARS + 1];
     int64_t expires_us;
+    /** When this session was last used, so a busy one is not the one thrown
+     *  out. Without it "oldest" meant "signed in longest ago", which is the
+     *  operator who has been working all day. */
+    int64_t used_us;
     /** The password in use is the default one; nothing else may proceed. */
     bool must_change;
 } session_t;
@@ -394,13 +403,14 @@ static const char *session_create(bool must_change)
         }
     }
     if (slot < 0) {
-        /* All slots live: the oldest gives way, so a browser that never logs
-         * out cannot lock the operator out of their own device. */
-        int64_t oldest = s_sessions[0].expires_us;
+        /* All slots live: the one nobody has used for longest gives way, so a
+         * browser that never logs out cannot lock the operator out of their own
+         * device - and a console being used right now is never the victim. */
+        int64_t quietest = s_sessions[0].used_us;
         slot = 0;
         for (int i = 1; i < MAX_SESSIONS; i++) {
-            if (s_sessions[i].expires_us < oldest) {
-                oldest = s_sessions[i].expires_us;
+            if (s_sessions[i].used_us < quietest) {
+                quietest = s_sessions[i].used_us;
                 slot = i;
             }
         }
@@ -409,6 +419,7 @@ static const char *session_create(bool must_change)
         snprintf(&s_sessions[slot].token[i * 2], 3, "%02x", raw[i]);
     }
     s_sessions[slot].expires_us = now + SESSION_TTL_US;
+    s_sessions[slot].used_us = now;
     s_sessions[slot].must_change = must_change;
     const char *token = s_sessions[slot].token;
     unlock();
@@ -430,6 +441,11 @@ static session_t *session_find(const char *token)
             continue;
         }
         if (strcmp(s_sessions[i].token, token) == 0) {
+            /* Being used keeps it alive: a console open all day used to be
+               signed out twelve hours after the sign-in, mid-shift, which is
+               the one moment it must not happen. */
+            s_sessions[i].used_us = now;
+            s_sessions[i].expires_us = now + SESSION_TTL_US;
             return &s_sessions[i];
         }
     }

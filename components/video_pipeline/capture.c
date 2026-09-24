@@ -4,6 +4,7 @@
  */
 #include "capture.h"
 
+#include <stdatomic.h>
 #include <string.h>
 
 #include "esp_log.h"
@@ -186,6 +187,17 @@ static void reserve_task(void *arg)
     /* Before the capture pipeline claims memory and the encoder engines. */
     capture_h264_probe();
     capture_mjpeg_probe();
+#if CAPTURE_YUV_SWAP
+    /*
+     * The byte-reordering buffer: 4 MB of PSRAM that MJPEG cannot encode a
+     * frame without. Taken first so it sits next to MJPEG's own buffers; H.264
+     * hands both back together when it needs the room (capture_h264.c), and
+     * MJPEG takes this one again before its outputs when it opens.
+     */
+    if (capture_yuv_swap_reserve(capture_yuv_swap_max_bytes()) != ESP_OK) {
+        ESP_LOGW(CAPTURE_LOG_TAG, "reordering buffer not reserved; MJPEG will try again later");
+    }
+#endif
     /* The encoder's reference frame wants one internal block of ~135 KB. At
      * this point the block is there; a few seconds of network and TLS later it
      * is often not. Sized for the largest mode, which is what sources send. */
@@ -251,14 +263,38 @@ void capture_start(void)
  * it calls esp_restart_noos() directly - which is why the stop lives in a
  * normal context and can use the driver rather than poking registers.
  *
- * The 20 ms is for whatever the encoder or the PPA had in flight when the
- * receiver stopped; both work a frame at a time and finish well inside it.
+ * The encoder and the PPA also write PSRAM by DMA, and a 1080p H.264 frame
+ * takes 43 ms or more, so the loop is told to start no new frame and the one
+ * in hand is waited for, here and in the pre-3.0 boards' separate encoder
+ * task.
  */
+static atomic_bool s_parking;
+static atomic_int s_frames_busy;
+
+bool capture_park_frame_begin(void)
+{
+    atomic_fetch_add(&s_frames_busy, 1);
+    if (atomic_load(&s_parking)) {
+        atomic_fetch_sub(&s_frames_busy, 1);
+        return false;
+    }
+    return true;
+}
+
+void capture_park_frame_end(void)
+{
+    atomic_fetch_sub(&s_frames_busy, 1);
+}
+
 void __real_esp_restart(void) __attribute__((noreturn));
 
 void __wrap_esp_restart(void)
 {
+    atomic_store(&s_parking, true);
     capture_hw_quiesce();
+    for (int i = 0; i < 30 && atomic_load(&s_frames_busy) > 0; i++) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
     vTaskDelay(pdMS_TO_TICKS(20));
     __real_esp_restart();
 }

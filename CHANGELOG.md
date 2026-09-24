@@ -7,7 +7,61 @@ bumps the patch).
 
 ## [Unreleased]
 
+### Fixed
+- **The picture comes back after a codec falls over, on the boards that reorder
+  the captured bytes.** MJPEG needs a 4 MB buffer for that pass and took it on
+  its first frame, a race it lost while H.264 held the PSRAM: the codec opened
+  and produced nothing. MJPEG now takes it when it opens, before anything else.
+- **Updates stick with H.264 and the dashcam running.** Before a restart the
+  device waited 20 ms for the encoder, but a 1080p H.264 frame takes 43 ms or
+  more, so the restart cut its memory writes in half, the new image hung, and
+  the update rolled back. Now no new frame starts and the one in hand is waited
+  for. funcev: 0 of 3 updates went through before, 6 of 6 after; M5Stack 2 of 4,
+  then 6 of 6.
+- **The dashcam gets its memory with H.264.** MJPEG keeping its buffers left
+  the dashcam no room for its ring. It now asks for them, and sizes the ring to
+  the largest free piece rather than the free total.
+- **P4-ETH: switching to H.264 at 1080p no longer ends with no picture.** 0.53.0
+  did this too. H.264 does not fit there next to the capture buffers, and giving
+  MJPEG's buffers away lost them for good. Now MJPEG keeps them, and H.264 is
+  marked unavailable until a restart, with the reason.
+- **A refused codec switch no longer restarts the device.** It was retried twice
+  a second until the task watchdog fired; now once every 10 s.
+- **M5Stack: screenshots work while H.264 runs.** The byte-reordering buffer is
+  taken just for the picture, and the dashcam keeps a 4 MB piece free for it -
+  so its look-back there is shorter (about 10 s at 6 fps).
+- **Changing codec can no longer leave the device with no picture at all.** Each
+  codec wants several megabytes of PSRAM in a few large pieces, and after the
+  old one closed and the new one failed to open, the heap was not always the
+  shape it had been: both refused, the status read "codec: none", and only a
+  restart brought the picture back. Now MJPEG keeps its output buffers across a
+  close, so it can always come back; H.264 takes those buffers back if it is
+  short, and if everything fails the codec that was running is started again.
+  The log says how much PSRAM was free and how big its largest piece was.
+  Known limit: on the M5Stack at 1080p the way back from H.264 to MJPEG can
+  still fail when the freed PSRAM comes back in pieces; the device stays on
+  H.264 with a picture and says why.
+- **The console was pulling the picture twice.** The element that carries the
+  multipart stream is hidden while the WebSocket has the picture, and hidden is
+  not gone: with its address still set, the browser kept downloading it. So
+  every frame left the device twice, on two connections, for as long as a
+  console was open - which on a board streaming 1080p is about twice the
+  bandwidth for nothing, and it is what the reconnect loops were made of.
+- **Signing in somewhere else no longer throws out the console you are working
+  in.** The device keeps a handful of sessions and, when they are all taken, one
+  has to give way. It picked the one signed in longest ago - which is the person
+  who has been working all day - so a phone, a second browser or a script could
+  sign the operator out, and the console then showed "Stream interrupted,
+  reconnecting" for ever. Now the one nobody has used for longest gives way, a
+  session that is being used keeps itself alive instead of expiring twelve hours
+  after the sign-in, and there are eight of them rather than four.
+
 ### Added
+- **A microSD card formatted exFAT works, and so does one partitioned GPT.**
+  Above 32 GB a card comes that way from the factory, and it had to be
+  reformatted first - GPT it could not read at all. FAT32 and MBR cards are
+  unaffected: the format is read off the card at mount. It costs 12 KB of flash.
+  A recording on an exFAT card is no longer cut in two at 4 GB.
 - **Alt+Tab, Ctrl+W and the Windows key can go to the target.** A browser keeps
   those for itself, so they never reached the far machine and Ctrl+W closed the
   console instead. In full screen, with control taken, the console now asks

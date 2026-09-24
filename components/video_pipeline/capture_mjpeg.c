@@ -19,6 +19,8 @@
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 #include "kvm_caps.h"
 #include "kvm_settings.h"
@@ -26,7 +28,12 @@
 
 static jpeg_encoder_handle_t s_enc;
 static uint8_t *s_buf[VIDEO_SLOT_COUNT];
+static size_t s_buf_alloc[VIDEO_SLOT_COUNT];
 static uint8_t s_quality = 60;
+/* The kept buffers are given back from other tasks (the recorder), so opening
+ * and giving back must not interleave. Made in capture_mjpeg_probe(), at boot. */
+static SemaphoreHandle_t s_buf_mu;
+static StaticSemaphore_t s_buf_mu_mem;
 
 /*
  * A still screen still needs an occasional frame so a viewer can tell the link
@@ -37,12 +44,25 @@ static uint8_t s_quality = 60;
 
 static int64_t s_last_publish_us;
 
+/*
+ * The output buffers outlive a close.
+ *
+ * Each is 2.4 MB, and getting two of them back out of PSRAM after the heap has
+ * been through an H.264 open is not a given: switching codec twice left the
+ * device with no codec at all and no picture until it was restarted, seen on
+ * the M5Stack board. Kept across a close, MJPEG cannot fail to re-open, and
+ * MJPEG is the codec that has to work.
+ *
+ * H.264 may still have them if it needs them - capture_mjpeg_release_buffers()
+ * below - so this costs H.264 nothing that it cannot take back.
+ */
 static void mjpeg_free_buffers(void)
 {
     for (int i = 0; i < VIDEO_SLOT_COUNT; i++) {
         if (s_buf[i]) {
             free(s_buf[i]);
             s_buf[i] = NULL;
+            s_buf_alloc[i] = 0;
         }
     }
 }
@@ -55,6 +75,9 @@ static void mjpeg_free_buffers(void)
  */
 void capture_mjpeg_probe(void)
 {
+    if (!s_buf_mu) {
+        s_buf_mu = xSemaphoreCreateMutexStatic(&s_buf_mu_mem);
+    }
     jpeg_encode_engine_cfg_t jcfg = {.intr_priority = 0, .timeout_ms = 120};
     jpeg_encoder_handle_t enc = NULL;
     esp_err_t err = jpeg_new_encoder_engine(&jcfg, &enc);
@@ -65,7 +88,31 @@ void capture_mjpeg_probe(void)
     }
 }
 
+static esp_err_t mjpeg_open_locked(void);
+
+static esp_err_t mjpeg_open_once(void)
+{
+    if (s_buf_mu) {
+        xSemaphoreTake(s_buf_mu, portMAX_DELAY);
+    }
+    esp_err_t err = mjpeg_open_locked();
+    if (s_buf_mu) {
+        xSemaphoreGive(s_buf_mu);
+    }
+    return err;
+}
+
+/* The dashcam may have taken the kept buffers' space; it gives it back. */
 static esp_err_t mjpeg_open(void)
+{
+    esp_err_t err = mjpeg_open_once();
+    if (err == ESP_ERR_NO_MEM && capture_release_memory()) {
+        err = mjpeg_open_once();
+    }
+    return err;
+}
+
+static esp_err_t mjpeg_open_locked(void)
 {
     jpeg_encode_engine_cfg_t jcfg = {.intr_priority = 0, .timeout_ms = 120};
     esp_err_t err = jpeg_new_encoder_engine(&jcfg, &s_enc);
@@ -75,6 +122,16 @@ static esp_err_t mjpeg_open(void)
         return err;
     }
 
+#if CAPTURE_YUV_SWAP
+    /* Before the outputs: MJPEG encodes nothing without it, and taken on the
+     * first frame instead it loses to whatever grabbed the PSRAM meanwhile. */
+    if (capture_yuv_swap_reserve(capture_yuv_swap_max_bytes()) != ESP_OK) {
+        jpeg_del_encoder_engine(s_enc);
+        s_enc = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+#endif
+
     /* Sized for the largest mode, not the one we happened to boot into: the
      * target can switch from a 640x480 firmware screen to 1080p at any moment,
      * and a short output buffer would fail every encode from then on. */
@@ -82,8 +139,11 @@ static esp_err_t mjpeg_open(void)
     jpeg_encode_memory_alloc_cfg_t jmem = {.buffer_direction = JPEG_ENC_ALLOC_OUTPUT_BUFFER};
     size_t smallest = SIZE_MAX;
     for (int i = 0; i < VIDEO_SLOT_COUNT; i++) {
-        size_t got = 0;
-        s_buf[i] = jpeg_alloc_encoder_mem(want, &jmem, &got);
+        size_t got = s_buf[i] ? s_buf_alloc[i] : 0; /* kept from the last time it ran */
+        if (!s_buf[i]) {
+            s_buf[i] = jpeg_alloc_encoder_mem(want, &jmem, &got);
+            s_buf_alloc[i] = got;
+        }
         if (!s_buf[i]) {
             ESP_LOGE(CAPTURE_LOG_TAG, "jpeg buffer %d of %zu bytes failed", i, want);
             mjpeg_free_buffers();
@@ -101,9 +161,36 @@ static esp_err_t mjpeg_open(void)
     return ESP_OK;
 }
 
+void capture_mjpeg_release_buffers(void)
+{
+    if (s_buf_mu) {
+        xSemaphoreTake(s_buf_mu, portMAX_DELAY);
+    }
+    if (!s_enc) { /* in use: the caller is not the one running */
+        mjpeg_free_buffers();
+    }
+    if (s_buf_mu) {
+        xSemaphoreGive(s_buf_mu);
+    }
+}
+
+void capture_release_idle_buffers(void)
+{
+    capture_mjpeg_release_buffers();
+}
+
+size_t capture_psram_keep_block(void)
+{
+#if CAPTURE_YUV_SWAP
+    return capture_yuv_swap_held() ? 0 : capture_yuv_swap_max_bytes();
+#else
+    return 0;
+#endif
+}
+
 static void mjpeg_close(void)
 {
-    mjpeg_free_buffers();
+    /* The engine goes, the buffers stay. See mjpeg_free_buffers(). */
     if (s_enc) {
         jpeg_del_encoder_engine(s_enc);
         s_enc = NULL;

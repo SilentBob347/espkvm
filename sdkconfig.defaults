@@ -153,3 +153,6 @@ CONFIG_MBEDTLS_CHACHAPOLY_C=y
 # back are the first two questions when a keyboard dies after a wake.
 CONFIG_TINYUSB_SUSPEND_CALLBACK=y
 CONFIG_TINYUSB_RESUME_CALLBACK=y
+
+# exFAT needs the volume-label API (ff.c uses it outside a preprocessor test).
+CONFIG_FATFS_USE_LABEL=y
