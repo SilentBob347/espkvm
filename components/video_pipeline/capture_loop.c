@@ -56,7 +56,7 @@ static const capture_codec_t *codec_switch(const capture_codec_t *from, const ca
         if (from == capture_codec_h264()) {
             /* The dashcam only runs on H.264; its ring is dead weight now and
              * sits in the space the next codec wants. */
-            (void)capture_release_memory();
+            (void)capture_release_memory(false);
         }
     }
     esp_err_t err = to->open();

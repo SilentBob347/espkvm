@@ -46,10 +46,10 @@ typedef struct {
 
 /**
  * Something else is holding PSRAM it could give back - the recorder's ring of
- * frames is the one that matters - and a codec has just failed to get a buffer.
- * The callback frees what it can; the codec then tries once more.
+ * frames is the one that matters. `failed` is true when a codec has just failed
+ * to get a buffer and will try once more; false when H.264 has simply closed.
  */
-typedef void (*capture_memory_pressure_cb_t)(void);
+typedef void (*capture_memory_pressure_cb_t)(bool failed);
 void capture_set_memory_pressure_cb(capture_memory_pressure_cb_t cb);
 
 /**
@@ -61,6 +61,14 @@ void capture_release_idle_buffers(void);
 /** One PSRAM block this size must stay free for screenshots (the byte-reorder
  *  buffer on pre-3.0 YUV boards, when not already held); 0 when not needed. */
 size_t capture_psram_keep_block(void);
+
+/**
+ * While H.264 runs, the part of the codec region it does not use can hold the
+ * recorder's ring. NULL when there is none of at least @p min bytes. Give it
+ * back from the memory-pressure callback; MJPEG cannot open until it is back.
+ */
+void *capture_arena_borrow(size_t min, size_t *len);
+void capture_arena_give_back(void *p);
 
 /**
  * Probe the codecs and build the H.264 encoder while internal RAM is still in

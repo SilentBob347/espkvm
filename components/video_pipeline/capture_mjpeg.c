@@ -56,11 +56,26 @@ static int64_t s_last_publish_us;
  * H.264 may still have them if it needs them - capture_mjpeg_release_buffers()
  * below - so this costs H.264 nothing that it cannot take back.
  */
+static size_t mjpeg_piece(void)
+{
+    /* Sized for the largest mode, not the one we happened to boot into: the
+     * target can switch from a 640x480 firmware screen to 1080p at any moment,
+     * and a short output buffer would fail every encode from then on. */
+    return capture_arena_round((size_t)CAPTURE_MAX_H_RES * (size_t)CAPTURE_MAX_V_RES + 384u * 1024u);
+}
+
+size_t capture_mjpeg_arena_bytes(void)
+{
+    return VIDEO_SLOT_COUNT * mjpeg_piece();
+}
+
 static void mjpeg_free_buffers(void)
 {
     for (int i = 0; i < VIDEO_SLOT_COUNT; i++) {
         if (s_buf[i]) {
-            free(s_buf[i]);
+            if (!capture_arena_active()) {
+                free(s_buf[i]); /* pieces of the codec region are never freed */
+            }
             s_buf[i] = NULL;
             s_buf_alloc[i] = 0;
         }
@@ -106,7 +121,7 @@ static esp_err_t mjpeg_open_once(void)
 static esp_err_t mjpeg_open(void)
 {
     esp_err_t err = mjpeg_open_once();
-    if (err == ESP_ERR_NO_MEM && capture_release_memory()) {
+    if (err == ESP_ERR_NO_MEM && capture_release_memory(true)) {
         err = mjpeg_open_once();
     }
     return err;
@@ -132,10 +147,23 @@ static esp_err_t mjpeg_open_locked(void)
     }
 #endif
 
-    /* Sized for the largest mode, not the one we happened to boot into: the
-     * target can switch from a 640x480 firmware screen to 1080p at any moment,
-     * and a short output buffer would fail every encode from then on. */
-    const size_t want = (size_t)CAPTURE_MAX_H_RES * (size_t)CAPTURE_MAX_V_RES + 384u * 1024u;
+    const size_t want = mjpeg_piece();
+    if (capture_arena_active()) {
+        uint8_t *base = capture_arena_claim(capture_mjpeg_arena_bytes());
+        if (!base) {
+            jpeg_del_encoder_engine(s_enc);
+            s_enc = NULL;
+            return ESP_ERR_NO_MEM; /* mjpeg_open() asks the recorder and tries again */
+        }
+        for (int i = 0; i < VIDEO_SLOT_COUNT; i++) {
+            s_buf[i] = base + (size_t)i * want;
+            s_buf_alloc[i] = want;
+        }
+        s_quality = (uint8_t)kvm_setting_int("jpg_quality");
+        s_last_publish_us = 0;
+        video_frame_install(VIDEO_PAYLOAD_JPEG, s_buf, VIDEO_SLOT_COUNT, want);
+        return ESP_OK;
+    }
     jpeg_encode_memory_alloc_cfg_t jmem = {.buffer_direction = JPEG_ENC_ALLOC_OUTPUT_BUFFER};
     size_t smallest = SIZE_MAX;
     for (int i = 0; i < VIDEO_SLOT_COUNT; i++) {

@@ -169,7 +169,7 @@ void capture_flat_forget(void);
 uint32_t capture_flat_ms(void);
 
 /** Ask whoever holds spare PSRAM to give it back. False when nobody listens. */
-bool capture_release_memory(void);
+bool capture_release_memory(bool failed);
 
 /** Whether the flat colour is black or nearly. Meaningful while flat. */
 bool capture_flat_dark(void);
@@ -215,6 +215,23 @@ void capture_yuv_swap_release(void);
 
 /** True while the buffer is allocated at full size. */
 bool capture_yuv_swap_held(void);
+#endif
+
+/* ---- the codec region (capture_arena.c) ---- */
+size_t capture_arena_round(size_t bytes);
+/** Take the region; at boot, before the capture buffers. Codecs fall back to
+ *  their own allocations when this failed. */
+esp_err_t capture_arena_init(void);
+bool capture_arena_active(void);
+/** The reorder buffer's permanent place, or NULL. */
+uint8_t *capture_arena_swap(size_t *len);
+/** The codec part from offset 0, for a codec that is opening; NULL when the
+ *  recorder still has the tail or there is no region. */
+uint8_t *capture_arena_claim(size_t bytes);
+/** What each codec carves out of the region. */
+size_t capture_mjpeg_arena_bytes(void);
+size_t capture_h264_arena_bytes(void);
+#if CAPTURE_YUV_SWAP
 
 /** Bytes of the largest captured frame, which is what the buffer is sized for. */
 size_t capture_yuv_swap_max_bytes(void);

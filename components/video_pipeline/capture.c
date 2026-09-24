@@ -156,12 +156,12 @@ void capture_set_memory_pressure_cb(capture_memory_pressure_cb_t cb)
     s_pressure_cb = cb;
 }
 
-bool capture_release_memory(void)
+bool capture_release_memory(bool failed)
 {
     if (!s_pressure_cb) {
         return false;
     }
-    s_pressure_cb();
+    s_pressure_cb(failed);
     return true;
 }
 
@@ -187,6 +187,8 @@ static void reserve_task(void *arg)
     /* Before the capture pipeline claims memory and the encoder engines. */
     capture_h264_probe();
     capture_mjpeg_probe();
+    /* First, while PSRAM is one piece: every codec buffer lives in it. */
+    (void)capture_arena_init();
 #if CAPTURE_YUV_SWAP
     /*
      * The byte-reordering buffer: 4 MB of PSRAM that MJPEG cannot encode a

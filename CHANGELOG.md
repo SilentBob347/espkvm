@@ -5,7 +5,7 @@ All notable changes to ESP-KVM are recorded here. The format follows
 semantic versioning while it is pre-1.0 (a new feature bumps the minor, a fix
 bumps the patch).
 
-## [Unreleased]
+## [0.54.0] - 2026-09-24
 
 ### Fixed
 - **The picture comes back after a codec falls over, on the boards that reorder
@@ -27,9 +27,9 @@ bumps the patch).
   marked unavailable until a restart, with the reason.
 - **A refused codec switch no longer restarts the device.** It was retried twice
   a second until the task watchdog fired; now once every 10 s.
-- **M5Stack: screenshots work while H.264 runs.** The byte-reordering buffer is
-  taken just for the picture, and the dashcam keeps a 4 MB piece free for it -
-  so its look-back there is shorter (about 10 s at 6 fps).
+- **M5Stack: screenshots work while H.264 runs.** The byte-reordering buffer
+  now lives in the codec region for good, so a screenshot no longer has to
+  find 4 MB free at the moment it is taken.
 - **Changing codec can no longer leave the device with no picture at all.** Each
   codec wants several megabytes of PSRAM in a few large pieces, and after the
   old one closed and the new one failed to open, the heap was not always the
@@ -38,9 +38,13 @@ bumps the patch).
   close, so it can always come back; H.264 takes those buffers back if it is
   short, and if everything fails the codec that was running is started again.
   The log says how much PSRAM was free and how big its largest piece was.
-  Known limit: on the M5Stack at 1080p the way back from H.264 to MJPEG can
-  still fail when the freed PSRAM comes back in pieces; the device stays on
-  H.264 with a picture and says why.
+  On top of that, the codecs now share one PSRAM region taken at boot, sized
+  for the bigger of the two, and never give it back to the heap. So a switch
+  no longer depends on how the heap looks after hours of work. While H.264
+  runs, the dashcam borrows the part of the region it does not use. M5Stack at
+  1080p: 8 of 8 switches, where before the way back to MJPEG could fail.
+  Handing that part back on a switch no longer counts as a codec short of
+  memory, which kept the dashcam off for 30 s after it.
 - **The console was pulling the picture twice.** The element that carries the
   multipart stream is hidden while the WebSocket has the picture, and hidden is
   not gone: with its address still set, the browser kept downloading it. So
@@ -61,7 +65,8 @@ bumps the patch).
   Above 32 GB a card comes that way from the factory, and it had to be
   reformatted first - GPT it could not read at all. FAT32 and MBR cards are
   unaffected: the format is read off the card at mount. It costs 12 KB of flash.
-  A recording on an exFAT card is no longer cut in two at 4 GB.
+  One file still stays under 4 GB on exFAT too: an image, and each part of a
+  recording.
 - **Alt+Tab, Ctrl+W and the Windows key can go to the target.** A browser keeps
   those for itself, so they never reached the far machine and Ctrl+W closed the
   console instead. In full screen, with control taken, the console now asks

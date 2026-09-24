@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "capture.c"
+        "capture_arena.c"
         "capture_pixfmt.c"
         "capture_yuv_swap.c"
         "capture_hw.c"

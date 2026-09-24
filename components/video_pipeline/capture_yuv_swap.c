@@ -50,6 +50,13 @@ esp_err_t capture_yuv_swap_reserve(size_t max_frame_bytes)
     if (s_buf_bytes >= max_frame_bytes) {
         return ESP_OK;
     }
+    size_t arena_len = 0;
+    uint8_t *arena = capture_arena_swap(&arena_len);
+    if (arena && arena_len >= max_frame_bytes) {
+        s_buf = arena; /* for good: capture_arena.c */
+        s_buf_bytes = arena_len;
+        return ESP_OK;
+    }
     free(s_buf);
     s_buf_bytes = (max_frame_bytes + 63u) & ~(size_t)63u;
     s_buf = heap_caps_aligned_calloc(64, 1, s_buf_bytes, MALLOC_CAP_SPIRAM);
@@ -74,6 +81,9 @@ bool capture_yuv_swap_held(void)
 
 void capture_yuv_swap_release(void)
 {
+    if (s_buf && s_buf == capture_arena_swap(NULL)) {
+        return; /* in the codec region; nothing to give back */
+    }
     free(s_buf);
     s_buf = NULL;
     s_buf_bytes = 0;
@@ -88,7 +98,12 @@ void *capture_yuv_swap(capture_ctx_t *c, void *src)
             return NULL;
         }
     }
-    if (s_buf_bytes < c->frame_bytes) {
+    size_t arena_len = 0;
+    uint8_t *arena = capture_arena_swap(&arena_len);
+    if (s_buf_bytes < c->frame_bytes && arena && arena_len >= c->frame_bytes) {
+        s_buf = arena; /* its place in the codec region */
+        s_buf_bytes = arena_len;
+    } else if (s_buf_bytes < c->frame_bytes) {
         free(s_buf);
         s_buf_bytes = (c->frame_bytes + 63u) & ~(size_t)63u;
         s_buf = heap_caps_aligned_calloc(64, 1, s_buf_bytes, MALLOC_CAP_SPIRAM);

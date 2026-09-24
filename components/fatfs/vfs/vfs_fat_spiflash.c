@@ -8,7 +8,6 @@
 #include <string.h>
 #include "esp_check.h"
 #include "esp_log.h"
-#include "esp_vfs.h"
 #include "esp_vfs_fat.h"
 #include "vfs_fat_internal.h"
 #include "diskio_impl.h"
@@ -23,6 +22,8 @@
 static const char* TAG = "vfs_fat_spiflash";
 
 static vfs_fat_spiflash_ctx_t *s_ctx[FF_VOLUMES] = {};
+
+extern esp_err_t esp_vfs_set_readonly_flag(const char* base_path); // from vfs/vfs.c to set readonly flag externally
 
 static bool s_get_context_id_by_label(const char *label, uint32_t *out_id)
 {
@@ -148,9 +149,6 @@ esp_err_t esp_vfs_fat_spiflash_mount_rw_wl(const char* base_path,
     const esp_vfs_fat_mount_config_t* mount_config,
     wl_handle_t* wl_handle)
 {
-    ESP_RETURN_ON_FALSE(!(mount_config->read_only && mount_config->format_if_mount_failed),
-                         ESP_ERR_INVALID_ARG, TAG, "read_only and format_if_mount_failed are mutually exclusive");
-
     esp_err_t ret = ESP_OK;
     vfs_fat_spiflash_ctx_t *ctx = NULL;
     uint32_t ctx_id = FF_VOLUMES;
@@ -210,7 +208,7 @@ esp_err_t esp_vfs_fat_spiflash_mount_rw_wl(const char* base_path,
     assert(ctx_id != FF_VOLUMES);
     s_ctx[ctx_id] = ctx;
 
-    if (data_partition->readonly || mount_config->read_only) {
+    if (data_partition->readonly) {
         esp_vfs_set_readonly_flag(base_path);
     }
 
@@ -352,9 +350,6 @@ esp_err_t esp_vfs_fat_spiflash_mount_ro(const char* base_path,
     const char* partition_label,
     const esp_vfs_fat_mount_config_t* mount_config)
 {
-    ESP_RETURN_ON_FALSE(!(mount_config->read_only && mount_config->format_if_mount_failed),
-                         ESP_ERR_INVALID_ARG, TAG, "read_only and format_if_mount_failed are mutually exclusive");
-
     esp_err_t ret = ESP_OK;
 
     const esp_partition_t *data_partition = esp_partition_find_first(ESP_PARTITION_TYPE_DATA,
@@ -393,7 +388,7 @@ esp_err_t esp_vfs_fat_spiflash_mount_ro(const char* base_path,
         goto fail;
     }
 
-    if (data_partition->readonly || mount_config->read_only) {
+    if (data_partition->readonly) {
         esp_vfs_set_readonly_flag(base_path);
     }
 

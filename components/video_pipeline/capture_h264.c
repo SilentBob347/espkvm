@@ -410,7 +410,7 @@ static esp_err_t encoder_open(uint32_t w, uint32_t h)
          * it back and build the encoder again before giving up on H.264 - the
          * dashcam can wait, a picture cannot.
          */
-        if (capture_release_memory()) {
+        if (capture_release_memory(true)) {
             ESP_LOGW(CAPTURE_LOG_TAG, "h264 encoder: no memory; asked the recorder for its buffer");
             vTaskDelay(pdMS_TO_TICKS(200));
             herr = esp_h264_enc_hw_new(&cfg, &s_enc);
@@ -524,22 +524,71 @@ static bool wedge_rebuild_if_needed(uint32_t w, uint32_t h)
     return false;
 }
 
+static size_t h264_slot_bytes(void)
+{
+    return capture_arena_round(H264_SLOT_CAP);
+}
+
+#if !CAPTURE_DIRECT_ENCODE
+static size_t h264_yuv_bytes(void)
+{
+    return capture_arena_round((size_t)H264_MAX_W * H264_MAX_H * 3u / 2u);
+}
+#endif
+
+size_t capture_h264_arena_bytes(void)
+{
+    size_t bytes = H264_SLOTS * h264_slot_bytes();
+#if !CAPTURE_DIRECT_ENCODE
+    bytes += H264_YUV_BUFS * h264_yuv_bytes();
+#endif
+    return bytes;
+}
+
 static void h264_free_buffers(void)
 {
+    /* Pieces of the codec region are never freed, only let go of. */
+    const bool own = !capture_arena_active();
 #if !CAPTURE_DIRECT_ENCODE
     for (int i = 0; i < H264_YUV_BUFS; i++) {
         if (s_yuv[i]) {
-            esp_h264_free(s_yuv[i]);
+            if (own) {
+                esp_h264_free(s_yuv[i]);
+            }
             s_yuv[i] = NULL;
         }
     }
 #endif
     for (int i = 0; i < H264_SLOTS; i++) {
         if (s_buf[i]) {
-            esp_h264_free(s_buf[i]);
+            if (own) {
+                esp_h264_free(s_buf[i]);
+            }
             s_buf[i] = NULL;
         }
     }
+}
+
+/* The buffers out of the codec region; false when the recorder still has it. */
+static bool h264_take_arena(void)
+{
+    uint8_t *base = capture_arena_claim(capture_h264_arena_bytes());
+    if (!base) {
+        return false;
+    }
+    const size_t slot = h264_slot_bytes();
+    for (int i = 0; i < H264_SLOTS; i++) {
+        s_buf[i] = base + (size_t)i * slot;
+        s_buf_alloc[i] = (uint32_t)slot;
+    }
+#if !CAPTURE_DIRECT_ENCODE
+    uint8_t *yuv = base + H264_SLOTS * slot;
+    for (int i = 0; i < H264_YUV_BUFS; i++) {
+        s_yuv[i] = yuv + (size_t)i * h264_yuv_bytes();
+        s_yuv_alloc[i] = (uint32_t)h264_yuv_bytes();
+    }
+#endif
+    return true;
 }
 
 /*
@@ -553,7 +602,10 @@ static esp_err_t h264_open_once(void);
 static esp_err_t h264_open(void)
 {
     esp_err_t err = h264_open_once();
-    if (err == ESP_ERR_NO_MEM) {
+    if (err == ESP_ERR_NO_MEM && capture_arena_active() && capture_release_memory(true)) {
+        err = h264_open_once(); /* the recorder had the region's tail */
+    }
+    if (err == ESP_ERR_NO_MEM && !capture_arena_active()) {
 #if !CAPTURE_DIRECT_ENCODE
         /* MJPEG's space holds one YUV buffer at most; the other must already
          * fit, or go where the reorder buffer was (M5Stack). Otherwise giving
@@ -586,8 +638,12 @@ static esp_err_t h264_open_once(void)
     size_t align = 64;
     (void)esp_cache_get_alignment(MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA, &align);
 
+    const bool arena = capture_arena_active();
+    if (arena && !h264_take_arena()) {
+        return ESP_ERR_NO_MEM;
+    }
     /* The encoded Annex-B output slots are needed on both paths. */
-    for (int i = 0; i < H264_SLOTS; i++) {
+    for (int i = 0; !arena && i < H264_SLOTS; i++) {
         s_buf[i] = esp_h264_aligned_calloc(align, 1, H264_SLOT_CAP, &s_buf_alloc[i],
                                            ESP_H264_MEM_SPIRAM);
         if (!s_buf[i]) {
@@ -609,7 +665,7 @@ static esp_err_t h264_open_once(void)
         return err;
     }
     const size_t yuv_bytes = (size_t)H264_MAX_W * H264_MAX_H * 3u / 2u;
-    for (int i = 0; i < H264_YUV_BUFS; i++) {
+    for (int i = 0; !arena && i < H264_YUV_BUFS; i++) {
         s_yuv[i] = esp_h264_aligned_calloc(align, 1, yuv_bytes, &s_yuv_alloc[i], ESP_H264_MEM_SPIRAM);
         if (!s_yuv[i]) {
             ESP_LOGW(CAPTURE_LOG_TAG, "not enough PSRAM for the H.264 YUV buffers");

@@ -135,7 +135,7 @@ static const kvm_setting_t s_settings[] = {
         .title = "New recording file every (minutes)",
         .help = "A long recording is written as several files, each playable on its own, "
                 "so one is quick to download and a damaged card loses one piece rather "
-                "than the whole. 0 starts a new file only when FAT32 needs it, at 3.9 GB.",
+                "than the whole. 0 starts a new file only at 3.9 GB, the largest file the device writes.",
         .min = 0, .max = 240, .def = 10, .requires_cap = KVM_CAP_H264,
     },
     {

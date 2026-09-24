@@ -948,7 +948,7 @@ same stream the viewers get, so it costs no second encode: on the Function EV th
 picture stays at 21-22 fps with a video playing on the target, and no frame is
 lost. A .ts plays in VLC and most players, and a file cut off by a pulled card or
 a power cut plays up to the last few seconds. Files over 3.9 GB continue in a
-second file, as FAT32 has a 4 GB limit; on an exFAT card they run on. The camera button saves a JPEG into
+second file, on FAT32 and exFAT alike: the device keeps every file under 4 GB. The camera button saves a JPEG into
 SCREENSHOTS/, on either codec. Both are listed in their own panel, where they can
 be downloaded and deleted. Recording needs H.264 and a card the device can write,
 and not the whole card handed to the target.
@@ -997,7 +997,7 @@ is there and lets you pick which one the target sees. Images live in two places.
 A **microSD card** holds the large ones. FAT32 and exFAT both work, and so do
 MBR and GPT, so a card as it comes out of the packet is usually fine: above
 32 GB that means exFAT on a GPT card, which older firmware could not read at
-all. A file on FAT32 still cannot pass 4 GB; on exFAT there is no such limit.
+all. One file, an image or a recording, still stays under 4 GB on either.
 The console uploads images to the card and deletes them - but check the card
 can be written at all before relying on it. A 256 GB SDXC card here mounted,
 read and served images perfectly and refused every single write (a CRC error

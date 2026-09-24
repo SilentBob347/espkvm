@@ -76,7 +76,8 @@
 #define FRAME_MAX (1920u * 1080u / 2u)
 /* Written in blocks this size, cache-aligned, so each is one DMA multi-block write. */
 #define WRITE_CHUNK (256 * 1024)
-/* FAT32 stops a file at 4 GiB; a new file starts before that, on a keyframe. */
+/* Files stay under 4 GiB, on exFAT too: sizes are 32-bit in the web API and
+ * the MP4 writer. A new file starts before that, on a keyframe. */
 #define PART_MAX_BYTES (3900ull * 1024 * 1024)
 /* How often the file's size is committed to the directory. FAT records it only
  * on a sync, so a power cut loses what came after the last one. */
@@ -103,6 +104,7 @@ static SemaphoreHandle_t s_ring_mu;
 static SemaphoreHandle_t s_ring_ready;  /* given when a frame is added */
 static frame_ring_t s_ring;
 static uint8_t *s_ring_buf;
+static bool s_ring_lent; /* s_ring_buf and s_frame are the codec region's tail */
 static frame_ring_entry_t *s_ring_entries;
 static volatile bool s_feed_running;
 static volatile bool s_dashcam;
@@ -541,6 +543,29 @@ static bool ring_alloc(bool dashcam)
     const size_t reserve = dashcam ? PSRAM_RESERVE : REC_PSRAM_RESERVE;
     const size_t min = dashcam ? RING_BYTES_MIN : REC_RING_BYTES_MIN;
     const size_t max = dashcam ? RING_BYTES_MAX : REC_RING_BYTES_MAX;
+
+    /* First the part of the codec region H.264 leaves unused: taken and given
+     * back whole, it breaks nothing up. */
+    size_t lent = 0;
+    uint8_t *tail = capture_arena_borrow(min + FRAME_MAX, &lent);
+    if (tail) {
+        s_ring_entries = heap_caps_malloc(RING_FRAMES * sizeof(frame_ring_entry_t), MALLOC_CAP_SPIRAM);
+        if (!s_ring_entries) {
+            capture_arena_give_back(tail);
+            return false;
+        }
+        size_t bytes = lent - FRAME_MAX;
+        if (bytes > max) {
+            bytes = max;
+        }
+        s_ring_lent = true;
+        s_ring_buf = tail;
+        s_frame = tail + bytes; /* both 64-aligned: the region's pieces are */
+        s_frame_cap = FRAME_MAX;
+        frame_ring_init(&s_ring, s_ring_buf, bytes, s_ring_entries, RING_FRAMES);
+        ESP_LOGI(TAG, "frame ring: %u KB, in the codec region", (unsigned)(bytes / 1024));
+        return true;
+    }
     /* The write chunk is already taken by the time a recording gets here. */
     const size_t entries = RING_FRAMES * sizeof(frame_ring_entry_t);
     const size_t overhead = reserve + entries;
@@ -611,9 +636,14 @@ static bool ring_alloc(bool dashcam)
 static void ring_free(void)
 {
     xSemaphoreTake(s_ring_mu, portMAX_DELAY);
-    heap_caps_free(s_ring_buf);
+    if (s_ring_lent) {
+        capture_arena_give_back(s_ring_buf);
+        s_ring_lent = false;
+    } else {
+        heap_caps_free(s_ring_buf);
+        heap_caps_free(s_frame);
+    }
     heap_caps_free(s_ring_entries);
-    heap_caps_free(s_frame);
     s_ring_buf = NULL;
     s_ring_entries = NULL;
     s_frame = NULL;
@@ -1132,7 +1162,7 @@ static void writer_task(void *arg)
                 const bool clip_done = s_background && s_event && s_event_end_us &&
                                        e.at_us >= s_event_end_us;
                 /* A new file on a keyframe, so each one plays on its own: when this
-                 * one reaches FAT32's limit, or the split length the operator set. */
+                 * one nears 4 GiB, or the split length the operator set. */
                 if (e.keyframe && e.at_us != s_part_t0_us &&
                     (s_file_bytes >= PART_MAX_BYTES || clip_done ||
                      (s_split_us && e.at_us - s_part_t0_us >= s_split_us))) {
@@ -1271,18 +1301,23 @@ static void on_card_leaving(const char *why)
 }
 
 /*
- * A codec could not get its buffers. The dashcam's ring is the largest thing
- * this component holds and the likeliest reason PSRAM has no long run left, so
- * give it back and stay out of the way for half a minute. A recording in
+ * A codec wants the ring's PSRAM. The dashcam's ring is the largest thing this
+ * component holds and the likeliest reason PSRAM has no long run left, so give
+ * it back. After a real failure, stay out of the way for half a minute - but not
+ * for a ring from the codec region, which breaks nothing up, and not when H.264
+ * has only closed: the ring then raced the switch, and holding it back left
+ * the next H.264 run with no dashcam (funcev, 2026-09-24). A recording in
  * progress keeps its ring - dropping that would lose the file being written,
  * and the codec switch that follows ends the recording cleanly anyway.
  */
-static void on_memory_pressure(void)
+static void on_memory_pressure(bool failed)
 {
     if (s_active || !s_ring_buf) {
         return;
     }
-    s_ring_hold_until_us = esp_timer_get_time() + 30 * 1000000LL;
+    if (failed && !s_ring_lent) {
+        s_ring_hold_until_us = esp_timer_get_time() + 30 * 1000000LL;
+    }
     ring_free();
     ESP_LOGW(TAG, "gave the frame ring back: a codec needed the memory");
 }

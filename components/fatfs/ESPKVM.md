@@ -29,5 +29,14 @@ exFAT is patented by Microsoft. They licensed the implementation in the Linux
 kernel through OIN; a FatFs build in a product is not covered by that, which is
 worth knowing for a project that publishes images.
 
-Re-check against upstream when IDF is bumped: the only edit is the one line in
-`ffconf.h`, so a fresh copy plus that line is the whole procedure.
+Re-check against upstream when IDF is bumped: the only edits are the two lines
+in `ffconf.h`, so a fresh copy plus those lines is the whole procedure.
+
+Take the copy from the IDF tag CI builds with, not from the local install. The
+first copy came from the dev container's `/opt/esp/idf`, which is a master
+snapshot that calls itself 6.1-dev; it used `esp_vfs_set_readonly_flag` from
+`esp_vfs.h`, which 6.1 does not have, and every CI build failed. Fetch it with:
+
+    git clone --depth 1 --filter=blob:none --sparse -b v6.1 \
+        https://github.com/espressif/esp-idf.git && \
+        git -C esp-idf sparse-checkout set components/fatfs

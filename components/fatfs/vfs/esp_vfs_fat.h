@@ -136,14 +136,6 @@ typedef struct {
      * may be different.
      */
     bool use_one_fat;
-    /**
-     * Mount the filesystem in read-only mode.
-     * When set to true, all write operations (open for write, mkdir, unlink,
-     * rename, etc.) will fail with errno set to EROFS.
-     * This flag is independent of the underlying storage — it can be used
-     * with wear-levelled, raw, BDL, or SD card partitions.
-     */
-    bool read_only;
 } esp_vfs_fat_mount_config_t;
 
 #define VFS_FAT_MOUNT_DEFAULT_CONFIG() \
@@ -153,7 +145,6 @@ typedef struct {
         .allocation_unit_size = 0, \
         .disk_status_check_enable = false, \
         .use_one_fat = false, \
-        .read_only = false, \
     }
 
 // Compatibility definition

@@ -115,7 +115,7 @@ const char *kvm_storage_write_unavailable_reason(void);
  * image is served read-only, which is what booting from it needs and which
  * keeps a booting target from corrupting the operator's file.
  *
- * FAT32 caps a single file at 4 GiB, so that is the largest image for now.
+ * An image is at most 4 GiB, on exFAT too: uploads and listings use 32-bit sizes.
  */
 
 typedef struct {
