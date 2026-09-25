@@ -636,7 +636,7 @@ static esp_err_t api_video_status_get(httpd_req_t *req)
 
     char body[1400];
     int n = snprintf(body, sizeof(body),
-                     "{\"signal\":%s,\"width\":%u,\"height\":%u,\"interlaced\":%s,"
+                     "{\"knowsDdc5v\":%s,\"signal\":%s,\"width\":%u,\"height\":%u,\"interlaced\":%s,"
                      "\"inputHz\":%u,\"tooFast\":%s,"
                      "\"fps\":%u.%02u,\"skippedFps\":%u.%02u,\"kbps\":%u,"
                      "\"encodeUs\":%u,\"ppaUs\":%u,\"encoderBusyPct\":%u,"
@@ -653,6 +653,7 @@ static esp_err_t api_video_status_get(httpd_req_t *req)
                      "\"timelapse\":%u,\"clipSecondsLeft\":%u,\"clipsConverting\":%u,"
                      "\"lastClip\":\"%s\"},"
                      "\"screenshotBlocked\":%s%s%s}",
+                     capture_source_power_known() ? "true" : "false",
                      st.signal ? "true" : "false", (unsigned)st.hres, (unsigned)st.vres,
                      st.interlaced ? "true" : "false", (unsigned)st.input_hz,
                      st.too_fast ? "true" : "false", (unsigned)(st.fps_x100 / 100u),
@@ -2331,6 +2332,20 @@ static esp_err_t api_runbooks_run_post(httpd_req_t *req)
     httpd_resp_set_status(req, "202 Accepted");
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, "{\"status\":\"started\"}");
+}
+
+/* "Reconnect HDMI" in the console: the reset the device no longer does on its
+ * own where it cannot tell a sleeping screen from a stuck bridge. */
+static esp_err_t api_video_reconnect_post(httpd_req_t *req)
+{
+    if (!kvm_auth_check(req)) {
+        return kvm_auth_challenge(req);
+    }
+    const esp_err_t err = capture_reconnect_source();
+    if (err != ESP_OK) {
+        return send_json_error(req, "503 Service Unavailable", esp_err_to_name(err));
+    }
+    return send_ok(req);
 }
 
 static esp_err_t api_runbooks_stop_post(httpd_req_t *req)
@@ -4542,6 +4557,7 @@ httpd_handle_t http_server_start(void)
         {.uri = "/api/v1/runbooks/status", .method = HTTP_GET, .handler = api_runbooks_status_get},
         {.uri = "/api/v1/runbooks/run", .method = HTTP_POST, .handler = api_runbooks_run_post},
         {.uri = "/api/v1/runbooks/stop", .method = HTTP_POST, .handler = api_runbooks_stop_post},
+        {.uri = "/api/v1/video/reconnect", .method = HTTP_POST, .handler = api_video_reconnect_post},
         {.uri = "/api/v1/schedules/status", .method = HTTP_GET, .handler = api_schedules_status_get},
         {.uri = "/api/v1/schedules/run", .method = HTTP_POST, .handler = api_schedules_run_post},
         {.uri = "/api/v1/notify/status", .method = HTTP_GET, .handler = api_notify_status_get},

@@ -679,15 +679,21 @@ void capture_hw_frames_flowing(void)
 }
 
 /*
- * A bridge with no hotplug line of its own gets its reset pin instead, but not
- * on every try: each reset looks like a monitor unplugged to the target. Tries
- * 1, 2, 4 ... 64, then every 64th. The LT6911D needs it: on an M5Stack it kept
- * a valid 1080p mode but sent no frames for hours, and CSI rebuilds every 8 s
- * never touched the chip (2026-09-25).
+ * A bridge with no hotplug line of its own gets its reset pin instead, but only
+ * for a stall that lasts: each reset looks like a monitor unplugged to the
+ * target. Tries 4, 8 ... 64 (about 30 s of no frames first), then every 64th.
+ * The LT6911D needs it: on an M5Stack it kept a valid 1080p mode but sent no
+ * frames for hours, and CSI rebuilds every 8 s never touched the chip. A
+ * single missed frame is common there and a CSI rebuild alone cures it;
+ * resetting on the first try replugged the target's monitor four times an
+ * hour (2026-09-25).
  */
 static bool recover_resets_chip(void)
 {
     const unsigned n = ++s_recover_runs;
+    if (n < 4) {
+        return false;
+    }
     return n <= 64 ? (n & (n - 1)) == 0 : n % 64 == 0;
 }
 
@@ -794,6 +800,26 @@ static esp_err_t bridge_nudge(capture_ctx_t *c)
     return kvm_bridge_init_streaming(&c->bridge);
 }
 
+bool capture_source_power_known(void)
+{
+    return s_cap.bridge.ops && s_cap.bridge.knows_ddc5v;
+}
+
+esp_err_t capture_reconnect_source(void)
+{
+    capture_ctx_t *c = &s_cap;
+    if (!c->bridge.ops) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!capture_tc_lock(c, 1000)) {
+        return ESP_ERR_TIMEOUT;
+    }
+    ESP_LOGW(CAPTURE_LOG_TAG, "source reconnect asked for from the console");
+    const esp_err_t err = bridge_nudge(c);
+    capture_tc_unlock(c);
+    return err;
+}
+
 /*
  * Polls the bridge rather than using its interrupt line: the INT pin is not
  * wired on this adapter, and 200 ms is fast enough that a mode switch is
@@ -853,12 +879,12 @@ static void capture_monitor_task(void *arg)
              * off or nothing is plugged in, and hotplug cycles would be shouting
              * at an empty room.
              *
-             * A bridge that cannot read it at all gets the benefit of the doubt.
-             * The LT6911D is one: nothing it reports separates a screen that
-             * has gone to sleep from a chip that has lost its lock for good. So
-             * it is tried, and the count is what keeps that honest - three
-             * resets and it stops, rather than poking a sleeping machine every
-             * few minutes for the rest of the night.
+             * A bridge that cannot read it at all is left alone. The LT6911D is
+             * one: nothing it reports separates a screen gone to sleep from a
+             * chip that lost its lock, and resetting it looks like a monitor
+             * replugged - which woke a locked, sleeping PC and kept it awake
+             * (M5Stack, 2026-09-25). There the console offers the reset to the
+             * person looking at "No signal" instead (capture_reconnect_source).
              */
             const bool ddc5v = t.ddc5v || !c->bridge.knows_ddc5v;
             if (ddc5v != had_ddc5v) {
@@ -866,7 +892,8 @@ static void capture_monitor_task(void *arg)
                 quiet_since_us = (int64_t)esp_timer_get_time();
                 nudges = 0;
             }
-            if (!ddc5v || quiet_since_us < 0 || nudges >= HDMI_NUDGE_MAX) {
+            if (!c->bridge.knows_ddc5v || !ddc5v || quiet_since_us < 0 ||
+                nudges >= HDMI_NUDGE_MAX) {
                 continue;
             }
             const int64_t due_ms = (int64_t)HDMI_NUDGE_FIRST_MS << nudges;

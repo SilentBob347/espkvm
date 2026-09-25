@@ -13,6 +13,7 @@
   <br>
   <a href="https://t.me/espkvm"><img src="https://img.shields.io/badge/Telegram-%40espkvm-26A5E4?logo=telegram&logoColor=white" alt="Telegram: @espkvm"></a>
   <a href="https://x.com/espkvm"><img src="https://img.shields.io/badge/X-%40espkvm-000000?logo=x&logoColor=white" alt="X: @espkvm"></a>
+  <a href="https://github.com/orgs/espkvm/discussions/60"><img src="https://img.shields.io/badge/Poll-how%20many%20do%20you%20run%3F-8A2BE2?logo=github&logoColor=white" alt="Poll: how many ESP-KVMs do you run?"></a>
 </p>
 
 Like remote desktop, except it does not run on the machine. A small board plugs
@@ -1140,6 +1141,7 @@ Everything the console does is available over HTTP.
 | `GET /api/v1/settings`, `PUT` | settings, validated and applied as a whole |
 | `GET /api/v1/settings/schema` | title, range and help text for every setting |
 | `GET /api/v1/video/status` | resolution, frame rate, bitrate, encoder load, viewers, and whether this mode can be read as text |
+| `POST /api/v1/video/reconnect` | offer the HDMI source a fresh start: a hotplug cycle, or a reset of the capture chip where there is no hotplug line. The target sees a monitor replugged |
 | `GET /api/v1/screen/text` | the screen as characters when the target is in a text mode; 204 when it is showing a picture |
 | `GET /api/v1/system/usbprobe` | the target's USB enumeration fingerprint and the OS guessed from it |
 | `GET /api/v1/storage/images` | disk images on the card and in flash, and which one is active |
@@ -1322,6 +1324,10 @@ ESP-KVM is free and open source. The easiest way to help is to
 others find the project. If it saved you a trip to a dead machine and you want to say
 thanks, you can [buy me a coffee](https://buymeacoffee.com/dexif) - entirely optional,
 and contributions of code, issues and ideas are just as welcome.
+
+Running one? Say how many, and what is missing, in the
+[poll](https://github.com/orgs/espkvm/discussions/60). There is no telemetry in the firmware, so this is the only way I
+find out how it is used.
 
 Release notes and work in progress go out on
 [Telegram](https://t.me/espkvm) and [X](https://x.com/espkvm); the short clips of

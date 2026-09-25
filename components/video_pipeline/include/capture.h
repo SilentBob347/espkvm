@@ -82,6 +82,20 @@ void capture_start(void);
 void capture_status_get(kvm_video_status_t *out);
 
 /**
+ * Whether the bridge can see the source's +5 V, which tells a target that is
+ * off from one that is on and sending nothing. The TC358743 can; the LT6911D
+ * cannot, so on it "no signal" may just be a screen gone to sleep.
+ */
+bool capture_source_power_known(void);
+
+/**
+ * Offer the source a fresh start, asked for by a person: a hotplug cycle where
+ * the bridge has one, otherwise a pulse on its reset pin. To the target either
+ * looks like a monitor unplugged and plugged back in.
+ */
+esp_err_t capture_reconnect_source(void);
+
+/**
  * The screen as a JPEG, on either codec. On success @p out is a PSRAM buffer the
  * caller frees. ESP_ERR_NOT_FOUND when there is no signal, ESP_ERR_TIMEOUT when
  * no frame came in @p timeout_ms (a device too hot to encode sends none).

@@ -5,6 +5,29 @@ All notable changes to ESP-KVM are recorded here. The format follows
 semantic versioning while it is pre-1.0 (a new feature bumps the minor, a fix
 bumps the patch).
 
+## [0.54.2] - 2026-09-25
+
+### Fixed
+- **M5Stack Unit PoE-P4: the target no longer sees its monitor replugged
+  every few minutes.** 0.54.1 reset the capture chip on the first missed
+  frame. A single missed frame happens there several times an hour, and a
+  rebuild of the camera receiver alone cures it - the reset only made the
+  target's screen blink. The chip is now reset only when no frames have come
+  for about 30 seconds.
+- **M5Stack Unit PoE-P4: a locked PC can go to sleep again.** When its screen
+  turned off, the capture chip lost the picture, and 10 seconds later the
+  device reset the chip - which the PC saw as a monitor plugged in, so the
+  screen woke up. This chip cannot tell a sleeping screen from a stuck one, so
+  the device no longer resets it on its own when the picture goes.
+
+### Added
+- **"Reconnect HDMI" under "No signal".** It offers the source a fresh start:
+  a hotplug cycle on a TC358743, a reset of the chip on the M5Stack. On the
+  M5Stack it also counts down 30 seconds and presses itself, unless you say
+  no - so a stuck chip still comes back when somebody is looking. The note
+  under "No signal" there no longer claims the machine is off: that chip
+  cannot see the source's power. `POST /api/v1/video/reconnect`.
+
 ## [0.54.1] - 2026-09-25
 
 ### Fixed
