@@ -668,6 +668,29 @@ static void capture_drain_csi_done_sem(SemaphoreHandle_t sem)
     }
 }
 
+static esp_err_t bridge_nudge(capture_ctx_t *c);
+
+/* Recoveries since frames last flowed. */
+static unsigned s_recover_runs;
+
+void capture_hw_frames_flowing(void)
+{
+    s_recover_runs = 0;
+}
+
+/*
+ * A bridge with no hotplug line of its own gets its reset pin instead, but not
+ * on every try: each reset looks like a monitor unplugged to the target. Tries
+ * 1, 2, 4 ... 64, then every 64th. The LT6911D needs it: on an M5Stack it kept
+ * a valid 1080p mode but sent no frames for hours, and CSI rebuilds every 8 s
+ * never touched the chip (2026-09-25).
+ */
+static bool recover_resets_chip(void)
+{
+    const unsigned n = ++s_recover_runs;
+    return n <= 64 ? (n & (n - 1)) == 0 : n % 64 == 0;
+}
+
 esp_err_t capture_hw_hdmi_recover(capture_ctx_t *c)
 {
     ESP_RETURN_ON_FALSE(c && c->bridge.ops && c->csi_done_sem, ESP_ERR_INVALID_ARG, CAPTURE_LOG_TAG, "ctx");
@@ -681,7 +704,10 @@ esp_err_t capture_hw_hdmi_recover(capture_ctx_t *c)
         ESP_LOGW(CAPTURE_LOG_TAG, "recover: bridge busy");
         return ESP_ERR_TIMEOUT;
     }
-    esp_err_t er = kvm_bridge_hotplug_reset(&c->bridge);
+    esp_err_t er = ESP_OK;
+    if (kvm_bridge_has_hotplug_reset(&c->bridge) || recover_resets_chip()) {
+        er = bridge_nudge(c);
+    }
     if (er != ESP_OK) {
         ESP_LOGW(CAPTURE_LOG_TAG, "hotplug reset: %s", esp_err_to_name(er));
     }

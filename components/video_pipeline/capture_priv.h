@@ -189,6 +189,8 @@ void capture_screentext_init(void);
  * Safe to call from the capture task when frames have stalled; throttled by the caller.
  */
 esp_err_t capture_hw_hdmi_recover(capture_ctx_t *c);
+/** Frames arrive again: the next recovery starts its count from one. */
+void capture_hw_frames_flowing(void);
 
 /** Poll the bridge for signal state and resolution changes (200 ms cadence). */
 void capture_monitor_start(capture_ctx_t *c);

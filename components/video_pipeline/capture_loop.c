@@ -189,6 +189,7 @@ void capture_loop_run(capture_ctx_t *c)
             continue;
         }
         hdmi_recover_cooldown_until_us = 0;
+        capture_hw_frames_flowing();
         while (xSemaphoreTake(c->csi_done_sem, 0) == pdTRUE) {
             /* Drop stale completions; done_fb always points at the newest completed frame. */
         }

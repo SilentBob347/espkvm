@@ -5,6 +5,17 @@ All notable changes to ESP-KVM are recorded here. The format follows
 semantic versioning while it is pre-1.0 (a new feature bumps the minor, a fix
 bumps the patch).
 
+## [0.54.1] - 2026-09-25
+
+### Fixed
+- **M5Stack Unit PoE-P4: the picture comes back when the capture chip keeps a
+  mode but stops sending frames.** After about 17 hours the LT6911D still
+  reported 1080p, but no frame arrived, and the recovery every 8 s never
+  touched the chip, which has no hotplug line to cycle. Recovery now pulses
+  its reset pin: on tries 1, 2, 4 and so on, then every 64th, because each
+  reset looks like an unplugged monitor to the target. Boards with a
+  TC358743 are unchanged.
+
 ## [0.54.0] - 2026-09-24
 
 ### Fixed
