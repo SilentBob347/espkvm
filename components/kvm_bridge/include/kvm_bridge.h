@@ -143,6 +143,16 @@ esp_err_t kvm_bridge_detect(i2c_master_bus_handle_t bus, kvm_bridge_t *out);
  */
 int kvm_bridge_scan(i2c_master_bus_handle_t bus, char *out, size_t out_len);
 
+/*
+ * The same scan, with the board's own chips set apart: an audio codec, a touch
+ * controller or an OLED can share the capture bus, and one of them answering
+ * says nothing about the capture board. @p unknown gets the rest, @p known
+ * names what was recognised ("0x18 ES8311 audio codec"). Returns how many
+ * unknown addresses answered.
+ */
+int kvm_bridge_scan_split(i2c_master_bus_handle_t bus, char *unknown, size_t unknown_len,
+                          char *known, size_t known_len);
+
 /** How many drivers registered. For the log line at start-up. */
 size_t kvm_bridge_driver_count(void);
 

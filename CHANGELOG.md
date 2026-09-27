@@ -5,6 +5,16 @@ All notable changes to ESP-KVM are recorded here. The format follows
 semantic versioning while it is pre-1.0 (a new feature bumps the minor, a fix
 bumps the patch).
 
+## [0.54.3] - 2026-09-27
+
+### Fixed
+- **"No driver here knows it" no longer blames the firmware for a loose
+  ribbon (#61).** With the C790 not answering, the Guition M3-Dev's own audio
+  codec at 0x18 was the only chip on the capture bus, and the message sent
+  people looking for a missing driver. The chips a board carries itself - audio
+  codecs, touch controllers, an OLED - are now named as such, and the message
+  says to check the ribbon.
+
 ## [0.54.2] - 2026-09-25
 
 ### Fixed

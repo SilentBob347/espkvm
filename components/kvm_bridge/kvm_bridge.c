@@ -78,6 +78,69 @@ int kvm_bridge_scan(i2c_master_bus_handle_t bus, char *out, size_t out_len)
     return count;
 }
 
+/*
+ * Chips that sit on a board's own I2C bus and are never a capture bridge. The
+ * Guition M3-Dev's ES8311 at 0x18 answered on the capture bus with the C790
+ * unplugged, and the message said "no driver here knows it" - which sent
+ * someone looking for a firmware problem instead of at the ribbon (#61).
+ */
+static const struct {
+    uint8_t addr;
+    const char *what;
+} k_board_chips[] = {
+    {0x18, "ES8311 audio codec"},
+    {0x40, "ES7210 microphone ADC"},
+    {0x14, "GT911 touch controller"},
+    {0x5D, "GT911 touch controller"},
+    {0x38, "FT5x06 touch controller"},
+    {0x3C, "OLED"},
+    {0x3D, "OLED"},
+    {0x34, "AXP power chip"},
+    {0x51, "PCF8563 clock"},
+};
+
+static const char *board_chip(uint8_t addr)
+{
+    for (size_t i = 0; i < sizeof(k_board_chips) / sizeof(k_board_chips[0]); i++) {
+        if (k_board_chips[i].addr == addr) {
+            return k_board_chips[i].what;
+        }
+    }
+    return NULL;
+}
+
+int kvm_bridge_scan_split(i2c_master_bus_handle_t bus, char *unknown, size_t unknown_len,
+                          char *known, size_t known_len)
+{
+    int count = 0;
+    size_t ul = 0;
+    size_t kl = 0;
+    if (unknown && unknown_len) {
+        unknown[0] = '\0';
+    }
+    if (known && known_len) {
+        known[0] = '\0';
+    }
+    for (uint8_t addr = 0x08; addr <= 0x77; addr++) {
+        if (i2c_master_probe(bus, addr, 50) != ESP_OK) {
+            continue;
+        }
+        const char *what = board_chip(addr);
+        if (what) {
+            if (known && kl + 40 < known_len) {
+                kl += (size_t)snprintf(known + kl, known_len - kl, "%s0x%02x %s", kl ? ", " : "",
+                                       addr, what);
+            }
+            continue;
+        }
+        count++;
+        if (unknown && ul + 6 < unknown_len) {
+            ul += (size_t)snprintf(unknown + ul, unknown_len - ul, " 0x%02x", addr);
+        }
+    }
+    return count;
+}
+
 static void log_bus_scan(i2c_master_bus_handle_t bus, const char *when)
 {
     char found[96];

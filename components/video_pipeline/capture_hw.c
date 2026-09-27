@@ -498,10 +498,19 @@ capture_ctx_t *capture_hw_init_start(void)
                thing that is missing - say that instead of sending someone to
                reseat a cable that is already seated. */
             char found[96];
-            if (kvm_bridge_scan(i2c_bus, found, sizeof(found)) > 0) {
+            char board[128];
+            if (kvm_bridge_scan_split(i2c_bus, found, sizeof(found), board, sizeof(board)) > 0) {
                 kvm_cap_report(KVM_CAP_VIDEO, false,
                                "a chip answers on the capture bus (%s) but no driver here knows it",
                                found + 1);
+            } else if (board[0]) {
+                /* Only the board's own chips answered: the capture board is
+                   still the one missing, so say that, and what did answer. */
+                ESP_LOGE(CAPTURE_LOG_TAG, "no capture bridge; the board's own chips answer: %s",
+                         board);
+                kvm_cap_report(KVM_CAP_VIDEO, false,
+                               "no capture board - check its ribbon (%s is on this board, not it)",
+                               board);
             } else {
                 kvm_cap_report(KVM_CAP_VIDEO, false,
                                "no capture board found - check the ribbon between it and the device");
