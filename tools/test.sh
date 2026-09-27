@@ -41,6 +41,9 @@ if [ "$what" = all ] || [ "$what" = host ]; then
     echo "== a Telegram reply =="
     sh "$here/components/kvm_notify/test/run.sh"
     echo
+    echo "== the optical drive's MMC replies =="
+    sh "$here/components/kvm_hid/test/run.sh"
+    echo
 fi
 
 if [ "$what" = all ] || [ "$what" = web ]; then

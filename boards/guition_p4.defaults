@@ -20,6 +20,9 @@
 #
 # It has TWO USB-C ports: an OTG 2.0 HS and a USB 1.1 FS. The target must be wired
 # to the HS port (that is the keyboard/mouse the target sees).
+#
+# The C790's ribbon goes into J3. J2 is not the camera's: with the ribbon there
+# only the board's own ES8311 (0x18) answers on the capture bus (#61).
 
 # --- chip revision ----------------------------------------------------------
 # Tested by DaveDavenport (2026-08): his Guition is pre-3.0 silicon, so build

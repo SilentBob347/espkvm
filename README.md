@@ -227,7 +227,8 @@ silicon - it ships as either revision under one product code.
 
 A display board (4.3&Prime; MIPI-DSI touch, unused by the KVM) that also carries
 Ethernet and an ESP32-C6; 32 MB PSRAM, 16 MB flash. Confirmed by a contributor.
-Two USB-C ports - the target goes on the OTG-HS one. Build overlay:
+Two USB-C ports - the target goes on the OTG-HS one. The capture board's ribbon
+goes into **J3**, not J2 ([#61](https://github.com/espkvm/espkvm/issues/61)). Build overlay:
 `boards/guition_p4.defaults`, or `boards/guition_p4_rev3.defaults`.
 
 </td>

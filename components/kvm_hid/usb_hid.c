@@ -25,6 +25,7 @@
 #include "kvm_caps.h"
 #include "kvm_settings.h"
 #include "kvm_storage.h"
+#include "mmc.h"
 
 static const char *TAG = "usb_hid";
 
@@ -770,10 +771,36 @@ int32_t tud_msc_write10_cb(uint8_t lun, uint32_t lba, uint32_t offset, uint8_t *
     return n;
 }
 
+/* What the host has been told about media events, for the optical drive. */
+static mmc_events_t s_mmc_events;
+
+/* Changes whenever another image goes in, even one of the same size. */
+static uint32_t media_id(const kvm_media_t *m)
+{
+    uint32_t h = 2166136261u;
+    for (const char *c = m->name; *c; c++) {
+        h = (h ^ (uint8_t)*c) * 16777619u;
+    }
+    return h ^ (uint32_t)m->block_count;
+}
+
 int32_t tud_msc_scsi_cb(uint8_t lun, uint8_t const scsi_cmd[16], void *buffer, uint16_t bufsize)
 {
-    (void)buffer;
-    (void)bufsize;
+    if (s_msc_cdrom) {
+        /* An optical drive: READ TOC, GET CONFIGURATION, media events and the
+         * rest that Windows, macOS and some firmware ask before trusting it. */
+        kvm_media_t km;
+        kvm_storage_media_info(&km);
+        const mmc_media_t m = {.present = km.present, .blocks = km.block_count, .id = media_id(&km)};
+        mmc_sense_t sense = {0};
+        const int32_t r = mmc_command(scsi_cmd, &m, &s_mmc_events, buffer, bufsize, &sense);
+        if (r != MMC_NOT_MMC) {
+            if (r < 0) {
+                tud_msc_set_sense(lun, sense.key, sense.asc, sense.ascq);
+            }
+            return r;
+        }
+    }
     switch (scsi_cmd[0]) {
     case SCSI_CMD_PREVENT_ALLOW_MEDIUM_REMOVAL:
         /* We never lock the medium; acknowledge and move on. */
@@ -802,6 +829,8 @@ void usb_hid_msc_set_type(bool cdrom)
         return;
     }
     s_msc_cdrom = cdrom;
+    /* A new drive to the host: it hears about the disc in it afresh. */
+    memset(&s_mmc_events, 0, sizeof(s_mmc_events));
     /* Nothing for the host to re-read until the drive exists and is enumerated. */
     if (!s_msc_present || !tud_mounted()) {
         return;

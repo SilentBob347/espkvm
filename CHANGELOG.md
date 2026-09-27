@@ -5,6 +5,22 @@ All notable changes to ESP-KVM are recorded here. The format follows
 semantic versioning while it is pre-1.0 (a new feature bumps the minor, a fix
 bumps the patch).
 
+## [Unreleased]
+
+### Added
+- **The virtual CD-ROM answers like a real optical drive.** An `.iso` was
+  served with the CD-ROM device type and 2048-byte blocks, but every command
+  only an optical drive has - the table of contents, the drive's profile, "a
+  disc was inserted" - was refused. UEFI and Linux booted anyway; Windows,
+  macOS and some firmware ask those first. Now the drive answers READ TOC,
+  GET CONFIGURATION, GET EVENT STATUS NOTIFICATION, READ DISC INFORMATION,
+  READ TRACK INFORMATION and MODE SENSE(10). An image above 900 MB presents
+  itself as a DVD-ROM, a smaller one as a CD-ROM. Images still stop at 4 GB.
+
+### Changed
+- The Guition M3-Dev's capture ribbon goes into J3, not J2; the README and the
+  site say so now (#61).
+
 ## [0.54.3] - 2026-09-27
 
 ### Fixed
