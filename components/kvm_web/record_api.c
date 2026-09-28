@@ -273,7 +273,9 @@ static cJSON *list_dir(const char *dir, const char *ext, const char *ext2)
         char rel[80];
         snprintf(rel, sizeof(rel), "%s/%.48s", dir, e->d_name);
         cJSON_AddStringToObject(item, "path", rel);
-        cJSON_AddNumberToObject(item, "size", (double)st.st_size);
+        uint64_t size = (uint32_t)st.st_size; /* stat() wraps past 2 GB */
+        (void)kvm_storage_file_size(rel, &size);
+        cJSON_AddNumberToObject(item, "size", (double)size);
         /* What sits beside a recording under the same name: the keystroke
          * subtitles, and the screen's text for the search. */
         const char *dot = strrchr(full, '.');
@@ -326,6 +328,7 @@ static esp_err_t captures_get(httpd_req_t *req)
 typedef struct {
     httpd_req_t *req;
     char path[96];
+    char rel[80];
     bool video;
     /* A Range request: bytes first..last of size. Without one, the whole file. */
     bool ranged;
@@ -346,7 +349,8 @@ static void download_task(void *arg)
 {
     download_t *dl = arg;
     httpd_req_t *req = dl->req;
-    FILE *f = fopen(dl->path, "rb");
+    /* Not stdio: fseek works in a 32-bit off_t, and a recording can pass 2 GB. */
+    kvm_file_t *f = kvm_storage_file_open(dl->rel, dl->ranged ? dl->first : 0);
     uint8_t *buf = heap_caps_malloc(DOWNLOAD_CHUNK, MALLOC_CAP_SPIRAM);
     if (!f || !buf) {
         send_json_error(req, f ? "500 Internal Server Error" : "404 Not Found",
@@ -378,14 +382,11 @@ static void download_task(void *arg)
             httpd_resp_set_status(req, "206 Partial Content");
             httpd_resp_set_hdr(req, "Content-Range", range);
             left = dl->last - dl->first + 1;
-            if (fseeko(f, (off_t)dl->first, SEEK_SET) != 0) {
-                left = 0;
-            }
         }
-        size_t n;
+        int n;
         esp_err_t err = ESP_OK;
         while (err == ESP_OK && left &&
-               (n = fread(buf, 1, left < DOWNLOAD_CHUNK ? (size_t)left : DOWNLOAD_CHUNK, f)) > 0) {
+               (n = kvm_storage_file_read(f, buf, left < DOWNLOAD_CHUNK ? (size_t)left : DOWNLOAD_CHUNK)) > 0) {
             err = httpd_resp_send_chunk(req, (const char *)buf, (ssize_t)n);
             left -= left == UINT64_MAX ? 0 : n;
         }
@@ -393,9 +394,7 @@ static void download_task(void *arg)
             httpd_resp_send_chunk(req, NULL, 0);
         }
     }
-    if (f) {
-        fclose(f);
-    }
+    kvm_storage_file_close(f);
     heap_caps_free(buf);
     download_finish(req);
     free(dl);
@@ -425,17 +424,18 @@ static esp_err_t captures_file_get(httpd_req_t *req)
         return send_json_error(req, "500 Internal Server Error", "out of memory");
     }
     snprintf(dl->path, sizeof(dl->path), "%s/%s", kvm_storage_mount_point(), rel);
+    snprintf(dl->rel, sizeof(dl->rel), "%s", rel);
     dl->video = video;
-    struct stat st;
-    if (stat(dl->path, &st) != 0) {
+    uint64_t fsize = 0;
+    if (kvm_storage_file_size(rel, &fsize) != ESP_OK) {
         free(dl);
         return send_json_error(req, "404 Not Found", "no such file");
     }
     /* "bytes=first-", "bytes=first-last" or "bytes=-suffix"; one range only. */
     char range[48];
     if (httpd_req_get_hdr_value_str(req, "Range", range, sizeof(range)) == ESP_OK &&
-        strncmp(range, "bytes=", 6) == 0 && st.st_size > 0) {
-        const uint64_t size = (uint64_t)st.st_size;
+        strncmp(range, "bytes=", 6) == 0 && fsize > 0) {
+        const uint64_t size = fsize;
         char *p = range + 6, *end;
         uint64_t first, last = size - 1;
         if (*p == '-') {

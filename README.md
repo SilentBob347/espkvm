@@ -999,7 +999,8 @@ is there and lets you pick which one the target sees. Images live in two places.
 A **microSD card** holds the large ones. FAT32 and exFAT both work, and so do
 MBR and GPT, so a card as it comes out of the packet is usually fine: above
 32 GB that means exFAT on a GPT card, which older firmware could not read at
-all. One file, an image or a recording, still stays under 4 GB on either.
+all. On exFAT an image can be over 4 GB, like a full DVD installer; the console
+sends such a file in 2 GB parts. Recordings stay under 4 GB a file on either.
 The console uploads images to the card and deletes them - but check the card
 can be written at all before relying on it. A 256 GB SDXC card here mounted,
 read and served images perfectly and refused every single write (a CRC error
@@ -1009,6 +1010,12 @@ but Flipper Zero tell their users the same thing for their own SD slot: pick a
 well-tested card from a known maker rather than the fastest or largest one. So
 if you mean to upload to the card, a small branded SDHC card - 16 to 32 GB is
 more space than this needs - is the safer buy.
+
+By default a `.iso` goes to the target as an optical drive, any other image as a USB
+disk. The drive answers the commands a real one does - the table of contents,
+the drive profile, "a disc was inserted" - which Windows, macOS and some
+firmware ask before they read. An image above 900 MB shows up as a DVD, a
+smaller one as a CD. Checked with a Linux target so far.
 
 How fast the card runs depends on the board, so the device finds it per card.
 It starts at the fastest clock the board allows and steps down (40, 20, 10, 4,
@@ -1146,7 +1153,7 @@ Everything the console does is available over HTTP.
 | `GET /api/v1/screen/text` | the screen as characters when the target is in a text mode; 204 when it is showing a picture |
 | `GET /api/v1/system/usbprobe` | the target's USB enumeration fingerprint and the OS guessed from it |
 | `GET /api/v1/storage/images` | disk images on the card and in flash, and which one is active |
-| `POST /api/v1/storage/upload`, `/rescue`, `/delete` | manage the virtual-media images |
+| `POST /api/v1/storage/upload`, `/rescue`, `/delete` | manage the virtual-media images; a file of 4 GB and over goes in parts, each with `&offset=` |
 | `POST /api/v1/power/wake` | send a Wake-on-LAN magic packet to the target's MAC |
 | `POST /api/v1/power/click`, `/hold`, `/reset` | ATX: tap power, hold power for a hard off, tap reset |
 | `GET /api/v1/video/frame.jpg` | one frame as a JPEG, on either codec |

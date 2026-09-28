@@ -53,7 +53,14 @@ int main(void)
     CHECK(n == 20);
     CHECK(out[9] == 0 && out[10] == 2 && out[11] == 0);
     CHECK(out[17] == 79 && out[18] == 40 && out[19] == 50);
+
+    /* A 4.5 GB DVD is past 255 minutes: MSF holds at the top, LBA is exact. */
+    const mmc_media_t big = {.present = true, .blocks = 2200000, .id = 3};
+    n = mmc_command(toc, &big, &ev, out, sizeof(out), &s);
+    CHECK(n == 20 && out[17] == 255 && out[18] == 59 && out[19] == 74);
     toc[1] = 0;
+    n = mmc_command(toc, &big, &ev, out, sizeof(out), &s);
+    CHECK(n == 20 && be32(&out[16]) == 2200000);
 
     /* Cut to what the host asked for, as the transport does. */
     n = mmc_command(toc, &cd, &ev, out, 4, &s);

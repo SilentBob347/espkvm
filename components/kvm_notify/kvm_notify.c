@@ -641,16 +641,19 @@ static void deliver_clip(const event_t *ev)
     char text[BODY_MAX + 200];
     bool any = false, ok = true;
 
+    /* off_t is 32-bit and a clip stays under 4 GB: read the size unsigned. */
+    const uint32_t size = exists ? (uint32_t)st.st_size : 0;
+
     if (token[0] && chat[0] && token_plausible(token) && exists) {
         any = true;
-        if ((size_t)st.st_size <= TG_VIDEO_MAX) {
+        if (size <= TG_VIDEO_MAX) {
             snprintf(text, sizeof(text), "%s", ev->body);
-            ok = tg_video(token, chat, text, ev->path, (size_t)st.st_size);
+            ok = tg_video(token, chat, text, ev->path, size);
             ESP_LOGI(TAG, "telegram clip: %s (%u KB)", ok ? "sent" : "failed",
-                     (unsigned)(st.st_size / 1024));
+                     (unsigned)(size / 1024));
         } else {
             snprintf(text, sizeof(text), "%.160s\nSaved on the card as %.80s (%u MB, too big for Telegram).",
-                     ev->body, ev->card_path, (unsigned)(st.st_size / (1024 * 1024)));
+                     ev->body, ev->card_path, (unsigned)(size / (1024 * 1024)));
             ok = tg_message(token, chat, text);
         }
     }

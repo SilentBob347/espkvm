@@ -7,6 +7,8 @@ bumps the patch).
 
 ## [Unreleased]
 
+## [0.55.0] - 2026-09-28
+
 ### Added
 - **The virtual CD-ROM answers like a real optical drive.** An `.iso` was
   served with the CD-ROM device type and 2048-byte blocks, but every command
@@ -15,11 +17,28 @@ bumps the patch).
   macOS and some firmware ask those first. Now the drive answers READ TOC,
   GET CONFIGURATION, GET EVENT STATUS NOTIFICATION, READ DISC INFORMATION,
   READ TRACK INFORMATION and MODE SENSE(10). An image above 900 MB presents
-  itself as a DVD-ROM, a smaller one as a CD-ROM. Images still stop at 4 GB.
+  itself as a DVD-ROM, a smaller one as a CD-ROM. Checked on a Linux target,
+  which now sees a DVD drive with a disc in it. Not yet tried on Windows or on
+  a BIOS boot.
+- **Images over 4 GB on an exFAT card.** A full DVD installer is 5-8 GB. The
+  device reads an upload's length as 32 bits, so the console now sends a big
+  file in 2 GB parts and the device appends each one
+  (`storage/upload?name=&offset=`). A part that does not line up with the file
+  on the card is refused. The image list showed such a file with the wrong
+  size, and the disc's end in minutes (MSF) wrapped past 255 minutes (about
+  2.2 GB); both fixed. A 4.5 GB image went up in three parts and read back on
+  the target with the same md5.
 
 ### Changed
 - The Guition M3-Dev's capture ribbon goes into J3, not J2; the README and the
   site say so now (#61).
+
+### Fixed
+- **Recordings over 2 GB.** A recording can grow to 3.9 GB, but past 2 GB the
+  recordings panel showed a negative size, and seeking in the player or a
+  download with a range did not work. The file system's seek counted in a
+  signed 32-bit number, so past 2 GB it went negative. The device now reads
+  files and sizes in 64 bits.
 
 ## [0.54.3] - 2026-09-27
 

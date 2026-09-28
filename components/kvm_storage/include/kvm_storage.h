@@ -96,6 +96,23 @@ void kvm_storage_status(kvm_storage_status_t *out);
 /** Where the card is mounted, e.g. "/sd". Valid whether or not one is present. */
 const char *kvm_storage_mount_point(void);
 
+/*
+ * Files by a path relative to the card's root ("ubuntu.iso", "VIDEO/a.ts"), in
+ * 64 bits. stdio cannot do that: off_t is 32-bit here, so stat() and fseek()
+ * break at 2 GB, and exFAT files may pass 4 GB.
+ */
+
+/** Size of a regular file. Fails for a directory or a path with "..". */
+esp_err_t kvm_storage_file_size(const char *rel, uint64_t *size);
+
+typedef struct kvm_file kvm_file_t;
+
+/** Open for reading at byte @p at. NULL when missing or out of memory. */
+kvm_file_t *kvm_storage_file_open(const char *rel, uint64_t at);
+/** Read up to @p len bytes. Returns the count, 0 at the end, -1 on error. */
+int kvm_storage_file_read(kvm_file_t *f, void *buf, size_t len);
+void kvm_storage_file_close(kvm_file_t *f);
+
 /**
  * Whether the device can write to the card: a card is mounted, it is not handed
  * to the target, and the chip is rev >= 3.0 or the board powers the slot's IO
@@ -115,7 +132,8 @@ const char *kvm_storage_write_unavailable_reason(void);
  * image is served read-only, which is what booting from it needs and which
  * keeps a booting target from corrupting the operator's file.
  *
- * An image is at most 4 GiB, on exFAT too: uploads and listings use 32-bit sizes.
+ * On exFAT an image may pass 4 GiB. The browser upload cannot make one that big
+ * (HTTP body sizes are 32-bit), so such a file is copied onto the card elsewhere.
  */
 
 typedef struct {

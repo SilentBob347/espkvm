@@ -524,7 +524,7 @@ static ssize_t vfs_fat_pread(void *ctx, int fd, void *dst, size_t size, off_t of
     vfs_fat_ctx_t *fat_ctx = (vfs_fat_ctx_t *) ctx;
     _lock_acquire(&fat_ctx->lock);
     FIL *file = &fat_ctx->files[fd];
-    const off_t prev_pos = f_tell(file);
+    const FSIZE_t prev_pos = f_tell(file); /* espkvm: not off_t, see lseek */
 
     FRESULT f_res = f_lseek(file, offset);
 
@@ -564,7 +564,7 @@ static ssize_t vfs_fat_pwrite(void *ctx, int fd, const void *src, size_t size, o
     vfs_fat_ctx_t *fat_ctx = (vfs_fat_ctx_t *) ctx;
     _lock_acquire(&fat_ctx->lock);
     FIL *file = &fat_ctx->files[fd];
-    const off_t prev_pos = f_tell(file);
+    const FSIZE_t prev_pos = f_tell(file); /* espkvm: not off_t, see lseek */
 
     FRESULT f_res = f_lseek(file, offset);
 
@@ -663,27 +663,30 @@ static off_t vfs_fat_lseek(void* ctx, int fd, off_t offset, int mode)
     vfs_fat_ctx_t* fat_ctx = (vfs_fat_ctx_t*) ctx;
     FIL* file = &fat_ctx->files[fd];
     _lock_acquire(&fat_ctx->lock);
-    off_t new_pos;
+    /* espkvm: in 64 bits. off_t is 32-bit, so an exFAT file of 2 GB and over
+     * read back negative, and FatFs took that as a huge offset and, on a file
+     * open for writing, tried to grow the file to it. */
+    int64_t new_pos;
     if (mode == SEEK_SET) {
         new_pos = offset;
     } else if (mode == SEEK_CUR) {
-        off_t cur_pos = f_tell(file);
-        new_pos = cur_pos + offset;
+        new_pos = (int64_t)f_tell(file) + offset;
     } else if (mode == SEEK_END) {
-        off_t size = f_size(file);
-        new_pos = size + offset;
+        new_pos = (int64_t)f_size(file) + offset;
     } else {
         errno = EINVAL;
         _lock_release(&fat_ctx->lock);
         return -1;
     }
+    if (new_pos < 0) {
+        errno = EINVAL;
+        _lock_release(&fat_ctx->lock);
+        return -1;
+    }
 
-#if FF_FS_EXFAT
-    ESP_LOGD(TAG, "%s: offset=%ld, filesize:=%" PRIu64, __func__, new_pos, f_size(file));
-#else
-    ESP_LOGD(TAG, "%s: offset=%ld, filesize:=%" PRIu32, __func__, new_pos, f_size(file));
-#endif
-    FRESULT res = f_lseek(file, new_pos);
+    ESP_LOGD(TAG, "%s: offset=%lld, filesize:=%" PRIu64, __func__, (long long)new_pos,
+             (uint64_t)f_size(file));
+    FRESULT res = f_lseek(file, (FSIZE_t)new_pos);
     if (res != FR_OK) {
         ESP_LOGD(TAG, "%s: fresult=%d", __func__, res);
         errno = fresult_to_errno(res);
@@ -691,7 +694,8 @@ static off_t vfs_fat_lseek(void* ctx, int fd, off_t offset, int mode)
         return -1;
     }
     _lock_release(&fat_ctx->lock);
-    return new_pos;
+    /* espkvm: past 2 GB this wraps; the file's own position is still right. */
+    return (off_t)new_pos;
 }
 
 static int vfs_fat_fstat(void* ctx, int fd, struct stat * st)

@@ -77,7 +77,10 @@ static bool is_dvd(const mmc_media_t *m)
    first 150 frames (two seconds) are the lead-in's, so LBA 0 is 00:02:00. */
 static void msf(uint8_t *p, uint32_t lba)
 {
-    const uint32_t f = lba + 150u;
+    /* M is one byte; past 255 minutes (a DVD over ~2.2 GB) hold at the top
+       instead of wrapping to a small address. */
+    const uint32_t top = 256u * 60u * 75u - 1u;
+    const uint32_t f = lba < top - 150u ? lba + 150u : top;
     p[0] = 0;
     p[1] = (uint8_t)(f / (60u * 75u));
     p[2] = (uint8_t)((f / 75u) % 60u);

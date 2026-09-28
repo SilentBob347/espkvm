@@ -12,6 +12,12 @@ It overrides the IDF component of the same name. Changes are marked `espkvm:`.
   what lets a card partitioned GPT be read at all, and formatting tools pick GPT
   by themselves above 32 GB - so a card could be formatted correctly and still
   not be seen. `FF_MIN_GPT` is left alone; we never format a card.
+- `vfs/vfs_fat.c`: `lseek` works out the position in 64 bits, and `pread`/`pwrite`
+  keep the old position as `FSIZE_t`. `off_t` is 32-bit here, so on an exFAT file
+  of 2 GB and over the size read back negative, and FatFs took it as a huge
+  offset: on a file open for writing it tried to grow the file to it. stdio's
+  append mode (`fopen "ab"`) seeks that way. `stat()` still gives a 32-bit
+  `st_size`; use `f_stat` for the real one.
 
 What this costs, measured on the funcev build (2026-09-23):
 

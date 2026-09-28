@@ -1358,7 +1358,7 @@ static void url_decode(char *s)
 /* Pull ?name= from the query and decode it. False when absent or unsafe. */
 static bool image_name_from_query(httpd_req_t *req, char *out, size_t outlen)
 {
-    char query[160];
+    char query[200];
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) {
         return false;
     }
@@ -1458,10 +1458,10 @@ static esp_err_t api_storage_images_get(httpd_req_t *req)
                     break;
                 }
                 cJSON_AddStringToObject(item, "name", ent->d_name);
-                /* off_t is 32-bit signed here, so a file over 2 GB reads back
-                 * negative; the low 32 bits are still the true size (FAT32 caps
-                 * a file at 4 GB - 1), so read them as unsigned. */
-                cJSON_AddNumberToObject(item, "size", (double)(uint32_t)st.st_size);
+                /* off_t is 32-bit here; exFAT files may pass 4 GB, so ask FatFs. */
+                uint64_t size = (uint32_t)st.st_size;
+                (void)kvm_storage_file_size(ent->d_name, &size);
+                cJSON_AddNumberToObject(item, "size", (double)size);
                 cJSON_AddItemToArray(images, item);
             }
             closedir(dir);
@@ -1509,6 +1509,7 @@ typedef struct {
     httpd_req_t *req;
     char name[IMAGE_NAME_MAX + 1];
     size_t content_len;
+    uint64_t offset; /* where this part goes; 0 starts a new file */
 } upload_ctx_t;
 
 typedef struct {
@@ -1517,7 +1518,7 @@ typedef struct {
 } upload_buf_t;
 
 typedef struct {
-    FILE *f;
+    int fd;
     QueueHandle_t full;  /* reader -> writer; a NULL data pointer ends it */
     QueueHandle_t empty; /* writer -> reader */
     SemaphoreHandle_t done;
@@ -1532,7 +1533,7 @@ static void upload_writer_task(void *arg)
     while (xQueueReceive(w->full, &b, portMAX_DELAY) == pdTRUE && b.data) {
         if (!w->failed) {
             const int64_t t0 = esp_timer_get_time();
-            if (fwrite(b.data, 1, b.len, w->f) != b.len) {
+            if (write(w->fd, b.data, b.len) != (ssize_t)b.len) {
                 ESP_LOGE(TAG, "write failed: %s", strerror(errno));
                 w->failed = true;
             }
@@ -1563,8 +1564,12 @@ static void upload_worker_task(void *arg)
 
     char path[128];
     image_path(path, sizeof(path), ctx->name);
-    upload_writer_t w = {.f = fopen(path, "wb")};
-    if (!w.f) {
+    /* A part after the first appends; the handler checked it lines up. Not
+     * stdio: fopen "ab" seeks through a 32-bit off_t, which breaks at 2 GB.
+     * write() with O_APPEND seeks inside FatFs, in 64 bits. */
+    const int flags = O_WRONLY | O_CREAT | (ctx->offset ? O_APPEND : O_TRUNC);
+    upload_writer_t w = {.fd = open(path, flags, 0644)};
+    if (w.fd < 0) {
         ESP_LOGE(TAG, "cannot create '%s': %s", path, strerror(errno));
         send_json_error(req, "500 Internal Server Error", "cannot create file on card");
         upload_finish(req);
@@ -1572,7 +1577,8 @@ static void upload_worker_task(void *arg)
         vTaskDelete(NULL);
         return;
     }
-    ESP_LOGW(TAG, "image upload: %zu bytes -> %s", ctx->content_len, path);
+    ESP_LOGW(TAG, "image upload: %zu bytes at %llu -> %s", ctx->content_len,
+             (unsigned long long)ctx->offset, path);
     video_frame_upload_begin();
 
     const char *why = "out of memory";
@@ -1658,7 +1664,7 @@ static void upload_worker_task(void *arg)
     if (w.done) {
         vSemaphoreDelete(w.done);
     }
-    fclose(w.f);
+    close(w.fd);
     video_frame_upload_end();
 
     if (!ok) {
@@ -1672,8 +1678,8 @@ static void upload_worker_task(void *arg)
                  (long long)(w.write_us / 1000));
         char body[128];
         int bn = snprintf(body, sizeof(body),
-                          "{\"status\":\"written\",\"name\":\"%s\",\"size\":%zu}", ctx->name,
-                          received);
+                          "{\"status\":\"written\",\"name\":\"%s\",\"size\":%llu}",
+                          ctx->name, (unsigned long long)(ctx->offset + received));
         httpd_resp_set_type(req, "application/json");
         httpd_resp_send(req, body, bn);
     }
@@ -1716,6 +1722,29 @@ static esp_err_t api_storage_upload_post(httpd_req_t *req)
     if (req->content_len <= 0) {
         return send_json_error(req, "400 Bad Request", "empty body");
     }
+    /* content_len is 32-bit: a 5 GB body would read as 1 GB and leave a stub.
+     * A bigger file comes in parts, each with ?offset= of where it goes. */
+    char clen[24];
+    if (httpd_req_get_hdr_value_str(req, "Content-Length", clen, sizeof(clen)) == ESP_OK &&
+        strtoull(clen, NULL, 10) > UINT32_MAX) {
+        return send_json_error(req, "413 Payload Too Large",
+                               "send a file of 4 GB and over in parts (?offset=)");
+    }
+    uint64_t offset = 0;
+    char query[200], val[24];
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK &&
+        httpd_query_key_value(query, "offset", val, sizeof(val)) == ESP_OK) {
+        offset = strtoull(val, NULL, 10);
+    }
+    if (offset) {
+        /* Append only right after the last part, so a lost part cannot leave
+         * a hole or a doubled piece. */
+        uint64_t have = 0;
+        if (kvm_storage_file_size(name, &have) != ESP_OK || have != offset) {
+            return send_json_error(req, "409 Conflict",
+                                   "offset does not match the file on the card; start again");
+        }
+    }
 
     upload_ctx_t *ctx = calloc(1, sizeof(*ctx));
     if (!ctx) {
@@ -1723,6 +1752,7 @@ static esp_err_t api_storage_upload_post(httpd_req_t *req)
     }
     snprintf(ctx->name, sizeof(ctx->name), "%s", name);
     ctx->content_len = req->content_len;
+    ctx->offset = offset;
 
     /* Hand the socket to the worker; the control task returns at once. */
     esp_err_t res = httpd_req_async_handler_begin(req, &ctx->req);

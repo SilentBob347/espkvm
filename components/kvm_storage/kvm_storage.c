@@ -217,8 +217,8 @@ static bool sd_read_test(size_t sectors)
  *
  * The inserted image, guarded by a mutex because the target reads it from the
  * USB task while selection happens on the web task. Raw FATFS is used rather
- * than stdio: f_lseek takes a 32-bit FSIZE_t that spans the whole 4 GiB FAT32
- * file range, where fseek's long offset would overflow past 2 GiB. Drive "0:"
+ * than stdio: f_lseek takes a 64-bit FSIZE_t that covers exFAT files past
+ * 4 GiB, where fseek's long offset would overflow past 2 GiB. Drive "0:"
  * is the same volume esp_vfs_fat mounted, so f_getfree above and f_read here
  * see one filesystem. */
 static SemaphoreHandle_t s_media_lock;
@@ -330,6 +330,74 @@ static void slot_power_settle(void)
 const char *kvm_storage_mount_point(void)
 {
     return MOUNT_POINT;
+}
+
+/* "0:/rel" for raw FatFs. False for a path that could leave the card's root. */
+static bool fat_path(char *out, size_t cap, const char *rel)
+{
+    if (!rel || !rel[0] || rel[0] == '/' || strstr(rel, "..") || strchr(rel, '\\')) {
+        return false;
+    }
+    const int n = snprintf(out, cap, "0:/%s", rel);
+    return n > 0 && (size_t)n < cap;
+}
+
+esp_err_t kvm_storage_file_size(const char *rel, uint64_t *size)
+{
+    char path[300];
+    if (!size || !fat_path(path, sizeof(path), rel)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    FILINFO fi;
+    if (f_stat(path, &fi) != FR_OK) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    if (fi.fattrib & AM_DIR) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *size = fi.fsize;
+    return ESP_OK;
+}
+
+struct kvm_file {
+    FIL fil;
+};
+
+kvm_file_t *kvm_storage_file_open(const char *rel, uint64_t at)
+{
+    char path[300];
+    if (!fat_path(path, sizeof(path), rel)) {
+        return NULL;
+    }
+    /* Zeroed: f_open allocates the sector buffer only when fil.buf is NULL. */
+    kvm_file_t *f = calloc(1, sizeof(*f));
+    if (!f) {
+        return NULL;
+    }
+    if (f_open(&f->fil, path, FA_READ) != FR_OK) {
+        free(f);
+        return NULL;
+    }
+    if (f_lseek(&f->fil, (FSIZE_t)at) != FR_OK) {
+        f_close(&f->fil);
+        free(f);
+        return NULL;
+    }
+    return f;
+}
+
+int kvm_storage_file_read(kvm_file_t *f, void *buf, size_t len)
+{
+    UINT br = 0;
+    return f && f_read(&f->fil, buf, len, &br) == FR_OK ? (int)br : -1;
+}
+
+void kvm_storage_file_close(kvm_file_t *f)
+{
+    if (f) {
+        f_close(&f->fil);
+        free(f);
+    }
 }
 
 bool kvm_storage_writable(void)
