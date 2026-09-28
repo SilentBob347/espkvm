@@ -7,6 +7,14 @@ bumps the patch).
 
 ## [Unreleased]
 
+## [0.55.1] - 2026-09-28
+
+### Fixed
+- The Waveshare ESP32-P4-WIFI6-DEV-KIT has 16 MB of flash, not 32. Its builds
+  used the 32 MB partition table, where the last partition ends past 16 MB.
+  Thanks to @brooklyn5w4g, who fixed the rev3 build. An update over the network
+  keeps the old table; flash once over USB (the web flasher) to get the new one.
+
 ## [0.55.0] - 2026-09-28
 
 ### Added

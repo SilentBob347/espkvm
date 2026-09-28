@@ -335,7 +335,7 @@ above.
 Both links on one board: 100M Ethernet on a PoE-capable magjack, and an ESP32-C6
 for WiFi 6. Every pin that matters is the same as the boards above - Ethernet as
 on the P4-ETH, the C6 on GPIO 14-19, the card slot's power gate on GPIO 45;
-32 MB PSRAM, 32 MB flash. Build overlay: `boards/wifi6devkit_p4.defaults`, or
+32 MB PSRAM, 16 MB flash. Build overlay: `boards/wifi6devkit_p4.defaults`, or
 `boards/wifi6devkit_p4_rev3.defaults`.
 
 One thing to check before wiring: the USB OTG port is switched between HOST and

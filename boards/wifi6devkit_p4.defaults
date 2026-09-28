@@ -15,7 +15,8 @@
 #   ESP32-C6 over SDIO: GPIO 14-19, C6_CHIP_PU from GPIO 54 through a 0R.
 #   Capture I2C: SCL 8, SDA 7. BOOT button: GPIO 35. Console: CH343P on the
 #   Type-C, so UART.
-# 32 MB PSRAM in package and 32 MB flash, so the base partition table fits.
+# 32 MB PSRAM in package and 16 MB flash (Waveshare's wiki: "16 MB Nor Flash
+# externally"), so the 16 MB partition table.
 #
 # One thing to know that is not a config: the USB OTG port is switched between
 # HOST and DEVICE by a jumper. The KVM needs DEVICE - that is how it presents a
@@ -35,6 +36,10 @@ CONFIG_ESP_HOSTED_CP_TARGET_ESP32C6=y
 # SDIO transport buffers in PSRAM: internal RAM runs out under a large upload.
 CONFIG_EH_HOST_PORT_DMA_PREFER_SPIRAM=y
 CONFIG_ESP_HOSTED_AUTO_CALL_INIT_BEFORE_APP_MAIN=n
+
+# --- flash -----------------------------------------------------------------
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_16mb.csv"
 
 # --- microSD ----------------------------------------------------------------
 CONFIG_KVM_SD_PWR_GPIO=45
