@@ -7,6 +7,8 @@ bumps the patch).
 
 ## [Unreleased]
 
+## [0.56.0] - 2026-09-29
+
 ### Added
 - Two new boards, built from their makers' documentation and not yet run on
   hardware: the **Espressif ESP32-P4X-C5-Function-EV-Board** (`funcev-c5`) and

@@ -132,7 +132,10 @@ your hub.
 ## Hardware
 
 An ESP32-P4 board does the work, a TC358743 bridge turns the target's HDMI into a
-stream it can read, and a 15-pin CSI ribbon joins the two. An optocoupler module
+stream it can read, and a CSI ribbon joins the two. The C790 has both kinds of
+camera connector - a 15-pin 1.0 mm one (the Raspberry Pi 4 kind) and a 22-pin
+0.5 mm one (the Pi 5 / Zero kind) - and comes with a ribbon for each, so use the
+one that fits the board. An optocoupler module
 is an optional add-on for ATX power control.
 
 ![What the whole thing is: the ESP32-P4 board and the capture board joined by a ribbon, an optional status screen on the pins, and the three things it plugs into - the network, the target machine, and a supply of its own. Drawn to scale.](docs/overview.svg)
@@ -149,8 +152,9 @@ is an optional add-on for ATX power control.
 
 **[Waveshare ESP32-P4-ETH](https://www.waveshare.com/esp32-p4-eth.htm)** &mdash; chip rev v1.3, the default
 
-ESP32-P4 with 32 MB PSRAM, 32 MB flash, 100M Ethernet, a Raspberry-Pi-compatible
-CSI connector, USB 2.0 OTG HS and a microSD slot. Built by plain `idf.py build`.
+ESP32-P4 with 32 MB PSRAM, 32 MB flash, 100M Ethernet, a **22-pin 0.5 mm** CSI
+connector (the Pi 5 / Zero kind - the C790's rear connector and its 22-pin
+ribbon), USB 2.0 OTG HS and a microSD slot. Built by plain `idf.py build`.
 
 </td>
 <td valign="top">
@@ -543,7 +547,9 @@ black screen at 1080p60, that is the first thing to suspect. Use its 15-pin
 
 The same TC358743 bridge on Waveshare's board, so the firmware treats it exactly
 like the C790. A full-size HDMI input, a 15-pin Raspberry Pi camera connector
-that also powers it, and the bridge's I2S audio on the pin header.
+that also powers it, and the bridge's I2S audio on the pin header. It has only
+the 15-pin connector, so on a board with the 22-pin one - the P4-ETH - it needs
+a 15-to-22-pin ribbon, the kind sold as a Raspberry Pi 5 camera cable.
 
 Confirmed by [@deltorek112](https://github.com/deltorek112) on the
 ESP32-P4-WIFI6-POE-ETH: 1080p over H.264 at 23 fps
@@ -670,7 +676,8 @@ so the panel gets no clean logic level and stays dark with nothing in the log.
 The NANO pins come from [@DaveDavenport](https://github.com/DaveDavenport), who
 tested them.
 
-**Cables:** a 15-pin CSI ribbon between the two boards, HDMI from the target,
+**Cables:** a CSI ribbon between the two boards (the C790 comes with a 15-pin
+and a 22-pin one; the P4-ETH takes the 22-pin), HDMI from the target,
 and a cable from the board's USB 2.0 OTG-HS port to the target. Add a microSD
 card if you want boot-from-image.
 
