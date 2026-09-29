@@ -18,12 +18,14 @@
 # 32 MB PSRAM in package and 16 MB flash (Waveshare's wiki: "16 MB Nor Flash
 # externally"), so the 16 MB partition table.
 #
-# One thing to know that is not a config: the USB OTG port is switched between
-# HOST and DEVICE by a jumper. The KVM needs DEVICE - that is how it presents a
-# keyboard and mouse to the target.
+# One thing to know that is not a config: a jumper switches the P4's USB between
+# USB-A port 1 (straight to the P4) and a hub on ports 2-4. The target goes on
+# port 1, and the jumper's labels swapped between board versions: on v1.1 that
+# is DEVICE, on v1.2 it is HOST (Waveshare's FAQ).
 #
-# NOT YET VERIFIED ON HARDWARE. Configured from the schematic and published so
-# owners can try it.
+# Run on hardware by @brooklyn5w4g, 2026-09-28: a v1.2 board with a rev 3.1
+# chip, the -rev3 image, H.264 at about 23 fps; target on port 1 with the jumper
+# on HOST and an A-to-A cable.
 
 # --- WiFi co-processor ------------------------------------------------------
 # Same C6-over-SDIO arrangement as the PoE and WIFI6 boards, so the same

@@ -198,7 +198,7 @@ written down in [docs/HARDWARE-NOTES.md](docs/HARDWARE-NOTES.md).
 
 Each of these has had this firmware on it, on someone's bench. The first four
 carry an ESP32-P4, a MIPI-CSI connector, USB OTG-HS and an onboard ESP32-C6; the
-M5Stack unit at the end is the exception on every count but the P4 itself - no
+M5Stack unit is the exception on every count but the P4 itself - no
 WiFi, and its capture arrives on a flat cable of its own. Most units tested were
 pre-3.0 silicon, so the overlays build for that by default and a rev 3.x unit
 takes the `-rev3` image instead.
@@ -314,15 +314,6 @@ two images: the **Unit PoE-P4** is pre-3.0
 </tr>
 </table>
 
-### Boards built from a schematic, never run
-
-:warning: **Nobody has run this firmware on any of these.** Their pins were read
-off the vendor's schematic or published pin table, the images build and CI
-publishes them, and that is the whole claim. Flashing one cannot damage it: the
-worst case is an image that does not start, and a reflash undoes that. If you
-have one, please say how it went - that is what moves a board into the list
-above.
-
 <table>
 <tr>
 <td width="50%"><img src="docs/board-wifi6-devkit.webp" alt="Waveshare ESP32-P4-WIFI6-DEV-KIT board"></td>
@@ -335,15 +326,28 @@ above.
 Both links on one board: 100M Ethernet on a PoE-capable magjack, and an ESP32-C6
 for WiFi 6. Every pin that matters is the same as the boards above - Ethernet as
 on the P4-ETH, the C6 on GPIO 14-19, the card slot's power gate on GPIO 45;
-32 MB PSRAM, 16 MB flash. Build overlay: `boards/wifi6devkit_p4.defaults`, or
+32 MB PSRAM, 16 MB flash. Confirmed by
+[@brooklyn5w4g](https://github.com/brooklyn5w4g) on a v1.2 board with a rev 3.1
+chip: H.264 at about 23 fps. Build overlay: `boards/wifi6devkit_p4.defaults`, or
 `boards/wifi6devkit_p4_rev3.defaults`.
 
-One thing to check before wiring: the USB OTG port is switched between HOST and
-DEVICE **by a jumper**, and the KVM needs DEVICE.
+A jumper switches the P4's USB between USB-A **port 1** and a hub on ports 2-4,
+and the target goes on port 1 with an A-to-A cable. Waveshare swapped the
+jumper's labels between versions: on **v1.1** port 1 is **DEVICE**, on **v1.2**
+it is **HOST** ([their FAQ](https://docs.waveshare.com/ESP32-P4-WIFI6-DEV-KIT/FAQ)).
 
 </td>
 </tr>
 </table>
+
+### Boards built from a schematic, never run
+
+:warning: **Nobody has run this firmware on any of these.** Their pins were read
+off the vendor's schematic or published pin table, the images build and CI
+publishes them, and that is the whole claim. Flashing one cannot damage it: the
+worst case is an image that does not start, and a reflash undoes that. If you
+have one, please say how it went - that is what moves a board into the list
+above.
 
 <table>
 <tr>
@@ -677,8 +681,11 @@ A compact box for the Waveshare ESP32-P4-NANO with its ESP32-C6 and the C790,
 designed by [Crisspii](https://github.com/Crisspii), who also sent the NANO fix
 in 0.48.0. Ethernet, USB and HDMI come out of one end, the sides are vented, and
 there is room for a 10 &times; 10 &times; 7 mm heatsink. It closes with five M2
-&times; 8 mm pointed screws; the assembly notes are with the model. No display
-yet - a version with one is planned.
+&times; 8 mm pointed screws; the assembly notes are with the model. The same
+model has a version with a status OLED that fits the plain case's top, so a
+printed case can be upgraded, and there is a
+[10-inch rack mount](https://makerworld.com/de/models/3354879-esp32-p4-nano-kvm-10-inch-rack-mount)
+for one or two of them.
 
 </td>
 </tr>

@@ -7,6 +7,13 @@ bumps the patch).
 
 ## [Unreleased]
 
+### Changed
+- **The Waveshare ESP32-P4-WIFI6-DEV-KIT is confirmed on hardware** by
+  @brooklyn5w4g: a v1.2 board with a rev 3.1 chip, H.264 at about 23 fps. The
+  docs said to set its USB jumper to DEVICE; that is right only on v1.1. The
+  jumper picks USB-A port 1 or the hub, and Waveshare swapped its labels on
+  v1.2, so there the target goes on port 1 with the jumper on HOST.
+
 ## [0.55.1] - 2026-09-28
 
 ### Fixed
