@@ -194,6 +194,11 @@ overlay (see [boards/](boards/README.md)). What was measured on the boards in
 front of us, including the documented claims that turned out to be false, is
 written down in [docs/HARDWARE-NOTES.md](docs/HARDWARE-NOTES.md).
 
+To tell the revision before flashing, read the chip: **ESP32-P4NRW32X** or
+**P4NRW16X**, with an X at the end, is rev 3.x; **ESP32-P4NRW32** without it is
+rev 1.x. The product code of the board does not tell - the same board ships
+with either.
+
 ### More boards, run on real hardware
 
 Each of these has had this firmware on it, on someone's bench. The first four
