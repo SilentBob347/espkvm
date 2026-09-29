@@ -9,7 +9,7 @@
 #
 # Here the two products differ, not just the part in the box: M5Stack sell the
 # "Unit PoE-P4" on pre-3.0 silicon and the "Unit PoE-P4X" on rev 3.x. Read the
-# boot log anyway. "Chip rev: v3.x" - this image; anything else - the plain
+# boot log anyway. "chip revision: v3.x" - this image; anything else - the plain
 # m5-poe-p4 image. This one will not start on older silicon: the bootloader
 # refuses an image that declares a higher minimum revision, and the board waits,
 # unharmed, until the other image is flashed.

@@ -48,14 +48,9 @@ CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_16mb.csv"
 
 # --- silicon revision -------------------------------------------------------
-# Left at the base build's pre-3.0 setting, which is what every Waveshare P4
-# board seen so far has carried (rev 1.3). No rev 3.x twin is published yet:
-# nobody has reported a rev 3.x unit of this board, and each twin is another
-# image to build and keep in step. If one turns up - the boot log says
-# "Chip rev: v3.x" and this image will not start on it at all - the twin is the
-# two lines the other boards' *_rev3.defaults carry:
-# CONFIG_ESP32P4_SELECTS_REV_LESS_V3=n
-# CONFIG_ESP32P4_REV_MIN_300=y
+# This image is the pre-3.0 one. Waveshare's shop lists the ESP32-P4-Module as
+# NRW32X (rev 3.x) since 2026-09, so a rev 3.x twin is published beside it:
+# boards/moduledevkit_p4_rev3.defaults.
 
 # --- updates ----------------------------------------------------------------
 CONFIG_KVM_UPDATE_URL="https://espkvm.github.io/espkvm/firmware/p4-module-devkit/manifest.json"

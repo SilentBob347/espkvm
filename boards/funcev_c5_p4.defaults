@@ -1,0 +1,25 @@
+# Espressif ESP32-P4X-C5-Function-EV-Board (board v2.0)
+#
+# The Function EV with an ESP32-C5-MINI-1 in place of the C6 - dual-band Wi-Fi 6.
+# Build it on top of the Function EV overlay:
+#   idf.py -B build.funcev_c5 -D SDKCONFIG=build.funcev_c5/sdkconfig \
+#          -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/funcev_p4.defaults;boards/funcev_c5_p4.defaults" build
+#
+# From Espressif's user guide for this board: 16 MB flash, 32 MB PSRAM, a P4X
+# (rev 3.x) chip, IP101GR Ethernet on RJ45, microSD in 4-bit mode, the 15-pin
+# 1.0 mm MIPI-CSI connector, the same 40-pin J1, and debugging on the chip's own
+# USB Serial/JTAG. The HS OTG goes to a Type-C (device) and a Type-A (host) that
+# cannot be used at once: the target goes on the Type-C.
+#
+# The C5's SDIO pins are the ones esp-hosted's "ESP32-P4X-Function-EV-Board with
+# on-board C5" preset declares - CLK 18, CMD 19, D0-D3 14-17, reset 54 - which
+# are the pins the C6 used on the Function EV, so everything else is inherited.
+#
+# NOT YET VERIFIED ON HARDWARE.
+
+CONFIG_KVM_UPDATE_URL="https://espkvm.github.io/espkvm/firmware/funcev-c5/manifest.json"
+
+# --- WiFi co-processor: an ESP32-C5 instead of the C6 ----------------------
+CONFIG_SLAVE_IDF_TARGET_ESP32C5=y
+CONFIG_ESP_HOSTED_CP_TARGET_ESP32C5=y
+CONFIG_ESP_HOSTED_P4X_C5_DEV_BOARD_FUNC_BOARD=y

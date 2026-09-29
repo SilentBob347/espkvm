@@ -11,8 +11,8 @@
 # its buffers for the larger. Two images cost a few minutes of CI and nothing at
 # run time.
 #
-# WHICH ONE DO I WANT? Read the boot log: it prints "Chip rev: v1.3" or
-# "Chip rev: v3.x". Take the plain p4-eth image unless it says v3. Flashing this
+# WHICH ONE DO I WANT? Read the boot log: it prints "chip revision: v1.3" or
+# "chip revision: v3.x". Take the plain p4-eth image unless it says v3. Flashing this
 # one onto older silicon does not damage anything, but the bootloader refuses to
 # start it - the image declares a minimum revision - and the board sits there
 # until you flash the other image over USB.

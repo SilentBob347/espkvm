@@ -1,0 +1,29 @@
+# Waveshare ESP32-P4-WIFI6-DB
+#
+# The ESP32-P4-WIFI6 with a dual-band ESP32-C5 in place of the C6. Build it on
+# top of the WIFI6 overlay:
+#   idf.py -B build.waveshare_wifi6_db -D SDKCONFIG=build.waveshare_wifi6_db/sdkconfig \
+#          -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/waveshare_p4_wifi6.defaults;boards/waveshare_p4_wifi6_db.defaults" build
+#
+# From Waveshare's documentation page for the board: an ESP32-P4NRW32X, 32 MB
+# PSRAM, 32 MB flash; the C5 on SDIO CLK 18, CMD 19, D0-D3 14-17, reset 54;
+# microSD on 43/44/39-42 with power on 45, low to enable; camera SCCB on 7/8;
+# the HS OTG on a 4-pin header; BOOT on 35; console through a CH343P on 37/38.
+# Everything but the co-processor and the chip revision matches the WIFI6,
+# including no Ethernet. No schematic is published, so the WIFI6's pull-ups on
+# the SDIO lines are kept on the assumption the board shares them.
+#
+# NOT YET VERIFIED ON HARDWARE.
+
+# --- silicon revision -------------------------------------------------------
+# An NRW32X, so rev 3.x only: one image, no pre-3.0 twin.
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=n
+CONFIG_ESP32P4_REV_MIN_300=y
+
+CONFIG_KVM_UPDATE_URL="https://espkvm.github.io/espkvm/firmware/p4-wifi6-db/manifest.json"
+
+# --- WiFi co-processor: an ESP32-C5 instead of the C6 ----------------------
+# Its pins are the ones esp-hosted's P4X Function EV + C5 preset declares.
+CONFIG_SLAVE_IDF_TARGET_ESP32C5=y
+CONFIG_ESP_HOSTED_CP_TARGET_ESP32C5=y
+CONFIG_ESP_HOSTED_P4X_C5_DEV_BOARD_FUNC_BOARD=y

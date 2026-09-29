@@ -64,7 +64,7 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_16mb.csv"
 # --- silicon revision -------------------------------------------------------
 # Left at the base build's pre-3.0 setting. The module's lid is printed
 # ESP32P4NRW32 in VIEWE's own board photograph - no X, so not the rev 3.x part.
-# If a rev 3.x unit turns up (the boot log says "Chip rev: v3.x" and this image
+# If a rev 3.x unit turns up (the boot log says "chip revision: v3.x" and this image
 # will not start on it at all), the twin is two lines:
 # CONFIG_ESP32P4_SELECTS_REV_LESS_V3=n
 # CONFIG_ESP32P4_REV_MIN_300=y

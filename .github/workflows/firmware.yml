@@ -153,6 +153,17 @@ jobs:
           - id: p4-nano-wifi6-db
             build_dir: build.nanodb
             sdkconfig_defaults: sdkconfig.defaults;boards/nano_wifi6_db_p4.defaults
+          # Espressif ESP32-P4X-C5-Function-EV-Board - the Function EV with a
+          # dual-band ESP32-C5 in place of the C6, rev 3.x only. From
+          # Espressif's user guide and esp-hosted's preset for it.
+          - id: funcev-c5
+            build_dir: build.funcev_c5
+            sdkconfig_defaults: sdkconfig.defaults;boards/funcev_p4.defaults;boards/funcev_c5_p4.defaults
+          # Waveshare ESP32-P4-WIFI6-DB - the WIFI6 with an ESP32-C5 and an
+          # NRW32X (rev 3.x only). From Waveshare's documentation page.
+          - id: p4-wifi6-db
+            build_dir: build.waveshare_wifi6_db
+            sdkconfig_defaults: sdkconfig.defaults;boards/waveshare_p4_wifi6.defaults;boards/waveshare_p4_wifi6_db.defaults
           # VIEWE ESP32-P4-Pi - a Pi-shaped carrier for VIEWE's own P4+C6
           # module: Ethernet, a 15-pin camera FPC, and the OTG-HS on its own
           # Type-C. Read off both of their schematics; not run on one yet.
@@ -190,6 +201,16 @@ jobs:
           - id: p4-wifi6-rev3
             build_dir: build.waveshare_wifi6_rev3
             sdkconfig_defaults: sdkconfig.defaults;boards/waveshare_p4_wifi6.defaults;boards/waveshare_p4_wifi6_rev3.defaults
+          # The other way round: funcev is the rev 3.x image (and keeps its id,
+          # so running devices keep updating), and this is its pre-3.0 twin for
+          # the earlier Function EV units.
+          - id: funcev-rev1
+            build_dir: build.funcev_rev1
+            sdkconfig_defaults: sdkconfig.defaults;boards/funcev_p4.defaults;boards/funcev_p4_rev1.defaults
+          # Waveshare's shop now lists the ESP32-P4-Module as NRW32X (rev 3.x).
+          - id: p4-module-devkit-rev3
+            build_dir: build.moduledevkit_rev3
+            sdkconfig_defaults: sdkconfig.defaults;boards/moduledevkit_p4.defaults;boards/moduledevkit_p4_rev3.defaults
     steps:
       - uses: actions/checkout@v7
         with:
@@ -482,13 +503,18 @@ jobs:
               # flasher selects, and that should be the board most people have.
               | (($known[0] | map(.id)) + ($all - ($known[0] | map(.id))))
               | map(select(. as $id | $all | index($id)))
-              | map(select(endswith("-rev3") | not))
+              | map(select((endswith("-rev3") or endswith("-rev1")) | not))
               | map(. as $id
                     | ($known[0][] | select(.id == $id)) // { id: $id, label: $id }
                     | . + { manifest: ($id + "/manifest.json") }
                     | if .image then . + { image: ("img/" + (.image | split("/") | last)) } else . end
                     | if ($all | index($id + "-rev3"))
                       then . + { manifestRev3: ($id + "-rev3/manifest.json") }
+                      # A board whose plain image is the rev 3.x one names its
+                      # pre-3.0 twin -rev1 instead.
+                      elif ($all | index($id + "-rev1"))
+                      then . + { manifest: ($id + "-rev1/manifest.json"),
+                                 manifestRev3: ($id + "/manifest.json") }
                       else . end)
             ' > site/flash/boards.json
           cat site/flash/boards.json

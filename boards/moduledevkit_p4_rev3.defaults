@@ -1,0 +1,12 @@
+# Waveshare ESP32-P4-Module-DEV-KIT on rev 3.x silicon
+#
+# Everything in boards/moduledevkit_p4.defaults, with the chip revision moved:
+#   idf.py -B build.moduledevkit_rev3 -D SDKCONFIG=build.moduledevkit_rev3/sdkconfig \
+#          -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/moduledevkit_p4.defaults;boards/moduledevkit_p4_rev3.defaults" build
+#
+# Waveshare's shop page for the ESP32-P4-Module lists an ESP32-P4NRW32X (checked
+# 2026-09-29) while its docs still say NRW32, so both revisions are out there.
+# Neither image starts on the other's silicon, so both are published.
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=n
+CONFIG_ESP32P4_REV_MIN_300=y
+CONFIG_KVM_UPDATE_URL="https://espkvm.github.io/espkvm/firmware/p4-module-devkit-rev3/manifest.json"

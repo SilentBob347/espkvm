@@ -7,7 +7,7 @@
 # Everything about the board is in poe_p4.defaults; this only moves the silicon
 # revision and the update slug, so the two stay in step when pins change.
 #
-# WHICH ONE DO I WANT? Read the boot log. "Chip rev: v3.x" - this image;
+# WHICH ONE DO I WANT? Read the boot log. "chip revision: v3.x" - this image;
 # anything else - the plain p4-poe image. This one will not start on older
 # silicon: the bootloader refuses an image that declares a higher minimum
 # revision, and the board waits, unharmed, until the other image is flashed.

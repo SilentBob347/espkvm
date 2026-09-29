@@ -155,7 +155,7 @@ CSI connector, USB 2.0 OTG HS and a microSD slot. Built by plain `idf.py build`.
 </td>
 <td valign="top">
 
-**[Espressif ESP32-P4 Function EV Board](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32p4/esp32-p4x-function-ev-board/user_guide.html)** &mdash; chip rev v3.2
+**[Espressif ESP32-P4 Function EV Board](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32p4/esp32-p4x-function-ev-board/user_guide.html)** &mdash; chip rev v3.2 here; earlier units are rev 1.x
 
 Espressif's own board, with an onboard ESP32-C6 &mdash; so it also does WiFi
 (station, access point, and the rescue hotspot). Its own build target
@@ -194,10 +194,15 @@ overlay (see [boards/](boards/README.md)). What was measured on the boards in
 front of us, including the documented claims that turned out to be false, is
 written down in [docs/HARDWARE-NOTES.md](docs/HARDWARE-NOTES.md).
 
-To tell the revision before flashing, read the chip: **ESP32-P4NRW32X** or
-**P4NRW16X**, with an X at the end, is rev 3.x; **ESP32-P4NRW32** without it is
-rev 1.x. The product code of the board does not tell - the same board ships
-with either.
+To tell the revision before flashing, read the chip: **ESP32-P4NRW32X**, with
+an X at the end, is rev 3.x; **ESP32-P4NRW32** without it is rev 1.x. On the
+chip itself the second character of the manufacturing code is the revision: C
+for v1.0, E for v1.3, F / G / H for v3.0 / v3.1 / v3.2
+([Espressif's table](https://docs.espressif.com/projects/esp-chip-errata/en/latest/esp32p4/01-chip-identification/index.html)).
+The product code of the board does not tell - the same board ships with either.
+The number in the part name is the PSRAM in megabytes: an **NRW16** or
+**NRW16X** chip has 16 MB, less than the first point above asks for, and has
+not been tried.
 
 ### More boards, run on real hardware
 
@@ -260,7 +265,7 @@ through a Waveshare HDMI to CSI Adapter
 `boards/poe_p4.defaults`, or `boards/poe_p4_rev3.defaults`.
 
 Waveshare said in August 2026 that these ship rev 1.3, but the one tested was
-rev 3.x - **check the boot log before flashing**: it prints `Chip rev:`, and a
+rev 3.x - **check the boot log before flashing**: it prints `chip revision: v3.1` (or v1.3), and a
 rev 3.x board wants the `-rev3` build. The pre-3.0 image has not been run on
 this board yet.
 
@@ -368,7 +373,8 @@ The WIFI6-DEV-KIT on a module: the P4, an ESP32-C6 and 16 MB of flash under one
 shield, 32 MB PSRAM, on a carrier with Ethernet, a card slot, a 2x20 header and
 four USB-A sockets. Every pin the KVM touches is one already in use, and the CSI
 connector is the 15-pin Raspberry Pi one, so a C790 ribbon fits. Build overlay:
-`boards/moduledevkit_p4.defaults`. The -A / -B / -C kits are the same board with
+`boards/moduledevkit_p4.defaults`, or `boards/moduledevkit_p4_rev3.defaults` -
+Waveshare's shop now lists the module with a rev 3.x chip. The -A / -B / -C kits are the same board with
 a different screen in the box.
 
 Its OTG-HS is switched **by a jumper** between one Type-A socket and an internal
@@ -389,6 +395,39 @@ It carries an ESP32-P4NRW32**X**, which is rev 3.x silicon, so unlike every othe
 board here it has **one image and no pre-3.0 twin**. Its right-hand header also
 brings out the high-speed USB pair, so the target can be wired there instead of
 the Type-A socket.
+
+</td>
+</tr>
+</table>
+
+<table>
+<tr>
+<td width="50%"><img src="docs/board-funcev-c5.webp" alt="Espressif ESP32-P4X-C5-Function-EV-Board"></td>
+<td width="50%"><img src="docs/board-wifi6-db.webp" alt="Waveshare ESP32-P4-WIFI6-DB board"></td>
+</tr>
+<tr>
+<td valign="top">
+
+**[Espressif ESP32-P4X-C5-Function-EV-Board](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32p4/esp32-p4x-c5-function-ev-board/user_guide.html)**
+
+The Function EV with a dual-band **ESP32-C5** in place of the C6, and a rev 3.x
+chip: Ethernet, microSD, the same 40-pin header and camera connector, 16 MB
+flash, 32 MB PSRAM. The C5 sits on the pins the C6 used, which is what
+esp-hosted's preset for this board says, so the build is the Function EV's with
+the co-processor swapped: `boards/funcev_p4.defaults` +
+`boards/funcev_c5_p4.defaults`. The HS OTG goes to a Type-C and a Type-A that
+cannot be used at once - the target goes on the Type-C.
+
+</td>
+<td valign="top">
+
+**[Waveshare ESP32-P4-WIFI6-DB](https://www.waveshare.com/esp32-p4-wifi6-db.htm)**
+
+The ESP32-P4-WIFI6 with a dual-band **ESP32-C5** instead of the C6: an
+ESP32-P4NRW32X (rev 3.x only), 32 MB flash, microSD, the HS OTG on a 4-pin
+header, and no Ethernet. Waveshare's pin table matches the WIFI6 apart from the
+co-processor, so the build is the WIFI6's with the C5 and the revision changed:
+`boards/waveshare_p4_wifi6.defaults` + `boards/waveshare_p4_wifi6_db.defaults`.
 
 </td>
 </tr>
@@ -775,7 +814,10 @@ that sets one. It stops happening as soon as one exists, and there is a switch
 in **Settings -> Network** to turn it off.
 
 After that the cable is only needed if something goes badly wrong - updates are
-installed from the console itself.
+installed from the console itself. Checking for them is **off by default**:
+turn on **Settings -> System -> Updates -> Offer firmware updates**, and the
+console tells you when a newer build is out and installs it in one click. Your
+browser asks, not the device, so the device still never reaches the internet.
 
 ## If it does not work
 
@@ -1142,7 +1184,8 @@ up puts the device back on the one that worked. This also holds later, once the
 new image has been accepted: four crashes in a row without one boot staying up,
 and the device starts the other slot by itself. That matters here, because this
 is often the only way to reach the machine it is attached to. The console can
-check for a published build and install it in one click. The browser does the
+check for a published build and install it in one click, once **Offer firmware
+updates** is on (Settings -> System; off by default). The browser does the
 fetching - the device never reaches the internet on its own.
 
 ## Interface

@@ -7,6 +7,27 @@ bumps the patch).
 
 ## [Unreleased]
 
+### Added
+- Two new boards, built from their makers' documentation and not yet run on
+  hardware: the **Espressif ESP32-P4X-C5-Function-EV-Board** (`funcev-c5`) and
+  the **Waveshare ESP32-P4-WIFI6-DB** (`p4-wifi6-db`). Both are boards already
+  supported with a dual-band ESP32-C5 in place of the C6, so they can join a
+  5 GHz network. The WIFI6-DB has no Ethernet, like the WIFI6.
+- A pre-3.0 image for the Espressif ESP32-P4 Function EV Board
+  (`funcev-rev1`). The funcev image is rev 3.x, because the board it was
+  brought up on carries a rev 3.2 chip, but earlier units of the same board
+  carry rev 1.x. The flasher now asks which one you have. This image sends the
+  log to both the USB-to-UART port (board v1.4) and the USB Serial/JTAG one
+  (v1.5). Not tried on hardware yet.
+- A rev 3.x image for the Waveshare ESP32-P4-Module-DEV-KIT
+  (`p4-module-devkit-rev3`). Waveshare's shop now lists the ESP32-P4-Module
+  with an ESP32-P4NRW32X, and the older image does not start on that chip.
+
+### Fixed
+- "Install any release" on the NANO-WIFI6-DB asked for a file named
+  `...-p4-nano-wifi6-db-rev3.bin`, which releases do not have. The board's id no
+  longer carries the suffix.
+
 ### Changed
 - **The Waveshare ESP32-P4-WIFI6-DEV-KIT is confirmed on hardware** by
   @brooklyn5w4g: a v1.2 board with a rev 3.1 chip, H.264 at about 23 fps. The

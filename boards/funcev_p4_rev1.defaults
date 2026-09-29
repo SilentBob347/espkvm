@@ -1,0 +1,19 @@
+# Espressif ESP32-P4 Function EV Board on pre-3.0 silicon (rev 1.x)
+#
+# Everything in boards/funcev_p4.defaults, with the chip revision moved back:
+#   idf.py -B build.funcev_rev1 -D SDKCONFIG=build.funcev_rev1/sdkconfig \
+#          -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/funcev_p4.defaults;boards/funcev_p4_rev1.defaults" build
+#
+# The funcev target is rev 3.x because the board it was brought up on (board
+# v1.5.2) carries a rev 3.2 chip. But v1.4 and v1.5.x are board versions, not
+# chip revisions (Espressif's user guide says so), and earlier units carry a rev
+# 1.x chip, which the funcev image refuses to start on. The rev 3.x one keeps the
+# plain "funcev" id so the devices already running it keep getting it.
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
+CONFIG_ESP32P4_REV_MIN_100=y
+CONFIG_KVM_UPDATE_URL="https://espkvm.github.io/espkvm/firmware/funcev-rev1/manifest.json"
+
+# Board v1.4 debugs through a USB-to-UART Type-C; v1.5.x through the chip's own
+# USB Serial/JTAG. A rev 1.x unit can be either, so the log goes to both.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG=y

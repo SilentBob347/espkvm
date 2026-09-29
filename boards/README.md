@@ -37,7 +37,12 @@ console retained for the onboard CH343 bridge. The separate four-pin USB port
 is the target-facing HID connection. The expansion-header layout was checked
 against the physical board.
 
-## Espressif ESP32-P4 Function EV Board (chip rev v3.2, 16 MB flash)
+## Espressif ESP32-P4 Function EV Board (chip rev v3.2 here, 16 MB flash)
+
+Earlier units of this board carry a rev 1.x chip. Their image is
+`boards/funcev_p4.defaults` + `boards/funcev_p4_rev1.defaults` (id `funcev-rev1`);
+it sends the log to UART0 and to USB Serial/JTAG, since board v1.4 debugs through
+a USB-to-UART and v1.5 through Serial/JTAG. Not run on one yet.
 
 An overlay on the common defaults, built into a separate directory so it never
 clobbers the default build:
@@ -164,6 +169,34 @@ Three things that are specific to it:
   wired and the device would look like it hung at boot (#42).
 - **The CSI connector is the 15-pin Raspberry Pi one**, so the C790 ribbon fits;
   its two camera control lines are pull-ups only, so `TC358743_RST_GPIO=-1`.
+
+### Espressif ESP32-P4X-C5-Function-EV-Board (chip rev 3.x, 16 MB flash)
+
+```
+idf.py -B build.funcev_c5 \
+  -D SDKCONFIG=build.funcev_c5/sdkconfig \
+  -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/funcev_p4.defaults;boards/funcev_c5_p4.defaults" \
+  build
+```
+
+The Function EV with an ESP32-C5-MINI-1 where the C6 was. esp-hosted's preset
+for this very board puts the C5 on the C6's pins (CLK 18, CMD 19, D0-D3 14-17,
+reset 54), so the overlay only swaps the co-processor profile. Taken from
+Espressif's user guide and the preset; not run on one yet.
+
+### Waveshare ESP32-P4-WIFI6-DB (chip rev 3.x, 32 MB flash)
+
+```
+idf.py -B build.waveshare_wifi6_db \
+  -D SDKCONFIG=build.waveshare_wifi6_db/sdkconfig \
+  -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/waveshare_p4_wifi6.defaults;boards/waveshare_p4_wifi6_db.defaults" \
+  build
+```
+
+The ESP32-P4-WIFI6 with a C5 instead of the C6 and an ESP32-P4NRW32X. The pin
+table on Waveshare's documentation page matches the WIFI6 apart from the
+co-processor, so the overlay sets rev 3.x and the C5 profile and keeps the
+WIFI6's SDIO pull-ups. No schematic is published; not run on one yet.
 
 ### Waveshare ESP32-P4-NANO-WIFI6-DB (chip rev 3.x, 16 MB flash)
 

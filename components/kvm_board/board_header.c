@@ -184,9 +184,17 @@ static const kvm_board_header_t s_headers[] = {
      .right = s_wifi6_right},
 };
 #define BOARD_HAS_HEADERS 1
+#if CONFIG_SLAVE_IDF_TARGET_ESP32C5
+/* The -DB: the same board with a dual-band ESP32-C5 in place of the C6, on
+ * rev 3.x silicon only, one image and no suffix. Header assumed unchanged. */
+#define BOARD_NAME "Waveshare ESP32-P4-WIFI6-DB"
+#define BOARD_ID "p4-wifi6-db"
+#define BOARD_VERIFIED false
+#else
 #define BOARD_NAME "Waveshare ESP32-P4-WIFI6"
 #define BOARD_ID_BASE "p4-wifi6"
 #define BOARD_VERIFIED true
+#endif
 
 #elif CONFIG_KVM_BOARD_WAVESHARE_NANO
 /*
@@ -257,8 +265,21 @@ static const kvm_board_header_t s_headers[] = {
     {.name = "J1", .rows = 20, .numbered = true, .left = s_j1_odd, .right = s_j1_even},
 };
 #define BOARD_HAS_HEADERS 1
+#if CONFIG_SLAVE_IDF_TARGET_ESP32C5
+/* The P4X-C5 board: the same J1, an ESP32-C5 on the C6's SDIO pins, rev 3.x. */
+#define BOARD_NAME "Espressif ESP32-P4X-C5 Function EV"
+#define BOARD_ID "funcev-c5"
+#else
 #define BOARD_NAME "Espressif ESP32-P4 Function EV"
+/* The other way round from every other board: the plain id is the rev 3.x
+ * image, which is what the board was brought up on, and the pre-3.0 twin for
+ * earlier units is the suffixed one. */
+#if CONFIG_ESP32P4_REV_MIN_300
 #define BOARD_ID "funcev"
+#else
+#define BOARD_ID "funcev-rev1"
+#endif
+#endif
 #define BOARD_VERIFIED false
 
 #elif CONFIG_KVM_BOARD_M5_POE_P4
@@ -371,7 +392,8 @@ static const kvm_board_header_t s_headers[] = {
 };
 #define BOARD_HAS_HEADERS 1
 #define BOARD_NAME "Waveshare ESP32-P4-NANO-WIFI6-DB"
-#define BOARD_ID_BASE "p4-nano-wifi6-db"
+/* Rev 3.x only, and its one image is published without a suffix. */
+#define BOARD_ID "p4-nano-wifi6-db"
 #define BOARD_VERIFIED false
 
 #elif CONFIG_KVM_BOARD_VIEWE_P4_PI
@@ -448,10 +470,10 @@ static const kvm_board_header_t s_headers[] = {
  * that exists. Kept beside the human name rather than derived from it, because
  * a typo here downloads an image built for another board.
  *
- * Every board except the Function EV also has a rev 3.x twin, and the two are
- * fenced against each other in the image header - neither starts on the other's
- * silicon - so the revision this build targets is part of the id. The Function
- * EV is only made on rev 3.x, so it has one image and no suffix.
+ * A board with images for both chip revisions has them fenced against each
+ * other in the image header - neither starts on the other's silicon - so the
+ * revision this build targets is part of the id. The Function EV sets its own
+ * id above: its plain id is the rev 3.x image.
  */
 #ifndef BOARD_ID
 #if CONFIG_ESP32P4_REV_MIN_300
