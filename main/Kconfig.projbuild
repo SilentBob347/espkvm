@@ -482,6 +482,27 @@ menu "ESP-KVM"
                 has none, so this stays off by default and is set in a board
                 overlay. Ethernet remains the primary link; WiFi is the fallback.
                 Enabling it pulls in the esp_wifi_remote and esp_hosted components.
+
+        config KVM_WIFI_COPROC_UPDATE
+            bool "Carry a Wi-Fi co-processor image and offer to install it"
+            depends on KVM_WIFI
+            # Not for the C5 yet: esp-hosted-mcu's C5 builds from 2025-06 until
+            # 3.x put the partition table at 0xc000, and an app built for 0x8000
+            # would not find its partitions there. Nothing on the host can tell
+            # which table a C5 has.
+            default n if SLAVE_IDF_TARGET_ESP32C5
+            # Off for now everywhere: the update itself works (tested on the
+            # Function EV from its factory 0.0.22), but 3.0.9's aggregated SDIO
+            # mode then stalled on "no slave credits" under video, while the
+            # factory firmware ran clean once the host memory fixes were in.
+            default n
+            help
+                Embeds components/kvm_net/coproc/<chip>.bin (built by
+                tools/build-coproc.sh from the same esp_hosted version as the
+                host) and lets the console install it into the C6 or C5 over
+                SDIO. Boards ship their co-processor with whatever esp-hosted
+                the maker flashed, sometimes an early one with only the slow
+                SDIO mode. Adds about 1.2 MB to the image.
     endmenu
 
     menu "Updates"

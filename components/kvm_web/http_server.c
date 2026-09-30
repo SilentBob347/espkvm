@@ -56,6 +56,7 @@
 #include "ethernet.h"
 #include "kvm_ipv6.h"
 #include "wifi.h"
+#include "coproc.h"
 #include "kvm_atx.h"
 #include "kvm_mqtt.h"
 #include "kvm_ts.h"
@@ -844,7 +845,20 @@ static esp_err_t api_system_info_get(httpd_req_t *req)
      * run longer than 130. Nothing else reported it, and it took a log line in
      * the encoder to find out.
      */
-    char body[2816];
+    /* The Wi-Fi chip's own firmware, where this build carries one to install. */
+    char coproc_json[256] = "null";
+    kvm_coproc_status_t cp;
+    kvm_coproc_status(&cp);
+    if (cp.bundled) {
+        static const char *const cp_states[] = {"idle", "updating", "done", "failed"};
+        snprintf(coproc_json, sizeof(coproc_json),
+                 "{\"fw\":\"%s\",\"bundled\":\"%s\",\"running\":%s,\"update\":%s,"
+                 "\"state\":\"%s\",\"percent\":%d,\"msg\":\"%s\"}",
+                 cp.fw, cp.bundled_fw, cp.running ? "true" : "false",
+                 cp.update ? "true" : "false", cp_states[cp.state], cp.percent, cp.msg);
+    }
+
+    char body[3072];
     int n = snprintf(body, sizeof(body),
                      "{\"project\":\"%s\",\"version\":\"%s\",\"built\":\"%s %s\","
                      "\"boardId\":\"%s\","
@@ -861,6 +875,7 @@ static esp_err_t api_system_info_get(httpd_req_t *req)
                      "\"ts\":{\"enabled\":%s,\"up\":%s,\"address\":\"%s\",\"peers\":%d,"
                      "\"keyExpiry\":%lld,\"keyExpired\":%s},"
                      "\"jiggler\":{\"everyS\":%d,\"nudges\":%u},"
+                     "\"coproc\":%s,"
                      "\"crashDumpBytes\":%u}",
                      app->project_name, app->version, app->date, app->time, kvm_board_id(),
                      app->idf_ver,
@@ -882,7 +897,7 @@ static esp_err_t api_system_info_get(httpd_req_t *req)
                      ts.enabled ? "true" : "false", ts.up ? "true" : "false", ts.address,
                      ts.peers, (long long)ts.key_expiry, ts.key_expired ? "true" : "false",
                      (int)kvm_setting_int("jiggle_s"),
-                     (unsigned)usb_hid_jiggler_nudges(), dump_bytes);
+                     (unsigned)usb_hid_jiggler_nudges(), coproc_json, dump_bytes);
     if (n <= 0 || n >= (int)sizeof(body)) {
         return send_json_error(req, "500 Internal Server Error", "system info too long");
     }
@@ -917,6 +932,28 @@ static esp_err_t api_wifi_scan_get(httpd_req_t *req)
     kvm_wifi_scan_json(body, sizeof(body));
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, body);
+}
+
+/* Install the Wi-Fi chip firmware this build carries (async; progress is in
+ * system/info under "coproc"). The device restarts when it is done. */
+static esp_err_t api_wifi_coproc_update_post(httpd_req_t *req)
+{
+    if (!kvm_auth_check(req)) {
+        return kvm_auth_challenge(req);
+    }
+    esp_err_t err = kvm_coproc_update_start();
+    if (err == ESP_ERR_NOT_SUPPORTED) {
+        return send_json_error(req, "404 Not Found", "this build carries no Wi-Fi chip firmware");
+    }
+    if (err == ESP_ERR_INVALID_STATE) {
+        return send_json_error(req, "409 Conflict",
+                               "the Wi-Fi chip is not running (switch to Wi-Fi first) or is busy");
+    }
+    if (err != ESP_OK) {
+        return send_json_error(req, "500 Internal Server Error", esp_err_to_name(err));
+    }
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"status\":\"updating\"}");
 }
 
 /* The current host's USB enumeration trace, for target-OS fingerprinting. */
@@ -4548,6 +4585,9 @@ httpd_handle_t http_server_start(void)
         {.uri = "/api/v1/system/usbprobe", .method = HTTP_GET, .handler = api_system_usbprobe_get},
         {.uri = "/api/v1/wifi/scan", .method = HTTP_POST, .handler = api_wifi_scan_post},
         {.uri = "/api/v1/wifi/scan", .method = HTTP_GET, .handler = api_wifi_scan_get},
+        {.uri = "/api/v1/wifi/coproc/update",
+         .method = HTTP_POST,
+         .handler = api_wifi_coproc_update_post},
         {.uri = "/api/v1/system/update", .method = HTTP_POST, .handler = api_system_update_post},
         {.uri = "/api/v1/system/log", .method = HTTP_GET, .handler = api_system_log_get},
 #if CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH

@@ -514,6 +514,40 @@ Each of these cost real time. They are recorded so they are not rediscovered.
   whenever the configured GOP length differs from the one in force. Alternating
   between two adjacent lengths is therefore a keyframe request.
 
+## The Wi-Fi co-processor: its firmware, and the RAM it cost the P4
+
+Measured on the Function EV (P4 rev 3.2, ESP32-C6FH4 rev 0.2), 2026-09-30.
+
+- **The Function EV's C6 runs the same image as the DFRobot FireBeetle 2's.**
+  Byte for byte: esp-hosted-mcu "network_adapter", commit 83efce6, slave
+  version 0.0.22, IDF v5.4-dev, built 24 Oct 2024. It cannot report a version
+  (the host logs 0.0.0) and has only the streaming SDIO mode. Two OTA slots of
+  1.5 MB each, ota_0 in use.
+- **The C6 can be flashed by hand on the Function EV** through J2, "PROG_C6",
+  a 2x3 header at 2.54 mm with no 3.3 V pin: 1 EN (square pad), 2 NC, 3 TX0,
+  4 GND, 5 RX0, 6 BOOT (C6 GPIO 9). The C6 has no buttons: BOOT is a jumper
+  from pin 6 to pin 4, reset is a touch of pin 1 to ground. The P4 drives the
+  same EN from GPIO 54, so hold the P4 in its bootloader while doing this, or
+  it resets the C6 in the middle of a write. Writing a whole 4 MB dump broke
+  off part-way every time; writing only the used part (up to 0x120000) and
+  erasing the rest went through.
+- **esp-hosted 3.0.9 can be installed from the P4** over SDIO, through the old
+  image's own OTA commands, and the old 2024 bootloader starts the IDF 6.1
+  app. It gains nothing yet: under video its aggregated SDIO mode stalled on
+  "no slave credits", while the factory image ran clean. The code for it is in
+  the firmware, off.
+- **Wi-Fi ate the P4's internal RAM.** esp-hosted took a 1536-byte buffer for
+  every packet from internal RAM (its "prefer SPIRAM" option only reaches its
+  aligned allocator), and lwIP kept every sent TCP segment there until it was
+  acked. Wi-Fi acks come later than Ethernet ones, so loading the console alone
+  took internal RAM from 85 KB to 1 KB; TLS stopped opening sessions and
+  hardware AES could not get its DMA descriptors. Both allocations now go to
+  PSRAM (a link-time wrap of `eh_host_port_dma_alloc`, and
+  `SPIRAM_TRY_ALLOCATE_WIFI_LWIP` on the Wi-Fi boards); the lowest point is now
+  about 50 KB.
+- **Wi-Fi power saving was on.** The default modem sleep woke the C6's radio
+  every third beacon, about 300 ms. It is off now.
+
 ## Reading a crash dump
 
 A panic writes a dump into the `coredump` partition and the console hands it

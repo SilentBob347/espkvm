@@ -23,6 +23,7 @@ __attribute__((unused)) static const char *TAG = "wifi";
 #include "driver/gpio.h"
 #include "esp_check.h"
 #include "esp_event.h"
+#include "esp_heap_caps.h"
 #include "esp_hosted.h"
 #include "esp_mac.h"
 #include "esp_netif.h"
@@ -34,6 +35,7 @@ __attribute__((unused)) static const char *TAG = "wifi";
 
 #include "lwip/sockets.h"
 
+#include "coproc.h"
 #include "ethernet.h"
 #include "kvm_caps.h"
 #include "kvm_ipv6.h"
@@ -418,6 +420,11 @@ static esp_err_t wifi_start_sta(void)
      * reachable. The station associates from the STA_START event, only if an SSID
      * is set. */
     ESP_RETURN_ON_FALSE(esp_wifi_start() == ESP_OK, ESP_FAIL, TAG, "wifi start");
+    /* The default modem sleep wakes the radio only every third beacon (~300 ms),
+     * which a keyboard and a video stream both feel. The board is on mains. */
+    if (esp_wifi_set_ps(WIFI_PS_NONE) != ESP_OK) {
+        ESP_LOGW(TAG, "could not turn off Wi-Fi power saving");
+    }
     if (hotspot) {
         char apssid[33];
         derive_ap_ssid(apssid, sizeof(apssid));
@@ -513,6 +520,7 @@ static esp_err_t coproc_wifi_up(void)
         kvm_cap_report(KVM_CAP_WIFI, false, "WiFi co-processor did not start");
         return ESP_ERR_NOT_FOUND;
     }
+    kvm_coproc_on_up();
 
     /* esp_netif and the default event loop are not up yet in WiFi mode (Ethernet,
      * which normally creates them, is not started); create them here. Harmless if
@@ -534,6 +542,26 @@ static esp_err_t coproc_wifi_up(void)
     }
     s_wifi_running = true; /* esp_wifi is up; a scan can reuse it, no bus borrow */
     return ESP_OK;
+}
+
+/*
+ * esp-hosted 3.0.9 takes every SDIO packet buffer (1536 bytes, one per packet
+ * in flight either way) from heap_caps_malloc(MALLOC_CAP_DMA), which is internal
+ * RAM first; ESP_HOSTED's own "prefer SPIRAM" option only reaches its aligned
+ * allocator. Wi-Fi drains slower than Ethernet, so packets pile up; together
+ * with lwIP's own buffers (SPIRAM_TRY_ALLOCATE_WIFI_LWIP in the board files)
+ * that took internal RAM to 1 KB and TLS stopped opening sessions (Function
+ * EV, 2026-09-30). PSRAM is DMA-capable on the P4; the SD host wants it
+ * aligned to the cache line, in address and length.
+ */
+void *__real_eh_host_port_dma_alloc(size_t n);
+void *__wrap_eh_host_port_dma_alloc(size_t n)
+{
+    const size_t line = CONFIG_CACHE_L2_CACHE_LINE_SIZE;
+    void *p = heap_caps_malloc((n + line - 1) & ~(line - 1), MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA |
+                                                                 MALLOC_CAP_8BIT |
+                                                                 MALLOC_CAP_CACHE_ALIGNED);
+    return p ? p : __real_eh_host_port_dma_alloc(n);
 }
 
 esp_err_t kvm_wifi_init(void)

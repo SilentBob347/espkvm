@@ -7,6 +7,24 @@ bumps the patch).
 
 ## [Unreleased]
 
+## [0.56.2] - 2026-10-01
+
+### Fixed
+- **Wi-Fi dropping the page and the video.** Over Wi-Fi the P4 ran out of
+  internal RAM: esp-hosted took a buffer for every packet from it, and lwIP
+  kept every sent segment there until the browser acked it. Acks come slower
+  over Wi-Fi, so loading the console alone took internal RAM from 85 KB to
+  1 KB, and TLS stopped opening connections. Both now use PSRAM. This is most
+  likely what #63 ran into. Every board with a Wi-Fi co-processor.
+- **Wi-Fi power saving is off.** The C6 woke its radio only every third
+  beacon, about 300 ms, which the keyboard and the video both felt.
+
+### Added
+- Code to install a newer esp-hosted into the Wi-Fi chip from the console,
+  switched off in every build for now. The update itself works on the
+  Function EV, but esp-hosted 3.0.9's faster SDIO mode then stalled under
+  video, and the old firmware runs clean since the fixes above.
+
 ## [0.56.1] - 2026-09-30
 
 ### Fixed
