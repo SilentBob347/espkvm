@@ -7,6 +7,19 @@ bumps the patch).
 
 ## [Unreleased]
 
+### Changed
+- **The DFRobot FireBeetle 2 ESP32-P4 is confirmed on hardware** by
+  @Diego-fe in #63: capture, USB and Wi-Fi, about 9 fps of 1080p MJPEG over
+  Wi-Fi on 0.56.2. The flasher no longer marks it untested.
+
+### Fixed
+- **Building from a release archive.** GitHub's source archives leave out the
+  console and microlink, and with them fetched by hand the build still stopped
+  at `wireguard_lwip`, which microlink reaches through a symlink. The build now
+  names its real path, and each release carries
+  `espkvm-<version>-source.tar.gz` with both submodules in it. Reported in
+  #63, which also answers the open question in #27.
+
 ## [0.56.2] - 2026-10-01
 
 ### Fixed

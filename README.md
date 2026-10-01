@@ -14,6 +14,8 @@
   <a href="https://t.me/espkvm"><img src="https://img.shields.io/badge/Telegram-%40espkvm-26A5E4?logo=telegram&logoColor=white" alt="Telegram: @espkvm"></a>
   <a href="https://x.com/espkvm"><img src="https://img.shields.io/badge/X-%40espkvm-000000?logo=x&logoColor=white" alt="X: @espkvm"></a>
   <a href="https://github.com/orgs/espkvm/discussions/60"><img src="https://img.shields.io/badge/Poll-how%20many%20do%20you%20run%3F-8A2BE2?logo=github&logoColor=white" alt="Poll: how many ESP-KVMs do you run?"></a>
+  <br>
+  <a href="https://www.producthunt.com/products/esp-kvm?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-esp-kvm"><img src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1266650&amp;theme=dark&amp;t=1790857313780" width="250" height="54" alt="ESP-KVM on Product Hunt"></a>
 </p>
 
 Like remote desktop, except it does not run on the machine. A small board plugs
@@ -354,6 +356,32 @@ it is **HOST** ([their FAQ](https://docs.waveshare.com/ESP32-P4-WIFI6-DEV-KIT/FA
 </tr>
 </table>
 
+<table>
+<tr>
+<td width="50%"><img src="docs/board-firebeetle2.webp" alt="DFRobot FireBeetle 2 ESP32-P4 board"></td>
+</tr>
+<tr>
+<td valign="top">
+
+**[DFRobot FireBeetle 2 ESP32-P4](https://www.dfrobot.com/product-2915.html)**
+
+The smallest board that can do the whole job: 60 x 25 mm, 32 MB PSRAM, 16 MB
+flash, an ESP32-C6 for WiFi and a 15-pin Raspberry Pi camera connector, so a C790
+ribbon plugs straight in. No wired network - WiFi is the only link, as on the
+ESP32-P4-WIFI6. Confirmed by [@Diego-fe](https://github.com/Diego-fe) in #63:
+capture, USB and Wi-Fi work, about 9 fps of 1080p MJPEG over Wi-Fi from 0.56.2 on.
+Build overlay: `boards/firebeetle2_p4.defaults`. The AI Kit (DFR1237) is the
+same board with accessories in the box.
+
+Two USB-C ports, and it matters which: the one beside the RST button is the P4's
+USB-serial-JTAG (power, flashing and the log), the other is the USB 2.0 OTG-HS
+that goes to the target. Its 5 V ties to the board's rail, so unplugging it at
+the target's end reboots the KVM.
+
+</td>
+</tr>
+</table>
+
 ### Boards built from a schematic, never run
 
 :warning: **Nobody has run this firmware on any of these.** Their pins were read
@@ -432,30 +460,6 @@ ESP32-P4NRW32X (rev 3.x only), 32 MB flash, microSD, the HS OTG on a 4-pin
 header, and no Ethernet. Waveshare's pin table matches the WIFI6 apart from the
 co-processor, so the build is the WIFI6's with the C5 and the revision changed:
 `boards/waveshare_p4_wifi6.defaults` + `boards/waveshare_p4_wifi6_db.defaults`.
-
-</td>
-</tr>
-</table>
-
-<table>
-<tr>
-<td width="50%"><img src="docs/board-firebeetle2.webp" alt="DFRobot FireBeetle 2 ESP32-P4 board"></td>
-</tr>
-<tr>
-<td valign="top">
-
-**[DFRobot FireBeetle 2 ESP32-P4](https://www.dfrobot.com/product-2915.html)**
-
-The smallest board that can do the whole job: 60 x 25 mm, 32 MB PSRAM, 16 MB
-flash, an ESP32-C6 for WiFi and a 15-pin Raspberry Pi camera connector, so a C790
-ribbon plugs straight in. No wired network - WiFi is the only link, as on the
-ESP32-P4-WIFI6. Build overlay: `boards/firebeetle2_p4.defaults`. The AI Kit
-(DFR1237) is the same board with accessories in the box.
-
-Two USB-C ports, and it matters which: the one beside the RST button is the P4's
-USB-serial-JTAG (power, flashing and the log), the other is the USB 2.0 OTG-HS
-that goes to the target. Its 5 V ties to the board's rail, so unplugging it at
-the target's end reboots the KVM.
 
 </td>
 </tr>
@@ -896,7 +900,8 @@ show what happened.
 
 The web console lives in a submodule ([espkvm/console](https://github.com/espkvm/console)),
 so clone with `--recursive` (or run `git submodule update --init` in an existing
-clone):
+clone). Without git, take `espkvm-<version>-source.tar.gz` from a release (from
+0.56.3 on): GitHub's own "Source code" archives leave the submodules out.
 
 ```sh
 git clone --recursive https://github.com/espkvm/espkvm

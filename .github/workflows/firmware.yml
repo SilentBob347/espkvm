@@ -330,6 +330,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          submodules: recursive
       - uses: actions/download-artifact@v8
         with:
           pattern: firmware-*
@@ -351,6 +353,16 @@ jobs:
           cat sha256sums-*.txt | sed 's| \./| |' | sort -k2 > sha256sums.txt
           rm sha256sums-*.txt
           ls -l
+
+      - name: Source with its submodules
+        # GitHub's own source archives leave out the console and microlink, so
+        # they do not build (#63). This one carries every tracked file of all
+        # three, symlinks kept as symlinks.
+        run: |
+          name="espkvm-${GITHUB_REF_NAME}-source"
+          git ls-files --recurse-submodules -z |
+            tar --null -T - --transform "s,^,${name}/,S" -czf "out/${name}.tar.gz"
+          tar -tzf "out/${name}.tar.gz" | wc -l
 
       - name: Build release notes from the changelog
         run: |
