@@ -57,6 +57,7 @@
 #include "kvm_ipv6.h"
 #include "wifi.h"
 #include "coproc.h"
+#include "kvm_rtc.h"
 #include "kvm_atx.h"
 #include "kvm_mqtt.h"
 #include "kvm_ts.h"
@@ -858,6 +859,13 @@ static esp_err_t api_system_info_get(httpd_req_t *req)
                  cp.update ? "true" : "false", cp_states[cp.state], cp.percent, cp.msg);
     }
 
+    /* A second thermometer, where a clock chip brings one: the air by the board. */
+    char board_temp[16] = "null";
+    float bt;
+    if (kvm_rtc_temperature(&bt)) {
+        snprintf(board_temp, sizeof(board_temp), "%.2f", (double)bt);
+    }
+
     char body[3072];
     int n = snprintf(body, sizeof(body),
                      "{\"project\":\"%s\",\"version\":\"%s\",\"built\":\"%s %s\","
@@ -875,7 +883,7 @@ static esp_err_t api_system_info_get(httpd_req_t *req)
                      "\"ts\":{\"enabled\":%s,\"up\":%s,\"address\":\"%s\",\"peers\":%d,"
                      "\"keyExpiry\":%lld,\"keyExpired\":%s},"
                      "\"jiggler\":{\"everyS\":%d,\"nudges\":%u},"
-                     "\"coproc\":%s,"
+                     "\"coproc\":%s,\"rtc\":%s,\"rtcChip\":\"%s\",\"boardTempC\":%s,"
                      "\"crashDumpBytes\":%u}",
                      app->project_name, app->version, app->date, app->time, kvm_board_id(),
                      app->idf_ver,
@@ -897,7 +905,8 @@ static esp_err_t api_system_info_get(httpd_req_t *req)
                      ts.enabled ? "true" : "false", ts.up ? "true" : "false", ts.address,
                      ts.peers, (long long)ts.key_expiry, ts.key_expired ? "true" : "false",
                      (int)kvm_setting_int("jiggle_s"),
-                     (unsigned)usb_hid_jiggler_nudges(), coproc_json, dump_bytes);
+                     (unsigned)usb_hid_jiggler_nudges(), coproc_json,
+                     kvm_rtc_present() ? "true" : "false", kvm_rtc_name(), board_temp, dump_bytes);
     if (n <= 0 || n >= (int)sizeof(body)) {
         return send_json_error(req, "500 Internal Server Error", "system info too long");
     }
@@ -2511,8 +2520,9 @@ static esp_err_t api_notify_status_get(httpd_req_t *req)
         res[o++] = *p;
     }
     res[o] = '\0';
-    snprintf(body, body_cap, "{\"enabled\":%s,\"lastResult\":\"%s\",\"lastAt\":\"%s\",\"telegram\":%s}",
-             st.enabled ? "true" : "false", res, st.last_at, chats);
+    snprintf(body, body_cap,
+             "{\"enabled\":%s,\"lastResult\":\"%s\",\"lastAt\":\"%s\",\"pending\":%d,\"telegram\":%s}",
+             st.enabled ? "true" : "false", res, st.last_at, st.pending, chats);
     free(chats);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");

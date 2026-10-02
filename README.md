@@ -13,7 +13,8 @@
   <br>
   <a href="https://t.me/espkvm"><img src="https://img.shields.io/badge/Telegram-%40espkvm-26A5E4?logo=telegram&logoColor=white" alt="Telegram: @espkvm"></a>
   <a href="https://x.com/espkvm"><img src="https://img.shields.io/badge/X-%40espkvm-000000?logo=x&logoColor=white" alt="X: @espkvm"></a>
-  <a href="https://github.com/orgs/espkvm/discussions/60"><img src="https://img.shields.io/badge/Poll-how%20many%20do%20you%20run%3F-8A2BE2?logo=github&logoColor=white" alt="Poll: how many ESP-KVMs do you run?"></a>
+  <a href="https://github.com/orgs/espkvm/discussions"><img src="https://img.shields.io/badge/Discussions-questions%20and%20ideas-8A2BE2?logo=github&logoColor=white" alt="Discussions: questions and ideas"></a>
+  <a href="https://github.com/orgs/espkvm/discussions/65"><img src="https://img.shields.io/badge/Feedback-what%20works%2C%20what%20does%20not-2EA44F?logo=github&logoColor=white" alt="Feedback: what works, what does not"></a>
   <br>
   <a href="https://www.producthunt.com/products/esp-kvm?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-esp-kvm"><img src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1266650&amp;theme=dark&amp;t=1790857313780" width="250" height="54" alt="ESP-KVM on Product Hunt"></a>
 </p>
@@ -88,7 +89,7 @@ Useful for what it does today, and honest about the rest.
 | Firmware update over the network, with rollback | works |
 | HTTPS with a certificate the device issues itself | works; the CA is downloadable, which also enables H.264 |
 | Bring your own TLS certificate | works; Settings, or `PUT /api/v1/tls/cert` |
-| Login, and a physical password reset | works |
+| Login, two-factor sign-in, and a physical password reset | works; the second factor is a TOTP app, with eight recovery codes |
 | Thermal protection | works |
 | Virtual media: boot the target from a disk image | works; from a microSD card (FAT32 or exFAT, MBR or GPT), or a small image in the device's own flash |
 | Recording the screen to the microSD card, and screenshots | works; the stream the viewers already get, so nothing is encoded twice. A panel lists them, plays them and downloads them |
@@ -100,7 +101,8 @@ Useful for what it does today, and honest about the rest.
 | Watching the screen for words while nobody is looking | works; off by default. Give it phrases, it alerts in the log and in Home Assistant |
 | Guessing the target's OS from how it enumerates USB | works |
 | Wake-on-LAN | works |
-| WiFi - station or its own access point | works; on boards with an ESP32-C6. One link at a time, plus a rescue hotspot and a captive portal |
+| A battery-backed clock chip | optional; with one fitted the device knows the time after a restart with no network - file names and two-factor codes need it. A DS3231 (DS3231M, DS3232) works and shows its thermometer too; a PCF8563 / BM8563, PCF85063 or PCF8523 is supported from the datasheet but not tried yet. Found by itself on the capture board's I2C bus, or chosen with its own pins in Settings &rarr; System &rarr; Clock. A DS1307 is not used |
+| WiFi - station or its own access point | works; on boards with an ESP32-C6, or an ESP32-C5 for 5 GHz. One link at a time, plus a rescue hotspot and a captive portal |
 | ATX power control (power, reset, power LED) | works; wiring in [docs/wiring.md](docs/wiring.md) |
 | Small status display (IP, link, capture, health) | works; optional. An I2C OLED or a round GC9A01, pins assigned from the console, and the picture can be turned upside down for a panel mounted that way |
 | A viewing token for dashboards | works; off until you make one. Opens the stream and the figures, and nothing that can touch the target |
@@ -900,6 +902,11 @@ Flashing problems - the port not appearing, drivers, permissions - are in
 across a restart, and **Diagnostics -> Download the log** is the fastest way to
 show what happened.
 
+**Still stuck?** Ask in [Discussions](https://github.com/orgs/espkvm/discussions) -
+say which board, which capture board and what the target is, and attach the log
+from Diagnostics in the console (the button with the chip temperature). If it is
+clearly a bug, [open an issue](https://github.com/espkvm/espkvm/issues/new) instead.
+
 ## Building from source
 
 The web console lives in a submodule ([espkvm/console](https://github.com/espkvm/console)),
@@ -1175,7 +1182,18 @@ first boot, and asks for a password before it will do anything. The password is
 stored as a salted PBKDF2 hash, sessions are HttpOnly cookies held in memory -
 so a reboot signs everyone out - and repeated failures pay a growing delay.
 
-A forgotten password is cleared with the board button. Reset the board, then
+Two-factor sign-in is one switch away, in Settings -> Security: after the
+password, a six-digit code from an authenticator app (Google Authenticator,
+Aegis, 1Password and the like), set up by scanning a QR code the device draws.
+Eight one-time recovery codes come with it, for a lost phone. The code depends
+on the time, and a device with no internet has no clock after a restart, so
+then it is checked against the browser's own clock - and each code works only
+once, even across a restart. A script that signs in with the password stops
+working when this is on: give it a shared session cookie instead (see
+[Driving it from an AI agent](#driving-it-from-an-ai-agent)).
+
+A forgotten password - or a lost phone with no recovery codes - is cleared with
+the board button, two-factor sign-in included. Reset the board, then
 press and hold the button for two seconds, while the panel or the log asks you
 to. Hold it *after* the reset, not through it: on boards where that button is
 also the ROM's download strap, holding it through a reset drops the chip into
@@ -1249,7 +1267,8 @@ Everything the console does is available over HTTP.
 | `POST`/`GET /api/v1/wifi/scan` | start a scan, then read what it found (boards with an ESP32-C6) |
 | `GET /api/v1/pins` | the board's expansion header, and which GPIOs it leaves free |
 | `GET /api/v1/auth/session` | whether a login is required, and who is signed in |
-| `POST /api/v1/auth/login`, `/logout`, `/password` | the session, and changing the password |
+| `POST /api/v1/auth/login`, `/logout`, `/password` | the session, and changing the password. With two-factor on, a login without `code` (or with a wrong one) answers 401 with `"needCode": true` |
+| `POST /api/v1/auth/2fa/begin`, `/enable`, `/disable`, `/recovery` | set up two-factor sign-in (a secret and its QR code), confirm it with a code, turn it off, or make new recovery codes; the last three take `password` and `code` |
 | `GET /stream` | MJPEG as `multipart/x-mixed-replace`; answers 409 while H.264 is selected |
 | `GET /cert.pem` | the device's CA certificate, to import and trust the device (also on port 80) |
 | `WS /video` | video frames, JPEG or H.264, behind a 12-byte header |
@@ -1404,9 +1423,12 @@ others find the project. If it saved you a trip to a dead machine and you want t
 thanks, you can [buy me a coffee](https://buymeacoffee.com/dexif) - entirely optional,
 and contributions of code, issues and ideas are just as welcome.
 
-Running one? Say how many, and what is missing, in the
-[poll](https://github.com/orgs/espkvm/discussions/60). There is no telemetry in the firmware, so this is the only way I
-find out how it is used.
+Running one? Tell me what works for you and what gets in your way in the
+[feedback thread](https://github.com/orgs/espkvm/discussions/65), and how many you
+run in the [poll](https://github.com/orgs/espkvm/discussions/60). There is no
+telemetry in the firmware, so this is the only way I find out how it is used.
+Questions, ideas and things people built go in
+[Discussions](https://github.com/orgs/espkvm/discussions).
 
 Release notes and work in progress go out on
 [Telegram](https://t.me/espkvm) and [X](https://x.com/espkvm); the short clips of

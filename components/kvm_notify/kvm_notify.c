@@ -7,6 +7,13 @@
  * delivers the queue to Telegram and a webhook. The delivery holds a TLS
  * session and a copy of the screen JPEG for a moment; both come from PSRAM, so
  * the internal RAM the H.264 encoder needs is never touched.
+ *
+ * What cannot go out because the network is down waits in a pending list and
+ * is retried, oldest first, with the time it really happened added to it. The
+ * screenshot and the log tail are taken when the event happens, not when it is
+ * finally sent. A refusal (a bad token, a wrong chat) is not retried. With a
+ * writable microSD card each waiting event is also a few files in .notify/, so
+ * the list survives a restart and its screenshots do not sit in PSRAM.
  */
 #include "kvm_notify.h"
 
@@ -15,19 +22,24 @@
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "kvm_caps.h"
 #include "kvm_log.h"
 #include "kvm_settings.h"
+#include "kvm_storage.h"
 #include "screentext_store.h"
 #include "tg_chats.h"
 #include "video_frame.h"
 
+#include <dirent.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 #include <time.h>
 
 static const char *TAG = "notify";
@@ -52,6 +64,20 @@ static const char *TAG = "notify";
 #define UPDATES_MAX (256 * 1024)
 #define CHATS_MAX 10
 #define CHATS_JSON_MAX 3072
+/* Waiting for the network: how many events, how many screenshot bytes in all,
+   and how the retries spread out. The screenshots sit in PSRAM, which the
+   network buffers and TLS also draw on, so a long outage must never eat it: a
+   cap for the list, and a screenshot is only kept while plenty stays free. */
+#define PENDING_MAX 50
+#define PENDING_PHOTO_BYTES (2 * 1024 * 1024)
+/* With a writable card the list lives there too, so it survives a restart and
+   the screenshots leave PSRAM at once. */
+#define CARD_DIR ".notify"
+#define PSRAM_RESERVE (3 * 1024 * 1024)
+#define RETRY_FIRST_MS 15000
+#define RETRY_MAX_MS (5 * 60 * 1000)
+/* Sent this much later than it happened, a message says so. */
+#define LATE_NOTE_US (60LL * 1000 * 1000)
 
 typedef enum {
     EV_SEND,
@@ -67,6 +93,51 @@ typedef struct {
     char path[112];     /* EV_CLIP: the file */
     char card_path[80]; /* EV_CLIP: how the card names it */
 } event_t;
+
+/* How a send went: sent, failed in a way worth trying again (no network, a
+   timeout, the server busy or rate-limiting), or refused (a 4xx), which a
+   retry would only repeat. */
+typedef enum {
+    SEND_OK,
+    SEND_RETRY,
+    SEND_REFUSED,
+} send_res_t;
+
+static send_res_t classify(esp_err_t err, int status)
+{
+    if (err == ESP_OK && status >= 200 && status < 300) {
+        return SEND_OK;
+    }
+    if (status >= 400 && status < 500 && status != 408 && status != 429) {
+        return SEND_REFUSED;
+    }
+    return SEND_RETRY;
+}
+
+/* An event waiting for its channels, with what it carried when it happened. */
+typedef struct {
+    event_t ev;
+    time_t at;        /* wall clock when it happened, 0 if the clock was unset */
+    int64_t at_us;    /* uptime when it happened */
+    uint8_t *photo;   /* PSRAM, or NULL */
+    size_t photo_len;
+    char *logtail;    /* PSRAM, or NULL */
+    bool tg_left;     /* still to go to Telegram */
+    bool hook_left;   /* still to go to the webhook */
+    uint32_t id;      /* its files on the card are .notify/<id>.* (0 = memory only) */
+    bool photo_file;  /* the screenshot is on the card, not in memory */
+    bool log_file;
+    bool before_boot; /* read back from the card after a restart */
+} pending_t;
+
+static pending_t *s_pending[PENDING_MAX];
+static int s_npending;
+static size_t s_pending_photo_bytes;
+static unsigned s_dropped;        /* pushed out of a full list, not yet reported */
+static int64_t s_next_retry_us;   /* 0 = try now */
+static uint32_t s_retry_ms = RETRY_FIRST_MS;
+static uint32_t s_next_id = 1;
+static bool s_card_loaded; /* the list on the card has been read back */
 
 /* The Bot API takes uploads up to 50 MB; a little under, for the form around it. */
 #define TG_VIDEO_MAX (49 * 1024 * 1024)
@@ -183,8 +254,8 @@ static uint8_t *grab_photo(size_t *out_len)
 
 /* --- Telegram ------------------------------------------------------------- */
 
-/* sendMessage: text only, form-urlencoded. Returns true on a 2xx. */
-static bool tg_message(const char *token, const char *chat, const char *text)
+/* sendMessage: text only, form-urlencoded. */
+static send_res_t tg_message(const char *token, const char *chat, const char *text)
 {
     char url[128];
     snprintf(url, sizeof(url), "https://api.telegram.org/bot%s/sendMessage", token);
@@ -196,7 +267,7 @@ static bool tg_message(const char *token, const char *chat, const char *text)
     if (!enc || !body) {
         free(enc);
         free(body);
-        return false;
+        return SEND_RETRY;
     }
     url_encode(text, enc, enc_cap);
     const int n = snprintf(body, body_cap, "chat_id=%s&disable_web_page_preview=true&text=%s",
@@ -212,7 +283,7 @@ static bool tg_message(const char *token, const char *chat, const char *text)
     if (!c) {
         free(enc);
         free(body);
-        return false;
+        return SEND_RETRY;
     }
     esp_http_client_set_header(c, "Content-Type", "application/x-www-form-urlencoded");
     esp_http_client_set_post_field(c, body, n);
@@ -221,12 +292,12 @@ static bool tg_message(const char *token, const char *chat, const char *text)
     esp_http_client_cleanup(c);
     free(enc);
     free(body);
-    return err == ESP_OK && status >= 200 && status < 300;
+    return classify(err, status);
 }
 
 /* sendPhoto: multipart/form-data with the JPEG, caption is the text. Streamed
-   so the whole request never sits in one buffer. Returns true on a 2xx. */
-static bool tg_photo(const char *token, const char *chat, const char *text, const uint8_t *jpeg,
+   so the whole request never sits in one buffer. */
+static send_res_t tg_photo(const char *token, const char *chat, const char *text, const uint8_t *jpeg,
                      size_t jpeg_len)
 {
     static const char *const boundary = "espkvmXXbnd7391";
@@ -257,25 +328,24 @@ static bool tg_photo(const char *token, const char *chat, const char *text, cons
     };
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
     if (!c) {
-        return false;
+        return SEND_RETRY;
     }
     char ctype[80];
     snprintf(ctype, sizeof(ctype), "multipart/form-data; boundary=%s", boundary);
     esp_http_client_set_header(c, "Content-Type", ctype);
 
-    bool ok = false;
+    send_res_t res = SEND_RETRY;
     if (esp_http_client_open(c, total) == ESP_OK) {
         if (esp_http_client_write(c, pre, pn) == pn &&
             esp_http_client_write(c, (const char *)jpeg, (int)jpeg_len) == (int)jpeg_len &&
             esp_http_client_write(c, post, pon) == pon) {
             esp_http_client_fetch_headers(c);
-            const int status = esp_http_client_get_status_code(c);
-            ok = status >= 200 && status < 300;
+            res = classify(ESP_OK, esp_http_client_get_status_code(c));
         }
     }
     esp_http_client_close(c);
     esp_http_client_cleanup(c);
-    return ok;
+    return res;
 }
 
 /*
@@ -283,8 +353,8 @@ static bool tg_photo(const char *token, const char *chat, const char *text, cons
  * supports_streaming the chat plays it at once, which the MP4's index at the
  * front of the file allows.
  */
-static bool tg_video(const char *token, const char *chat, const char *text, const char *path,
-                     size_t size)
+static send_res_t tg_video(const char *token, const char *chat, const char *text,
+                           const char *path, size_t size)
 {
     FILE *f = fopen(path, "rb");
     char *chunk = heap_caps_malloc(CLIP_CHUNK, MALLOC_CAP_SPIRAM);
@@ -293,7 +363,7 @@ static bool tg_video(const char *token, const char *chat, const char *text, cons
             fclose(f);
         }
         free(chunk);
-        return false;
+        return f ? SEND_RETRY : SEND_REFUSED; /* a clip that is gone stays gone */
     }
     static const char *const boundary = "espkvmXXbnd7391";
     char url[128];
@@ -324,7 +394,7 @@ static bool tg_video(const char *token, const char *chat, const char *text, cons
         .crt_bundle_attach = esp_crt_bundle_attach,
     };
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
-    bool ok = false;
+    send_res_t res = SEND_RETRY;
     if (c) {
         char ctype[80];
         snprintf(ctype, sizeof(ctype), "multipart/form-data; boundary=%s", boundary);
@@ -341,8 +411,8 @@ static bool tg_video(const char *token, const char *chat, const char *text, cons
             if (w && sent == size && esp_http_client_write(c, post, pon) == pon) {
                 esp_http_client_fetch_headers(c);
                 const int status = esp_http_client_get_status_code(c);
-                ok = status >= 200 && status < 300;
-                if (!ok) {
+                res = classify(ESP_OK, status);
+                if (res != SEND_OK) {
                     ESP_LOGW(TAG, "telegram video: HTTP %d", status);
                 }
             }
@@ -352,12 +422,13 @@ static bool tg_video(const char *token, const char *chat, const char *text, cons
     }
     fclose(f);
     free(chunk);
-    return ok;
+    return res;
 }
 
 /* --- a generic webhook ---------------------------------------------------- */
 
-static bool webhook(const char *url, const char *title, const char *body, const char *logtail)
+static send_res_t webhook(const char *url, const char *title, const char *body,
+                          const char *logtail, time_t at)
 {
     char jt[TITLE_MAX * 2];
     char jb[BODY_MAX * 2];
@@ -371,10 +442,14 @@ static bool webhook(const char *url, const char *title, const char *body, const 
     const size_t cap = TITLE_MAX * 2 + BODY_MAX * 2 + 256 + (logtail ? LOG_TAIL_MAX * 2 : 0);
     char *json = malloc(cap);
     if (!json) {
-        return false;
+        return SEND_RETRY;
     }
     int n = snprintf(json, cap, "{\"title\":\"%s\",\"message\":\"%s\",\"device\":\"%s\"",
                      jt, jb, jh);
+    if (at > 1600000000) {
+        /* When it happened, which a delayed delivery makes worth saying. */
+        n += snprintf(json + n, cap - n, ",\"at\":%lld", (long long)at);
+    }
     if (logtail && logtail[0]) {
         char *jl = malloc(LOG_TAIL_MAX * 2);
         if (jl) {
@@ -394,7 +469,7 @@ static bool webhook(const char *url, const char *title, const char *body, const 
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
     if (!c) {
         free(json);
-        return false;
+        return SEND_RETRY;
     }
     esp_http_client_set_header(c, "Content-Type", "application/json");
     esp_http_client_set_post_field(c, json, n);
@@ -402,7 +477,7 @@ static bool webhook(const char *url, const char *title, const char *body, const 
     const int status = esp_http_client_get_status_code(c);
     esp_http_client_cleanup(c);
     free(json);
-    return err == ESP_OK && status >= 200 && status < 300;
+    return classify(err, status);
 }
 
 /* --- delivery ------------------------------------------------------------- */
@@ -550,121 +625,505 @@ size_t kvm_notify_chats_json(char *out, size_t cap)
     return n > 0 && (size_t)n < cap ? (size_t)n : 0;
 }
 
-static void deliver(const event_t *ev)
+/* --- the pending list, and its copy on the card ---------------------------- */
+
+static void card_path(char *out, size_t cap, uint32_t id, const char *ext)
 {
-    char text[TITLE_MAX + BODY_MAX + 4];
-    if (ev->body[0]) {
-        snprintf(text, sizeof(text), "%s\n\n%s", ev->title, ev->body);
+    if (id) {
+        snprintf(out, cap, "%s/%s/%08lu.%s", kvm_storage_mount_point(), CARD_DIR,
+                 (unsigned long)id, ext);
     } else {
-        snprintf(text, sizeof(text), "%s", ev->title);
-    }
-
-    const char *token = kvm_setting_str("notify_tg_token");
-    const char *chat = kvm_setting_str("notify_tg_chat");
-    const char *url = kvm_setting_str("notify_url");
-    bool any = false;
-    bool ok = true;
-
-    uint8_t *photo = NULL;
-    size_t photo_len = 0;
-    if (ev->want_photo && kvm_setting_bool("notify_snap")) {
-        photo = grab_photo(&photo_len);
-    }
-
-    /* The tail of the device log, so an alert carries the context that explains
-       it - which is why the noisy tags are held down, or this would be filler. */
-    char *logtail = NULL;
-    if (kvm_setting_bool("notify_log")) {
-        logtail = malloc(LOG_TAIL_MAX);
-        if (logtail) {
-            kvm_log_read(logtail, LOG_TAIL_MAX); /* a small buffer keeps the newest end */
-        }
-    }
-
-    const bool token_bad = token[0] && !token_plausible(token);
-    if (token_bad) {
-        any = true;
-        ESP_LOGE(TAG, "telegram: the bot token has characters a token cannot have - paste it again");
-    }
-    if (token[0] && chat[0] && !token_bad) {
-        any = true;
-        const bool sent = (photo && photo_len)
-                              ? tg_photo(token, chat, text, photo, photo_len)
-                              : tg_message(token, chat, text);
-        if (!sent) {
-            /* A photo request can fail on its own (size, a flaky moment); fall
-               back to the text so the alert still gets through. */
-            ok = (photo && photo_len) ? tg_message(token, chat, text) : false;
-        }
-        /* The log goes as its own message: a photo caption is capped at 1024
-           characters and a tail does not fit there. */
-        if (logtail && logtail[0]) {
-            char *msg = heap_caps_malloc(LOG_TAIL_MAX + 16, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-            if (msg) {
-                snprintf(msg, LOG_TAIL_MAX + 16, "log:\n%s", logtail);
-                (void)tg_message(token, chat, msg);
-                free(msg);
-            }
-        }
-        ESP_LOGI(TAG, "telegram: %s%s", ok ? "sent" : "failed",
-                 photo && photo_len ? " (with photo)" : "");
-    }
-    if (url[0]) {
-        any = true;
-        const bool sent = webhook(url, ev->title, ev->body, logtail);
-        ok = ok && sent;
-        ESP_LOGI(TAG, "webhook: %s", sent ? "sent" : "failed");
-    }
-
-    free(photo);
-    free(logtail);
-
-    if (!any) {
-        set_result("no channel configured (set a Telegram bot or a webhook URL)");
-    } else if (token_bad) {
-        set_result("the Telegram token is not a bot token - paste it again");
-    } else {
-        set_result(ok ? "ok" : "the last send failed - check the token, chat id or URL");
+        snprintf(out, cap, "%s/%s", kvm_storage_mount_point(), CARD_DIR);
     }
 }
 
-static void deliver_clip(const event_t *ev)
+static bool card_write(uint32_t id, const char *ext, const void *data, size_t len)
 {
-    if (!kvm_setting_bool("notify_clip")) {
+    char path[64];
+    card_path(path, sizeof(path), id, ext);
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        return false;
+    }
+    const bool ok = fwrite(data, 1, len, f) == len;
+    return (fclose(f) == 0) && ok;
+}
+
+/* Read a whole file into PSRAM, NUL-terminated. NULL if missing or too big. */
+static char *card_read(uint32_t id, const char *ext, size_t max, size_t *len)
+{
+    char path[64];
+    card_path(path, sizeof(path), id, ext);
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        return NULL;
+    }
+    char *buf = heap_caps_malloc(max + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    size_t n = buf ? fread(buf, 1, max + 1, f) : 0;
+    fclose(f);
+    if (!buf || n > max) {
+        free(buf);
+        return NULL;
+    }
+    buf[n] = '\0';
+    *len = n;
+    return buf;
+}
+
+static void card_remove(const pending_t *p)
+{
+    static const char *const exts[] = {"txt", "jpg", "log"};
+    char path[64];
+    for (size_t i = 0; p->id && i < sizeof(exts) / sizeof(exts[0]); i++) {
+        card_path(path, sizeof(path), p->id, exts[i]);
+        unlink(path);
+    }
+}
+
+/* One line per field, newlines in the text written as \n. */
+static void put_field(char *out, size_t cap, size_t *o, const char *key, const char *val)
+{
+    *o += (size_t)snprintf(out + *o, cap - *o, "%s=", key);
+    for (const char *c = val; *c && *o + 3 < cap; c++) {
+        if (*c == '\n') {
+            out[(*o)++] = '\\';
+            out[(*o)++] = 'n';
+        } else if (*c != '\r') {
+            out[(*o)++] = *c;
+        }
+    }
+    *o += (size_t)snprintf(out + *o, cap - *o, "\n");
+}
+
+static void card_save_meta(const pending_t *p)
+{
+    if (!p->id) {
         return;
     }
+    char buf[sizeof(event_t) * 2 + 160];
+    size_t o = (size_t)snprintf(buf, sizeof(buf),
+                                "kind=%d\nat=%lld\ntg=%d\nhook=%d\nphoto=%d\nwant_photo=%d\nlog=%d\n",
+                                (int)p->ev.kind, (long long)p->at, p->tg_left, p->hook_left,
+                                p->photo_file, p->ev.want_photo, p->log_file);
+    put_field(buf, sizeof(buf), &o, "title", p->ev.title);
+    put_field(buf, sizeof(buf), &o, "body", p->ev.body);
+    put_field(buf, sizeof(buf), &o, "path", p->ev.path);
+    put_field(buf, sizeof(buf), &o, "card_path", p->ev.card_path);
+    (void)card_write(p->id, "txt", buf, o < sizeof(buf) ? o : sizeof(buf) - 1);
+}
+
+/* Move a new event onto the card: its screenshot and log leave memory. */
+static void card_store(pending_t *p)
+{
+    char dir[48];
+    card_path(dir, sizeof(dir), 0, NULL);
+    struct stat st;
+    if (!kvm_storage_writable() || (stat(dir, &st) != 0 && mkdir(dir, 0775) != 0)) {
+        return; /* no card to write: it waits in memory */
+    }
+    p->id = s_next_id++;
+    if (p->photo && card_write(p->id, "jpg", p->photo, p->photo_len)) {
+        s_pending_photo_bytes -= p->photo_len;
+        free(p->photo);
+        p->photo = NULL;
+        p->photo_len = 0;
+        p->photo_file = true;
+    }
+    if (p->logtail && card_write(p->id, "log", p->logtail, strlen(p->logtail))) {
+        free(p->logtail);
+        p->logtail = NULL;
+        p->log_file = true;
+    }
+    card_save_meta(p);
+}
+
+static void pending_free(pending_t *p)
+{
+    if (!p) {
+        return;
+    }
+    s_pending_photo_bytes -= p->photo_len;
+    free(p->photo);
+    free(p->logtail);
+    free(p);
+}
+
+static void pending_pop_front(void)
+{
+    card_remove(s_pending[0]);
+    pending_free(s_pending[0]);
+    memmove(&s_pending[0], &s_pending[1], (size_t)(s_npending - 1) * sizeof(s_pending[0]));
+    s_npending--;
+}
+
+/* Take an event in: what it carries is captured now, at the moment it
+   happened, and the channels it still has to reach are marked. */
+static void pending_add(const event_t *ev)
+{
     const char *token = kvm_setting_str("notify_tg_token");
     const char *chat = kvm_setting_str("notify_tg_chat");
     const char *url = kvm_setting_str("notify_url");
-    struct stat st;
-    const bool exists = stat(ev->path, &st) == 0;
-    char text[BODY_MAX + 200];
-    bool any = false, ok = true;
+    const bool token_bad = token[0] && !token_plausible(token);
+    if (token_bad) {
+        ESP_LOGE(TAG, "telegram: the bot token has characters a token cannot have - paste it again");
+    }
+    const bool tg = token[0] && chat[0] && !token_bad;
+    const bool hook = url[0] != '\0';
+    if (!tg && !hook) {
+        set_result(token_bad ? "the Telegram token is not a bot token - paste it again"
+                             : "no channel configured (set a Telegram bot or a webhook URL)");
+        return;
+    }
+    if (ev->kind == EV_CLIP && !kvm_setting_bool("notify_clip")) {
+        return;
+    }
 
-    /* off_t is 32-bit and a clip stays under 4 GB: read the size unsigned. */
-    const uint32_t size = exists ? (uint32_t)st.st_size : 0;
-
-    if (token[0] && chat[0] && token_plausible(token) && exists) {
-        any = true;
-        if (size <= TG_VIDEO_MAX) {
-            snprintf(text, sizeof(text), "%s", ev->body);
-            ok = tg_video(token, chat, text, ev->path, size);
-            ESP_LOGI(TAG, "telegram clip: %s (%u KB)", ok ? "sent" : "failed",
-                     (unsigned)(size / 1024));
-        } else {
-            snprintf(text, sizeof(text), "%.160s\nSaved on the card as %.80s (%u MB, too big for Telegram).",
-                     ev->body, ev->card_path, (unsigned)(size / (1024 * 1024)));
-            ok = tg_message(token, chat, text);
+    pending_t *p = heap_caps_calloc(1, sizeof(*p), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!p) {
+        set_result("out of memory");
+        return;
+    }
+    p->ev = *ev;
+    p->at = time(NULL);
+    if (p->at < 1600000000) {
+        p->at = 0;
+    }
+    p->at_us = esp_timer_get_time();
+    p->tg_left = tg;
+    p->hook_left = hook;
+    if (ev->kind == EV_SEND) {
+        if (ev->want_photo && kvm_setting_bool("notify_snap") &&
+            s_pending_photo_bytes < PENDING_PHOTO_BYTES &&
+            heap_caps_get_free_size(MALLOC_CAP_SPIRAM) > PHOTO_MAX + PSRAM_RESERVE) {
+            p->photo = grab_photo(&p->photo_len);
+            if (p->photo && (s_pending_photo_bytes + p->photo_len > PENDING_PHOTO_BYTES ||
+                             heap_caps_get_free_size(MALLOC_CAP_SPIRAM) < PSRAM_RESERVE)) {
+                free(p->photo); /* it goes as text: memory matters more */
+                p->photo = NULL;
+                p->photo_len = 0;
+            }
+            s_pending_photo_bytes += p->photo_len;
+        }
+        /* The tail of the device log, so an alert carries the context that
+           explains it - which is why the noisy tags are held down. */
+        if (kvm_setting_bool("notify_log")) {
+            p->logtail = heap_caps_malloc(LOG_TAIL_MAX, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (p->logtail) {
+                kvm_log_read(p->logtail, LOG_TAIL_MAX); /* keeps the newest end */
+            }
         }
     }
-    if (url[0]) {
-        any = true;
-        snprintf(text, sizeof(text), "%.160s - saved on the card as %.80s", ev->body, ev->card_path);
-        ok = webhook(url, ev->title, text, NULL) && ok;
+
+    card_store(p);
+    if (s_npending == PENDING_MAX) {
+        pending_pop_front(); /* the oldest goes; the newest says more */
+        s_dropped++;
     }
-    if (any) {
-        set_result(ok ? "ok" : "the last clip did not go out - check the token, chat id or URL");
+    s_pending[s_npending++] = p;
+}
+
+static const char *meta_get(char *meta, const char *key)
+{
+    const size_t kl = strlen(key);
+    for (char *line = meta; line && *line; ) {
+        char *nl = strchr(line, '\n');
+        if (strncmp(line, key, kl) == 0 && line[kl] == '=') {
+            return line + kl + 1; /* up to the newline, which load cuts */
+        }
+        line = nl ? nl + 1 : NULL;
     }
+    return "";
+}
+
+static void unescape_into(char *dst, size_t cap, const char *src)
+{
+    size_t o = 0;
+    for (const char *c = src; *c && *c != '\n' && o + 1 < cap; c++) {
+        if (c[0] == '\\' && c[1] == 'n') {
+            dst[o++] = '\n';
+            c++;
+        } else {
+            dst[o++] = *c;
+        }
+    }
+    dst[o] = '\0';
+}
+
+static int cmp_u32(const void *a, const void *b)
+{
+    const uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
+    return x < y ? -1 : x > y;
+}
+
+/* After a restart: put what was waiting on the card back on the list. */
+static void card_load(void)
+{
+    char dir[48];
+    card_path(dir, sizeof(dir), 0, NULL);
+    DIR *d = opendir(dir);
+    if (!d) {
+        return;
+    }
+    uint32_t ids[PENDING_MAX * 2];
+    size_t n = 0;
+    const struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        const char *dot = strrchr(e->d_name, '.');
+        const uint32_t id = (uint32_t)strtoul(e->d_name, NULL, 10);
+        if (!dot || strcmp(dot, ".txt") != 0 || !id) {
+            continue;
+        }
+        if (id >= s_next_id) {
+            s_next_id = id + 1;
+        }
+        if (n < sizeof(ids) / sizeof(ids[0])) {
+            ids[n++] = id;
+        }
+    }
+    closedir(d);
+    qsort(ids, n, sizeof(ids[0]), cmp_u32);
+    for (size_t i = 0; i < n; i++) {
+        size_t len;
+        char *meta = card_read(ids[i], "txt", 2048, &len);
+        pending_t *p = meta ? heap_caps_calloc(1, sizeof(*p), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+                            : NULL;
+        if (!p) {
+            free(meta);
+            continue;
+        }
+        p->id = ids[i];
+        p->before_boot = true;
+        p->ev.kind = (ev_kind_t)atoi(meta_get(meta, "kind"));
+        p->at = (time_t)atoll(meta_get(meta, "at"));
+        p->tg_left = atoi(meta_get(meta, "tg")) != 0;
+        p->hook_left = atoi(meta_get(meta, "hook")) != 0;
+        p->photo_file = atoi(meta_get(meta, "photo")) != 0;
+        p->ev.want_photo = atoi(meta_get(meta, "want_photo")) != 0;
+        p->log_file = atoi(meta_get(meta, "log")) != 0;
+        unescape_into(p->ev.title, sizeof(p->ev.title), meta_get(meta, "title"));
+        unescape_into(p->ev.body, sizeof(p->ev.body), meta_get(meta, "body"));
+        unescape_into(p->ev.path, sizeof(p->ev.path), meta_get(meta, "path"));
+        unescape_into(p->ev.card_path, sizeof(p->ev.card_path), meta_get(meta, "card_path"));
+        free(meta);
+        if (s_npending == PENDING_MAX) {
+            pending_pop_front();
+            s_dropped++;
+        }
+        s_pending[s_npending++] = p;
+    }
+    if (s_npending) {
+        ESP_LOGI(TAG, "%d alert(s) left waiting on the card from before the restart", s_npending);
+    }
+}
+
+/* "Screen alert\n\nOn the screen: ...", and for a late one when it happened.
+   A clip's caption is its body alone. */
+static void compose(const pending_t *p, char *text, size_t cap)
+{
+    int n;
+    if (p->ev.kind == EV_CLIP) {
+        n = snprintf(text, cap, "%s", p->ev.body);
+    } else {
+        n = p->ev.body[0] ? snprintf(text, cap, "%s\n\n%s", p->ev.title, p->ev.body)
+                          : snprintf(text, cap, "%s", p->ev.title);
+    }
+    if (n <= 0 || (size_t)n >= cap) {
+        return;
+    }
+    if (p->before_boot) {
+        /* Uptime means nothing across a restart; the wall clock may. */
+        const time_t now = time(NULL);
+        if (p->at && now > p->at) {
+            struct tm t;
+            localtime_r(&p->at, &t);
+            char when[24];
+            strftime(when, sizeof(when), "%Y-%m-%d %H:%M:%S", &t);
+            snprintf(text + n, cap - n, "\n\n(Happened at %s, before the device restarted.)", when);
+        } else {
+            snprintf(text + n, cap - n, "\n\n(Happened before the device restarted.)");
+        }
+        return;
+    }
+    const int64_t late_us = esp_timer_get_time() - p->at_us;
+    if (late_us < LATE_NOTE_US) {
+        return;
+    }
+    const unsigned mins = (unsigned)(late_us / (60LL * 1000 * 1000));
+    if (p->at) {
+        struct tm t;
+        localtime_r(&p->at, &t);
+        char when[24];
+        strftime(when, sizeof(when), "%H:%M:%S", &t);
+        snprintf(text + n, cap - n, "\n\n(Happened at %s, %u min ago - the device could not send it then.)",
+                 when, mins);
+    } else {
+        snprintf(text + n, cap - n, "\n\n(Happened %u min ago - the device could not send it then.)",
+                 mins);
+    }
+}
+
+static send_res_t send_event_tg(const pending_t *p, const char *token, const char *chat)
+{
+    char text[TITLE_MAX + BODY_MAX + 128];
+    compose(p, text, sizeof(text));
+    /* A screenshot or log kept on the card comes back for the send only. A
+       card that has gone meanwhile just means a plain message. */
+    size_t photo_len = p->photo_len, log_len = 0;
+    uint8_t *photo = p->photo;
+    char *logtail = p->logtail;
+    uint8_t *photo_loaded = NULL;
+    char *log_loaded = NULL;
+    if (!photo && p->photo_file &&
+        heap_caps_get_free_size(MALLOC_CAP_SPIRAM) > PHOTO_MAX + PSRAM_RESERVE) {
+        photo = photo_loaded = (uint8_t *)card_read(p->id, "jpg", PHOTO_MAX, &photo_len);
+    }
+    if (!logtail && p->log_file) {
+        logtail = log_loaded = card_read(p->id, "log", LOG_TAIL_MAX, &log_len);
+    }
+
+    send_res_t r = (photo && photo_len) ? tg_photo(token, chat, text, photo, photo_len)
+                                        : tg_message(token, chat, text);
+    if (r == SEND_REFUSED && photo) {
+        /* A photo can be refused on its own (size, format); the text still goes. */
+        r = tg_message(token, chat, text);
+    }
+    /* The log goes as its own message: a photo caption is capped at 1024
+       characters and a tail does not fit there. Best effort. */
+    if (r == SEND_OK && logtail && logtail[0]) {
+        char *msg = heap_caps_malloc(LOG_TAIL_MAX + 16, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (msg) {
+            snprintf(msg, LOG_TAIL_MAX + 16, "log:\n%s", logtail);
+            (void)tg_message(token, chat, msg);
+            free(msg);
+        }
+    }
+    ESP_LOGI(TAG, "telegram: %s%s", r == SEND_OK ? "sent" : r == SEND_RETRY ? "will retry" : "refused",
+             photo ? " (with photo)" : "");
+    free(photo_loaded);
+    free(log_loaded);
+    return r;
+}
+
+static send_res_t send_clip_tg(const pending_t *p, const char *token, const char *chat)
+{
+    struct stat st;
+    if (stat(p->ev.path, &st) != 0) {
+        return SEND_REFUSED; /* the clip is gone from the card */
+    }
+    /* off_t is 32-bit and a clip stays under 4 GB: read the size unsigned. */
+    const uint32_t size = (uint32_t)st.st_size;
+    char text[BODY_MAX + 200];
+    compose(p, text, sizeof(text));
+    send_res_t r;
+    if (size <= TG_VIDEO_MAX) {
+        r = tg_video(token, chat, text, p->ev.path, size);
+    } else {
+        char big[BODY_MAX + 300];
+        snprintf(big, sizeof(big), "%.300s\nSaved on the card as %.80s (%u MB, too big for Telegram).",
+                 text, p->ev.card_path, (unsigned)(size / (1024 * 1024)));
+        r = tg_message(token, chat, big);
+    }
+    ESP_LOGI(TAG, "telegram clip: %s (%u KB)", r == SEND_OK ? "sent" : r == SEND_RETRY ? "will retry" : "refused",
+             (unsigned)(size / 1024));
+    return r;
+}
+
+static send_res_t send_hook(const pending_t *p, const char *url)
+{
+    send_res_t r;
+    if (p->ev.kind == EV_CLIP) {
+        char text[BODY_MAX + 200];
+        snprintf(text, sizeof(text), "%.160s - saved on the card as %.80s", p->ev.body, p->ev.card_path);
+        r = webhook(url, p->ev.title, text, NULL, p->at);
+    } else {
+        size_t log_len = 0;
+        char *log_loaded = (!p->logtail && p->log_file) ? card_read(p->id, "log", LOG_TAIL_MAX, &log_len)
+                                                        : NULL;
+        r = webhook(url, p->ev.title, p->ev.body, p->logtail ? p->logtail : log_loaded, p->at);
+        free(log_loaded);
+    }
+    ESP_LOGI(TAG, "webhook: %s", r == SEND_OK ? "sent" : r == SEND_RETRY ? "will retry" : "refused");
+    return r;
+}
+
+/* Try the oldest waiting event on each channel it still needs. Returns true if
+   it is done with (sent or refused everywhere), false if it has to wait. */
+static bool try_front(void)
+{
+    pending_t *p = s_pending[0];
+    const char *token = kvm_setting_str("notify_tg_token");
+    const char *chat = kvm_setting_str("notify_tg_chat");
+    const char *url = kvm_setting_str("notify_url");
+    bool refused = false;
+
+    if (p->tg_left) {
+        if (!(token[0] && chat[0] && token_plausible(token))) {
+            p->tg_left = false; /* the channel was switched off meanwhile */
+        } else {
+            const send_res_t r = p->ev.kind == EV_CLIP ? send_clip_tg(p, token, chat)
+                                                      : send_event_tg(p, token, chat);
+            p->tg_left = r == SEND_RETRY;
+            refused |= r == SEND_REFUSED;
+        }
+    }
+    if (p->hook_left) {
+        if (!url[0]) {
+            p->hook_left = false;
+        } else {
+            const send_res_t r = send_hook(p, url);
+            p->hook_left = r == SEND_RETRY;
+            refused |= r == SEND_REFUSED;
+        }
+    }
+
+    if (p->tg_left || p->hook_left) {
+        card_save_meta(p); /* a channel that got through is not tried again after a restart */
+        char msg[96];
+        snprintf(msg, sizeof(msg), "no network to send on - %d waiting, retrying", s_npending);
+        set_result(msg);
+        return false;
+    }
+    set_result(refused ? (p->ev.kind == EV_CLIP
+                              ? "the last clip did not go out - check the token, chat id or URL"
+                              : "the last send failed - check the token, chat id or URL")
+                       : "ok");
+    return true;
+}
+
+/* Send what is waiting, oldest first, until something has to wait again. */
+static void flush_pending(void)
+{
+    while (s_npending > 0) {
+        if (s_next_retry_us && esp_timer_get_time() < s_next_retry_us) {
+            return;
+        }
+        if (!try_front()) {
+            s_next_retry_us = esp_timer_get_time() + (int64_t)s_retry_ms * 1000;
+            s_retry_ms = s_retry_ms * 2 > RETRY_MAX_MS ? RETRY_MAX_MS : s_retry_ms * 2;
+            return;
+        }
+        pending_pop_front();
+        s_next_retry_us = 0;
+        s_retry_ms = RETRY_FIRST_MS;
+    }
+    if (s_dropped) {
+        /* Said once the backlog is through, so it lands after what survived. */
+        event_t ev = {.kind = EV_SEND, .title = "Alerts dropped"};
+        snprintf(ev.body, sizeof(ev.body), "%u older alert%s did not fit while the device was offline.",
+                 s_dropped, s_dropped == 1 ? "" : "s");
+        s_dropped = 0;
+        pending_add(&ev); /* goes out on the next pass */
+    }
+}
+
+static void pending_clear(void)
+{
+    while (s_npending > 0) {
+        pending_pop_front();
+    }
+    s_dropped = 0;
+    s_next_retry_us = 0;
+    s_retry_ms = RETRY_FIRST_MS;
 }
 
 /* --- the event poll ------------------------------------------------------- */
@@ -709,18 +1168,24 @@ static void task(void *arg)
             find_chats(); /* setting up, so it works with sending switched off */
             got = false;
         }
+        if (!s_card_loaded && kvm_storage_writable()) {
+            s_card_loaded = true; /* the card may mount after this task starts */
+            card_load();          /* read back even when off, so off can clear it */
+        }
         const bool on = kvm_setting_bool("notify_enable");
         xSemaphoreTake(s_lock, portMAX_DELAY);
         s_status.enabled = on;
+        s_status.pending = s_npending;
         xSemaphoreGive(s_lock);
         if (!on) {
-            continue; /* a queued event while disabled is simply dropped */
+            pending_clear(); /* switched off: nothing is kept for later */
+            continue;        /* and a queued event is simply dropped */
         }
-        if (got && ev.kind == EV_CLIP) {
-            deliver_clip(&ev);
-        } else if (got) {
-            deliver(&ev);
+        if (got) {
+            pending_add(&ev);
+            s_next_retry_us = 0; /* something new: try the backlog now too */
         }
+        flush_pending();
         poll_events();
     }
 }

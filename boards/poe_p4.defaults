@@ -52,7 +52,7 @@
 # CONFIG_ESP32P4_REV_MIN_300=y
 
 # --- updates ----------------------------------------------------------------
-CONFIG_KVM_UPDATE_URL="https://espkvm.github.io/espkvm/firmware/p4-poe/manifest.json"
+CONFIG_KVM_UPDATE_URL="https://fw.espkvm.io/firmware/p4-poe/manifest.json"
 
 # --- WiFi co-processor ------------------------------------------------------
 # An ESP32-C6-MINI-1 on the same SDIO pins the Function EV board uses, so the

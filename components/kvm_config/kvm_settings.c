@@ -111,6 +111,32 @@ static void load_one(nvs_handle_t nvs, size_t idx)
     }
 }
 
+/*
+ * Releases moved from espkvm.github.io/espkvm/ to fw.espkvm.io (2026-10). A
+ * device that never touched the update address follows the new default by
+ * itself, but one whose settings were loaded from a file has the old default
+ * stored - which works only while GitHub keeps redirecting it. Such a value is
+ * dropped so the default applies again; an address of the operator's own (a
+ * fork, a mirror) does not start with the old one and stays.
+ */
+static void migrate_update_url(nvs_handle_t nvs)
+{
+    static const char old_prefix[] = "https://espkvm.github.io/espkvm/";
+    for (size_t i = 0; i < s_count; i++) {
+        if (strcmp(s_table[i].key, "upd_url") != 0 || is_numeric(&s_table[i])) {
+            continue;
+        }
+        if (strncmp(s_values[i].s, old_prefix, sizeof(old_prefix) - 1) == 0) {
+            if (nvs_erase_key(nvs, "upd_url") == ESP_OK) {
+                (void)nvs_commit(nvs);
+            }
+            const char *def = s_table[i].def_str ? s_table[i].def_str : "";
+            strlcpy(s_values[i].s, def, (size_t)s_table[i].max_len + 1u);
+            ESP_LOGI(TAG, "update address moved to %s", def);
+        }
+    }
+}
+
 esp_err_t kvm_settings_init(void)
 {
     if (s_values) {
@@ -150,6 +176,7 @@ esp_err_t kvm_settings_init(void)
     for (size_t i = 0; i < s_count; i++) {
         load_one(nvs, i);
     }
+    migrate_update_url(nvs);
     nvs_close(nvs);
     ESP_LOGI(TAG, "%u settings loaded", (unsigned)s_count);
     return ESP_OK;

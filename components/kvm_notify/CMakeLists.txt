@@ -10,5 +10,6 @@ idf_component_register(
         kvm_config
         kvm_log
         kvm_screentext
+        kvm_storage
         video_pipeline
 )

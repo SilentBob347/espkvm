@@ -17,7 +17,7 @@
 #
 # NOT YET VERIFIED ON HARDWARE.
 
-CONFIG_KVM_UPDATE_URL="https://espkvm.github.io/espkvm/firmware/funcev-c5/manifest.json"
+CONFIG_KVM_UPDATE_URL="https://fw.espkvm.io/firmware/funcev-c5/manifest.json"
 
 # --- WiFi co-processor: an ESP32-C5 instead of the C6 ----------------------
 CONFIG_SLAVE_IDF_TARGET_ESP32C5=y

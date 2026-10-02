@@ -4,6 +4,23 @@
  */
 #include "pin_conflict.h"
 
+#include <string.h>
+
+/* Lines of one I2C bus that two devices share by design: the status OLED and
+ * the clock chip on pins of their own sit on the same second bus, each at its
+ * own address. */
+static bool shared_bus_line(const char *a, const char *b)
+{
+    static const char *const pairs[][2] = {{"disp_sda", "rtc_sda"}, {"disp_scl", "rtc_scl"}};
+    for (size_t i = 0; i < sizeof(pairs) / sizeof(pairs[0]); i++) {
+        if ((strcmp(a, pairs[i][0]) == 0 && strcmp(b, pairs[i][1]) == 0) ||
+            (strcmp(a, pairs[i][1]) == 0 && strcmp(b, pairs[i][0]) == 0)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool kvm_pin_conflict_find(const kvm_pin_claim_t *claims, size_t count,
                            const char *(*held_by)(int gpio), kvm_pin_conflict_t *out)
 {
@@ -44,6 +61,9 @@ bool kvm_pin_conflict_find(const kvm_pin_claim_t *claims, size_t count,
             /* One of the two has to be this request's doing; a pair that was
              * already stored that way is somebody else's problem to fix. */
             if (!claims[i].changing && !claims[j].changing) {
+                continue;
+            }
+            if (claims[i].key && claims[j].key && shared_bus_line(claims[i].key, claims[j].key)) {
                 continue;
             }
             /* Name the one being set now first - it is the field the operator

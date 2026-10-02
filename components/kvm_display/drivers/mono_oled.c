@@ -536,6 +536,9 @@ static i2c_master_bus_handle_t oled_bus(void)
     if (sda < 0 || scl < 0) {
         return capture_i2c_bus();
     }
+    if (!s_own_bus && i2c_master_get_bus_handle(I2C_NUM_1, &s_own_bus) == ESP_OK && s_own_bus) {
+        return s_own_bus; /* the clock chip made it first, on the same pins */
+    }
     if (!s_own_bus) {
         const i2c_master_bus_config_t cfg = {
             .i2c_port = I2C_NUM_1,

@@ -21,6 +21,7 @@
 #include "nvs_flash.h"
 
 #include "capture.h"
+#include "kvm_rtc.h"
 #include "kvm_display.h"
 #include "kvm_log.h"
 #include "ethernet.h"
@@ -615,6 +616,9 @@ void app_main(void)
      * after the button window below had closed. The bus itself needs nothing from
      * the capture chip, so it is made here and capture takes the same handle. */
     (void)capture_i2c_bus_init();
+    /* A battery-backed clock on that bus, if one is fitted: the time is known
+     * from here on, before sign-in needs it for a two-factor code. */
+    kvm_rtc_init(capture_i2c_bus());
     /* Before the network: the H.264 encoder needs one large internal block. */
     capture_reserve_early();
     kvm_display_init();

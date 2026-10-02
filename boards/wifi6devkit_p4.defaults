@@ -59,7 +59,7 @@ CONFIG_KVM_SD_PWR_GPIO=45
 CONFIG_KVM_TC358743_RST_GPIO=-1
 
 # --- updates ----------------------------------------------------------------
-CONFIG_KVM_UPDATE_URL="https://espkvm.github.io/espkvm/firmware/p4-wifi6-devkit/manifest.json"
+CONFIG_KVM_UPDATE_URL="https://fw.espkvm.io/firmware/p4-wifi6-devkit/manifest.json"
 
 # Which board this is: names it in the console and picks the expansion header
 # the Pins tab draws.

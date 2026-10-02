@@ -39,6 +39,7 @@
 #include "kvm_caps.h"
 #include "kvm_record.h"
 #include "kvm_settings.h"
+#include "kvm_rtc.h"
 #include "kvm_thermal.h"
 #include "usb_hid.h"
 #include "cJSON.h"
@@ -150,6 +151,12 @@ static int build_state(char *b, size_t n)
     kvm_atx_status_t a;
     kvm_atx_status(&a);
     const float t = kvm_thermal_celsius();
+    /* The clock chip's thermometer, where one is fitted: null otherwise. */
+    char board_temp[16] = "null";
+    float bt;
+    if (kvm_rtc_temperature(&bt)) {
+        snprintf(board_temp, sizeof(board_temp), "%.2f", (double)bt);
+    }
     const int viewers = video_frame_viewer_count();
     const video_payload_t pl = video_frame_payload();
     const char *codec = pl == VIDEO_PAYLOAD_H264 ? "h264" : pl == VIDEO_PAYLOAD_JPEG ? "mjpeg" : "none";
@@ -211,7 +218,8 @@ static int build_state(char *b, size_t n)
              "\"jiggler\":\"%s\",\"jigglerSec\":%d,\"jigglerNudges\":%u,"
              "\"runbook\":\"%s\",\"runbookText\":\"%s\","
              /* The recorder: whether it runs, and the file it writes to. */
-             "\"recording\":\"%s\",\"recordingFile\":\"%s\",\"timelapseSec\":%d}",
+             "\"recording\":\"%s\",\"recordingFile\":\"%s\",\"timelapseSec\":%d,"
+             "\"boardTempC\":%s}",
              t10 < 0 ? "-" : "", t_abs / 10u, t_abs % 10u, kvm_thermal_state_name(kvm_thermal_state()), viewers,
              v.signal ? "ON" : "OFF", res, (unsigned)(v.fps_x100 / 100),
              (unsigned)(v.fps_x100 % 100), codec, (unsigned)v.kbps,
@@ -224,7 +232,7 @@ static int build_state(char *b, size_t n)
              (unsigned)(v.skipped_fps_x100 / 100u), (unsigned)(v.skipped_fps_x100 % 100u),
              running_slot(), boot_reason(), fw_version(), jiggle_s > 0 ? "ON" : "OFF", (int)jiggle_s,
              (unsigned)usb_hid_jiggler_nudges(), k_rb_states[rb.state], rb_json,
-             rec.recording ? "ON" : "OFF", rec.file, (int)kvm_setting_int("rec_tl_every"));
+             rec.recording ? "ON" : "OFF", rec.file, (int)kvm_setting_int("rec_tl_every"), board_temp);
 }
 
 /*
@@ -528,6 +536,11 @@ static void publish_discovery(void)
 {
     disco_sensor("sensor", "temp", "Temperature", "{{ value_json.tempC }}", "temperature", "°C",
                  NULL, NULL);
+    if (kvm_rtc_present()) {
+        /* Only where a clock chip is fitted: a sensor that is always unknown is clutter. */
+        disco_sensor("sensor", "boardtemp", "Board temperature", "{{ value_json.boardTempC }}",
+                     "temperature", "°C", NULL, NULL);
+    }
     disco_sensor("sensor", "viewers", "Viewers", "{{ value_json.viewers }}", NULL, NULL,
                  "mdi:account-eye", NULL);
     disco_sensor("sensor", "fps", "Frame rate", "{{ value_json.fps }}", NULL, "fps", "mdi:video",

@@ -57,6 +57,9 @@ static const char *const s_engage_choices[] = {"click", "hover"};
 static const char *const s_layout_choices[] = {"en_us", "ru_ru", "cs_cz", "uk_ua", "lt_lt"};
 static const char *const s_media_choices[] = {"auto", "cdrom", "disk"};
 /* Index 1 is what dashcam.c calls on_card(). */
+static const char *const s_rtc_chip_choices[] = {"Auto", "Off", "DS3231", "PCF8563 / BM8563",
+                                                 "PCF85063", "PCF8523"};
+static const char *const s_rtc_bus_choices[] = {"The capture board's I2C", "Its own pins"};
 static const char *const s_dashcam_store_choices[] = {"memory", "microSD"};
 /* Index 1.. must match k_sd_steps_khz[] in kvm_storage.c. */
 static const char *const s_sd_speed_choices[] = {"auto", "40 MHz", "20 MHz", "10 MHz", "4 MHz", "2 MHz"};
@@ -386,6 +389,41 @@ static const kvm_setting_t s_settings[] = {
         .help = "Pick your city; the browser's own zone is at the top of the list. File names and schedules use it. "
                 "Stored as a POSIX TZ string, e.g. MSK-3 or CET-1CEST,M3.5.0,M10.5.0/3.",
         .def_str = "UTC0", .max_len = 48, .requires_cap = KVM_CAP_SCHED,
+    },
+    /* A battery-backed clock chip, for the time after a restart with no
+     * network. Auto finds the common ones; the rest must be named. */
+    {
+        .key = "rtc_chip", .section = "system", .group = "Clock", .type = KVM_VT_ENUM,
+        .title = "Clock chip",
+        .help = "A battery-backed clock module keeps the time through a restart with no network. "
+                "Auto finds a DS3231 (or DS3231M, DS3232) and a PCF8563 or BM8563. A PCF85063 or "
+                "PCF8523 shares an address with something else and must be named here. Off leaves "
+                "the bus alone. Only the DS3231 has been tried on hardware.",
+        .min = 0, .max = ENUM_MAX(s_rtc_chip_choices), .def = 0, .choices = s_rtc_chip_choices,
+        .requires_cap = -1, .flags = KVM_SF_REBOOT,
+    },
+    {
+        .key = "rtc_bus", .section = "system", .group = "Clock", .type = KVM_VT_ENUM,
+        .title = "Clock chip wiring",
+        .help = "Where the module is wired. The capture board's I2C is pins 3 (SDA) and 5 (SCL) "
+                "of the 40-pin header on most boards, and a DS3231 for Raspberry Pi plugs "
+                "straight on there. Own pins puts it on a second I2C bus.",
+        .min = 0, .max = ENUM_MAX(s_rtc_bus_choices), .def = 0, .choices = s_rtc_bus_choices,
+        .requires_cap = -1, .flags = KVM_SF_REBOOT,
+    },
+    {
+        .key = "rtc_sda", .section = "system", .group = "Clock", .type = KVM_VT_INT,
+        .title = "Clock chip SDA",
+        .help = "The data line of the clock module's own bus.",
+        .min = -1, .max = 54, .def = -1, .requires_cap = -1, .flags = KVM_SF_PIN | KVM_SF_REBOOT,
+        .visible_key = "rtc_bus", .visible_val = 1,
+    },
+    {
+        .key = "rtc_scl", .section = "system", .group = "Clock", .type = KVM_VT_INT,
+        .title = "Clock chip SCL",
+        .help = "The clock line of the clock module's own bus.",
+        .min = -1, .max = 54, .def = -1, .requires_cap = -1, .flags = KVM_SF_PIN | KVM_SF_REBOOT,
+        .visible_key = "rtc_bus", .visible_val = 1,
     },
     {
         /* The schedules themselves, the same shape as macros and runbooks: a

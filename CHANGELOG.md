@@ -7,7 +7,51 @@ bumps the patch).
 
 ## [Unreleased]
 
+### Added
+- **A battery-backed clock, if you fit one.** A DS3231 or DS3231M module on
+  the capture board's I2C bus (on the Function EV and the Waveshare boards,
+  pins 1, 3, 5 and 9 of the 40-pin header - the "DS3231 for Pi" module plugs
+  straight on) is found at start-up and sets the clock, so the device knows the
+  time after a restart with no network. Once the device learns the time
+  elsewhere (NTP, or a browser signing in), it writes it to the chip.
+  Diagnostics says when one is there, and shows its thermometer as the
+  temperature by the board - also a "Board temperature" sensor in Home
+  Assistant. Anything else answering at 0x68 (a DS1307, a PCF8523, a motion
+  sensor) is recognised as not a DS3231 and left alone. Settings -> System ->
+  Clock can name the chip - a PCF8563 / BM8563, PCF85063 or PCF8523 as well,
+  written from their datasheets and not yet tried on hardware - or turn it
+  off, and can put it on pins of its own (a second I2C bus, shared with a
+  status OLED on the same pins).
+- **Two-factor sign-in.** In Settings -> Security: after the password, a
+  six-digit code from an authenticator app, set up by scanning a QR code the
+  device draws, with eight one-time recovery codes for a lost phone. The code
+  is checked against the device's clock, or against the browser's when the
+  device has none yet, and each code works once, even across a restart. The
+  board's reset button clears it along with the password.
+- **The console asks once whether to check for updates.** Update checks are
+  off by default, so a freshly flashed device never heard of a fix unless
+  someone went looking for the switch. A banner now offers to turn them on, and
+  "Not now" is remembered in that browser.
+- **Links to where things are explained**: the version in the update panel
+  opens its release notes, Diagnostics has "Tell me what you think" (the
+  feedback thread), "Report a bug" and "If it does not work", the
+  notifications panel links its write-up, the ATX settings link the wiring,
+  and the sign-in page names the source.
+- **Alerts wait for the network.** A notification that could not go out - the
+  network down, a timeout, Telegram busy - used to be lost. Now it waits and is
+  sent when the device can reach the server again, oldest first, with the time
+  it really happened added; the screenshot and the log tail are the ones from
+  that moment. Up to 50 wait. With a writable microSD card they are kept there,
+  so they survive a restart and the screenshots stay out of memory; without
+  one they wait in memory, within 2 MB and never below 3 MB of free PSRAM. It
+  came out of a Reddit thread about the dashcam and a "the server stopped
+  answering" trigger.
+
 ### Changed
+- **Updates now come from fw.espkvm.io.** The old espkvm.github.io/espkvm
+  address redirects there, so older firmware keeps updating. A device that
+  still has the old default address in its settings switches to the new one
+  by itself on the next boot.
 - **The DFRobot FireBeetle 2 ESP32-P4 is confirmed on hardware** by
   @Diego-fe in #63: capture, USB and Wi-Fi, about 9 fps of 1080p MJPEG over
   Wi-Fi on 0.56.2. The flasher no longer marks it untested.

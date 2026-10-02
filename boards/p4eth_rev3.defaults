@@ -33,4 +33,4 @@ CONFIG_ESP32P4_REV_MIN_300=y
 # Its own slug, so a device that runs this image is offered this image again.
 # Sharing the p4-eth manifest would hand it a pre-3.0 build on the next update
 # and quietly lose the speed it was flashed for.
-CONFIG_KVM_UPDATE_URL="https://espkvm.github.io/espkvm/firmware/p4-eth-rev3/manifest.json"
+CONFIG_KVM_UPDATE_URL="https://fw.espkvm.io/firmware/p4-eth-rev3/manifest.json"

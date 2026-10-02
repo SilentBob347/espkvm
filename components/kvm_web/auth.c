@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <strings.h> /* strncasecmp: a header name is case-insensitive and so is its value */
+#include <time.h>
 
 #include "driver/gpio.h"
 #include "esp_log.h"
@@ -18,6 +19,8 @@
 #include "psa/crypto.h"
 
 #include "cJSON.h"
+#include "esp_heap_caps.h"
+#include "qrcode.h"
 
 #include "kvm_board.h"
 #include "kvm_settings.h"
@@ -26,6 +29,7 @@
 #include "kvm_tls.h"
 #include "wifi.h" /* kvm_net_mode_t: AP mode serves the console plain */
 #include "web_priv.h" /* kvm_web_clock_from_browser */
+#include "totp.h"
 
 #define TAG "auth"
 
@@ -36,6 +40,12 @@
 /* SHA-256 of the viewing token, if one has been made. The token itself is never
    stored: it is shown once, and what is kept only proves a guess wrong. */
 #define NVS_KEY_TOKEN "camtok"
+/* Two-factor: the TOTP secret, the last time step used (so a code works once,
+   even across a restart), and SHA-256 of each unused recovery code. All in the
+   same namespace as the password, so the reset button clears them too. */
+#define NVS_KEY_TOTP "totp"
+#define NVS_KEY_TOTP_LAST "totp_last"
+#define NVS_KEY_RCODES "rcodes"
 
 #define SALT_LEN 16
 #define HASH_LEN 32
@@ -92,6 +102,19 @@ static bool s_have_password;
 /* Failed attempts slow every further attempt down. One operator, one counter:
  * a KVM has no legitimate reason to see a burst of logins. */
 static uint32_t s_failures;
+
+/* ---- two-factor state ---- */
+#define RC_COUNT 8
+#define RC_CHARS 8                 /* shown as XXXX-XXXX */
+#define RC_HASH 16                 /* the first half of a SHA-256 is plenty to compare */
+#define ENROLL_TTL_US ((int64_t)10 * 60 * 1000000)
+static bool s_totp_on;
+static uint8_t s_totp_secret[TOTP_SECRET_LEN];
+static uint64_t s_totp_last;
+static uint8_t s_rcodes[RC_COUNT][RC_HASH]; /* all zero = used */
+/* A secret being set up: shown once, kept until confirmed or ten minutes pass. */
+static uint8_t s_enroll[TOTP_SECRET_LEN];
+static int64_t s_enroll_until_us;
 
 static void lock(void)
 {
@@ -765,6 +788,171 @@ esp_err_t kvm_auth_challenge(httpd_req_t *req)
     return httpd_resp_send(req, "{\"error\":\"authentication required\"}", HTTPD_RESP_USE_STRLEN);
 }
 
+/* ---- two-factor sign-in --------------------------------------------------
+ *
+ * A six-digit code from an authenticator app (TOTP, RFC 6238) on top of the
+ * password, plus eight one-time recovery codes for a lost phone. The reset
+ * button clears it along with the password: whoever holds the board is the
+ * owner anyway.
+ *
+ * The code depends on the time, and a device on an isolated network has no
+ * clock after a restart. So the time comes from the device when it has one,
+ * and otherwise from the browser that is signing in. That lets a captured old
+ * code be replayed by sending its old time - which is why the last step used
+ * is remembered across restarts too, and why a recovery code always works.
+ */
+
+/* Unix time a code is checked against: the device's own clock, else the
+   browser's, else 0 (then only a recovery code will do). */
+static uint64_t code_time(long long browser_time)
+{
+    const time_t now = time(NULL);
+    if ((long long)now >= 1735689600LL) {
+        return (uint64_t)now;
+    }
+    if (browser_time >= 1735689600LL && browser_time < 4102444800LL) {
+        return (uint64_t)browser_time;
+    }
+    return 0;
+}
+
+static esp_err_t nvs_put(const char *key, const void *blob, size_t len, const uint64_t *u64)
+{
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = u64 ? nvs_set_u64(nvs, key, *u64) : nvs_set_blob(nvs, key, blob, len);
+    if (err == ESP_OK) {
+        err = nvs_commit(nvs);
+    }
+    nvs_close(nvs);
+    return err;
+}
+
+/* XXXX-XXXX or XXXXXXXX, any case, into the eight characters that are hashed. */
+static bool rc_normalize(const char *in, char out[RC_CHARS + 1])
+{
+    size_t o = 0;
+    for (const char *c = in; *c; c++) {
+        if (*c == '-' || *c == ' ') {
+            continue;
+        }
+        if (o == RC_CHARS) {
+            return false;
+        }
+        out[o++] = (char)((*c >= 'a' && *c <= 'z') ? *c - 32 : *c);
+    }
+    out[o] = '\0';
+    return o == RC_CHARS;
+}
+
+/* Is @p code a right TOTP code or an unused recovery code? Uses one up. */
+static bool second_factor_ok(const char *code, long long browser_time)
+{
+    size_t digits = 0;
+    while (code[digits] >= '0' && code[digits] <= '9') {
+        digits++;
+    }
+    if (digits == TOTP_DIGITS && code[digits] == '\0') {
+        const uint64_t t = code_time(browser_time);
+        uint64_t used = 0;
+        lock();
+        const bool ok = t && totp_check(s_totp_secret, TOTP_SECRET_LEN, t, (uint32_t)atoi(code),
+                                        s_totp_last, &used);
+        if (ok) {
+            s_totp_last = used;
+        }
+        unlock();
+        if (ok) {
+            (void)nvs_put(NVS_KEY_TOTP_LAST, NULL, 0, &used);
+        } else if (!t) {
+            ESP_LOGW(TAG, "two-factor: the device has no clock and the browser sent none");
+        }
+        return ok;
+    }
+    char norm[RC_CHARS + 1];
+    if (!rc_normalize(code, norm)) {
+        return false;
+    }
+    uint8_t h[HASH_LEN];
+    if (sha256((const uint8_t *)norm, RC_CHARS, NULL, 0, h) != ESP_OK) {
+        return false;
+    }
+    static const uint8_t zero[RC_HASH] = {0};
+    int hit = -1;
+    lock();
+    for (int i = 0; i < RC_COUNT; i++) {
+        if (!equal_ct(s_rcodes[i], zero, RC_HASH) && equal_ct(s_rcodes[i], h, RC_HASH) && hit < 0) {
+            hit = i;
+        }
+    }
+    if (hit >= 0) {
+        memset(s_rcodes[hit], 0, RC_HASH);
+    }
+    uint8_t copy[RC_COUNT][RC_HASH];
+    memcpy(copy, s_rcodes, sizeof(copy));
+    unlock();
+    if (hit >= 0) {
+        (void)nvs_put(NVS_KEY_RCODES, copy, sizeof(copy), NULL);
+        ESP_LOGW(TAG, "signed in with a recovery code");
+    }
+    return hit >= 0;
+}
+
+/* Eight fresh recovery codes: written into @p out as a JSON array, their
+   hashes stored. No 0/O/1/I, so they can be read off paper. */
+static esp_err_t rcodes_make(char *out, size_t cap)
+{
+    static const char abc[] = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    uint8_t hashes[RC_COUNT][RC_HASH];
+    size_t o = (size_t)snprintf(out, cap, "[");
+    for (int i = 0; i < RC_COUNT; i++) {
+        char c[RC_CHARS + 1];
+        uint8_t rnd[RC_CHARS];
+        esp_fill_random(rnd, sizeof(rnd));
+        for (int k = 0; k < RC_CHARS; k++) {
+            c[k] = abc[rnd[k] & 31];
+        }
+        c[RC_CHARS] = '\0';
+        uint8_t h[HASH_LEN];
+        if (sha256((const uint8_t *)c, RC_CHARS, NULL, 0, h) != ESP_OK) {
+            return ESP_FAIL;
+        }
+        memcpy(hashes[i], h, RC_HASH);
+        o += (size_t)snprintf(out + o, cap - o, "%s\"%.4s-%.4s\"", i ? "," : "", c, c + 4);
+    }
+    snprintf(out + o, cap - o, "]");
+    const esp_err_t err = nvs_put(NVS_KEY_RCODES, hashes, sizeof(hashes), NULL);
+    if (err == ESP_OK) {
+        lock();
+        memcpy(s_rcodes, hashes, sizeof(hashes));
+        unlock();
+    }
+    return err;
+}
+
+/* The QR code of an otpauth URI, as rows of 0 and 1 for the console to draw. */
+typedef struct {
+    char *out;
+    size_t cap;
+    int size;
+} qr_out_t;
+
+static void qr_collect(esp_qrcode_handle_t qr, void *user)
+{
+    qr_out_t *q = user;
+    q->size = esp_qrcode_get_size(qr);
+    size_t o = 0;
+    for (int y = 0; y < q->size; y++) {
+        for (int x = 0; x < q->size && o + 1 < q->cap; x++) {
+            q->out[o++] = esp_qrcode_get_module(qr, x, y) ? '1' : '0';
+        }
+    }
+    q->out[o] = '\0';
+}
+
 /* ---- handlers ---------------------------------------------------------- */
 
 static esp_err_t read_body(httpd_req_t *req, char *buf, size_t buf_len)
@@ -870,10 +1058,10 @@ static esp_err_t auth_session_get(httpd_req_t *req)
     snprintf(body, sizeof(body),
              "{\"required\":%s,\"authenticated\":%s,\"mustChange\":%s,\"user\":\"%s\","
              /* Whether a viewing token exists, never what it is. */
-             "\"viewToken\":%s}",
+             "\"viewToken\":%s,\"twoFactor\":%s}",
              kvm_auth_required() ? "true" : "false", authenticated ? "true" : "false",
              must_change ? "true" : "false", kvm_setting_str("sec_user"),
-             kvm_auth_token_exists() ? "true" : "false");
+             kvm_auth_token_exists() ? "true" : "false", s_totp_on ? "true" : "false");
     return send_json(req, "200 OK", body);
 }
 
@@ -885,9 +1073,13 @@ static esp_err_t auth_login_post(httpd_req_t *req)
     }
     char user[40] = {0};
     char password[80] = {0};
+    char code[24] = {0};
     cJSON *j = cJSON_Parse(body);
     bool fields_ok = j && json_str_field(j, "user", user, sizeof(user)) &&
                      json_str_field(j, "password", password, sizeof(password));
+    if (j) {
+        (void)json_str_field(j, "code", code, sizeof(code)); /* only with two-factor on */
+    }
     const cJSON *now = j ? cJSON_GetObjectItemCaseSensitive(j, "now") : NULL;
     const long long browser_time = cJSON_IsNumber(now) ? (long long)now->valuedouble : 0;
     cJSON_Delete(j);
@@ -919,6 +1111,20 @@ static esp_err_t auth_login_post(httpd_req_t *req)
         return send_json(req, "401 Unauthorized", "{\"error\":\"wrong username or password\"}");
     }
     memset(password, 0, sizeof(password));
+    if (s_totp_on && s_have_password) {
+        if (!code[0]) {
+            /* Not a failure: the password was right, the code is the next step. */
+            return send_json(req, "401 Unauthorized",
+                             "{\"error\":\"enter the code from your authenticator app\",\"needCode\":true}");
+        }
+        if (!second_factor_ok(code, browser_time)) {
+            lock();
+            const uint32_t count = ++s_failures;
+            unlock();
+            ESP_LOGW(TAG, "wrong two-factor code for '%s' (%lu in a row)", user, (unsigned long)count);
+            return send_json(req, "401 Unauthorized", "{\"error\":\"wrong code\",\"needCode\":true}");
+        }
+    }
     lock();
     s_failures = 0;
     unlock();
@@ -996,6 +1202,199 @@ static esp_err_t auth_password_post(httpd_req_t *req)
     return send_json(req, "200 OK", "{\"status\":\"changed\"}");
 }
 
+/* Start setting up two-factor: a new secret, as text and as a QR code. */
+static esp_err_t auth_2fa_begin_post(httpd_req_t *req)
+{
+    if (!kvm_auth_check(req)) {
+        return kvm_auth_challenge(req);
+    }
+    if (!s_have_password) {
+        return send_json(req, "409 Conflict", "{\"error\":\"set a password first\"}");
+    }
+    uint8_t secret[TOTP_SECRET_LEN];
+    esp_fill_random(secret, sizeof(secret));
+    lock();
+    memcpy(s_enroll, secret, sizeof(secret));
+    s_enroll_until_us = esp_timer_get_time() + ENROLL_TTL_US;
+    unlock();
+
+    char b32[40];
+    totp_base32(secret, sizeof(secret), b32, sizeof(b32));
+    memset(secret, 0, sizeof(secret));
+    const char *host = kvm_setting_str("net_hostname");
+    char uri[200];
+    snprintf(uri, sizeof(uri), "otpauth://totp/ESP-KVM:%s%%40%s?secret=%s&issuer=ESP-KVM&digits=%d&period=%d",
+             kvm_setting_str("sec_user"), host[0] ? host : "espkvm", b32, TOTP_DIGITS, TOTP_PERIOD);
+
+    const size_t qr_cap = 4096;
+    const size_t cap = qr_cap + 512;
+    char *qrbuf = heap_caps_malloc(qr_cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    char *body = heap_caps_malloc(cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!qrbuf || !body) {
+        free(qrbuf);
+        free(body);
+        return send_json(req, "500 Internal Server Error", "{\"error\":\"out of memory\"}");
+    }
+    qr_out_t q = {.out = qrbuf, .cap = qr_cap, .size = 0};
+    qrbuf[0] = '\0';
+    esp_qrcode_config_t cfg = ESP_QRCODE_CONFIG_DEFAULT();
+    cfg.display_func_with_cb = qr_collect;
+    cfg.user_data = &q; /* non-NULL is what selects the callback form */
+    (void)esp_qrcode_generate(&cfg, uri);
+    snprintf(body, cap, "{\"secret\":\"%s\",\"uri\":\"%s\",\"qrSize\":%d,\"qr\":\"%s\"}", b32, uri,
+             q.size, qrbuf);
+    const esp_err_t err = send_json(req, "200 OK", body);
+    free(qrbuf);
+    free(body);
+    return err;
+}
+
+/* Read {"password":..,"code":..}, and check the password. */
+static bool read_pw_and_code(httpd_req_t *req, char *code, size_t code_cap, long long *browser_time,
+                             esp_err_t *out)
+{
+    char body[256];
+    if (read_body(req, body, sizeof(body)) != ESP_OK) {
+        *out = send_json(req, "400 Bad Request", "{\"error\":\"malformed request\"}");
+        return false;
+    }
+    char password[80] = {0};
+    cJSON *j = cJSON_Parse(body);
+    const bool ok = j && json_str_field(j, "password", password, sizeof(password)) &&
+                    json_str_field(j, "code", code, code_cap);
+    const cJSON *now = j ? cJSON_GetObjectItemCaseSensitive(j, "now") : NULL;
+    *browser_time = cJSON_IsNumber(now) ? (long long)now->valuedouble : 0;
+    cJSON_Delete(j);
+    if (!ok) {
+        *out = send_json(req, "400 Bad Request", "{\"error\":\"password and code are required\"}");
+        return false;
+    }
+    const bool right = password_matches(password);
+    memset(password, 0, sizeof(password));
+    if (!right) {
+        lock();
+        s_failures++;
+        unlock();
+        *out = send_json(req, "403 Forbidden", "{\"error\":\"the password is wrong\"}");
+        return false;
+    }
+    return true;
+}
+
+/* Confirm the secret from begin with a code from the app, and turn it on. */
+static esp_err_t auth_2fa_enable_post(httpd_req_t *req)
+{
+    if (!kvm_auth_check(req)) {
+        return kvm_auth_challenge(req);
+    }
+    if (!s_have_password) {
+        return send_json(req, "409 Conflict", "{\"error\":\"set a password first\"}");
+    }
+    char code[24] = {0};
+    long long bt = 0;
+    esp_err_t out;
+    if (!read_pw_and_code(req, code, sizeof(code), &bt, &out)) {
+        return out;
+    }
+    lock();
+    const bool pending = s_enroll_until_us > esp_timer_get_time();
+    uint8_t secret[TOTP_SECRET_LEN];
+    memcpy(secret, s_enroll, sizeof(secret));
+    unlock();
+    if (!pending) {
+        return send_json(req, "409 Conflict", "{\"error\":\"start the setup again - it timed out\"}");
+    }
+    const uint64_t t = code_time(bt);
+    uint64_t used = 0;
+    if (!t || !totp_check(secret, sizeof(secret), t, (uint32_t)atoi(code), 0, &used)) {
+        memset(secret, 0, sizeof(secret));
+        return send_json(req, "403 Forbidden",
+                         "{\"error\":\"that code does not match - check the phone's clock and try the next one\"}");
+    }
+    esp_err_t err = nvs_put(NVS_KEY_TOTP, secret, sizeof(secret), NULL);
+    if (err == ESP_OK) {
+        err = nvs_put(NVS_KEY_TOTP_LAST, NULL, 0, &used);
+    }
+    char *body = heap_caps_malloc(512, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    char codes[RC_COUNT * 14 + 8];
+    if (err == ESP_OK) {
+        err = rcodes_make(codes, sizeof(codes));
+    }
+    if (err != ESP_OK || !body) {
+        free(body);
+        memset(secret, 0, sizeof(secret));
+        return send_json(req, "500 Internal Server Error", "{\"error\":\"could not store it\"}");
+    }
+    lock();
+    memcpy(s_totp_secret, secret, sizeof(secret));
+    s_totp_last = used;
+    s_totp_on = true;
+    memset(s_enroll, 0, sizeof(s_enroll));
+    s_enroll_until_us = 0;
+    unlock();
+    memset(secret, 0, sizeof(secret));
+    ESP_LOGI(TAG, "two-factor sign-in turned on");
+    snprintf(body, 512, "{\"status\":\"on\",\"recovery\":%s}", codes);
+    err = send_json(req, "200 OK", body);
+    free(body);
+    return err;
+}
+
+/* Turn it off, or make new recovery codes: both need the password and a code. */
+static esp_err_t auth_2fa_change(httpd_req_t *req, bool disable)
+{
+    if (!kvm_auth_check(req)) {
+        return kvm_auth_challenge(req);
+    }
+    if (!s_totp_on) {
+        return send_json(req, "409 Conflict", "{\"error\":\"two-factor sign-in is not on\"}");
+    }
+    char code[24] = {0};
+    long long bt = 0;
+    esp_err_t out;
+    if (!read_pw_and_code(req, code, sizeof(code), &bt, &out)) {
+        return out;
+    }
+    if (!second_factor_ok(code, bt)) {
+        return send_json(req, "403 Forbidden", "{\"error\":\"wrong code\"}");
+    }
+    if (disable) {
+        nvs_handle_t nvs;
+        if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs) == ESP_OK) {
+            (void)nvs_erase_key(nvs, NVS_KEY_TOTP);
+            (void)nvs_erase_key(nvs, NVS_KEY_TOTP_LAST);
+            (void)nvs_erase_key(nvs, NVS_KEY_RCODES);
+            (void)nvs_commit(nvs);
+            nvs_close(nvs);
+        }
+        lock();
+        s_totp_on = false;
+        memset(s_totp_secret, 0, sizeof(s_totp_secret));
+        memset(s_rcodes, 0, sizeof(s_rcodes));
+        s_totp_last = 0;
+        unlock();
+        ESP_LOGI(TAG, "two-factor sign-in turned off");
+        return send_json(req, "200 OK", "{\"status\":\"off\"}");
+    }
+    char codes[RC_COUNT * 14 + 8];
+    char body[RC_COUNT * 14 + 64];
+    if (rcodes_make(codes, sizeof(codes)) != ESP_OK) {
+        return send_json(req, "500 Internal Server Error", "{\"error\":\"could not store them\"}");
+    }
+    snprintf(body, sizeof(body), "{\"recovery\":%s}", codes);
+    return send_json(req, "200 OK", body);
+}
+
+static esp_err_t auth_2fa_disable_post(httpd_req_t *req)
+{
+    return auth_2fa_change(req, true);
+}
+
+static esp_err_t auth_2fa_recovery_post(httpd_req_t *req)
+{
+    return auth_2fa_change(req, false);
+}
+
 void kvm_auth_register(httpd_handle_t server)
 {
     static const httpd_uri_t uris[] = {
@@ -1003,6 +1402,10 @@ void kvm_auth_register(httpd_handle_t server)
         {.uri = "/api/v1/auth/login", .method = HTTP_POST, .handler = auth_login_post},
         {.uri = "/api/v1/auth/logout", .method = HTTP_POST, .handler = auth_logout_post},
         {.uri = "/api/v1/auth/password", .method = HTTP_POST, .handler = auth_password_post},
+        {.uri = "/api/v1/auth/2fa/begin", .method = HTTP_POST, .handler = auth_2fa_begin_post},
+        {.uri = "/api/v1/auth/2fa/enable", .method = HTTP_POST, .handler = auth_2fa_enable_post},
+        {.uri = "/api/v1/auth/2fa/disable", .method = HTTP_POST, .handler = auth_2fa_disable_post},
+        {.uri = "/api/v1/auth/2fa/recovery", .method = HTTP_POST, .handler = auth_2fa_recovery_post},
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
         httpd_register_uri_handler(server, &uris[i]);
@@ -1072,6 +1475,10 @@ static esp_err_t auth_clear(void)
     s_have_password = false;
     s_failures = 0;
     memset(s_sessions, 0, sizeof(s_sessions));
+    s_totp_on = false;
+    memset(s_totp_secret, 0, sizeof(s_totp_secret));
+    memset(s_rcodes, 0, sizeof(s_rcodes));
+    s_totp_last = 0;
     unlock();
     return err;
 }
@@ -1278,6 +1685,17 @@ esp_err_t kvm_auth_init(void)
         s_have_password = true;
     } else {
         ESP_LOGW(TAG, "no password set; the default one works until it is changed");
+    }
+    size_t totp_len = sizeof(s_totp_secret);
+    size_t rc_len = sizeof(s_rcodes);
+    if (nvs_get_blob(nvs, NVS_KEY_TOTP, s_totp_secret, &totp_len) == ESP_OK &&
+        totp_len == TOTP_SECRET_LEN) {
+        s_totp_on = true;
+        (void)nvs_get_u64(nvs, NVS_KEY_TOTP_LAST, &s_totp_last);
+        if (nvs_get_blob(nvs, NVS_KEY_RCODES, s_rcodes, &rc_len) != ESP_OK || rc_len != sizeof(s_rcodes)) {
+            memset(s_rcodes, 0, sizeof(s_rcodes));
+        }
+        ESP_LOGI(TAG, "two-factor sign-in is on");
     }
     nvs_close(nvs);
     s_inited = true;

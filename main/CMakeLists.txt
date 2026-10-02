@@ -5,6 +5,7 @@ idf_component_register(
         video_pipeline
         kvm_net
         kvm_web
+        kvm_rtc
         kvm_hid
         kvm_runbook
         kvm_sched

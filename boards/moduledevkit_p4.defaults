@@ -53,7 +53,7 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_16mb.csv"
 # boards/moduledevkit_p4_rev3.defaults.
 
 # --- updates ----------------------------------------------------------------
-CONFIG_KVM_UPDATE_URL="https://espkvm.github.io/espkvm/firmware/p4-module-devkit/manifest.json"
+CONFIG_KVM_UPDATE_URL="https://fw.espkvm.io/firmware/p4-module-devkit/manifest.json"
 
 # --- WiFi co-processor ------------------------------------------------------
 # The C6 is inside the module on the Function EV board's SDIO pins, so the same

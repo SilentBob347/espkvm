@@ -25,6 +25,7 @@ A plain `POST` to the URL in the settings, `Content-Type: application/json`:
   "title": "Screen text",
   "message": "The phrase \"Press F1 to continue\" is on the screen.",
   "device": "espkvm",
+  "at": 1790857313,
   "log": "the last few kilobytes of the device log"
 }
 ```
@@ -34,6 +35,7 @@ A plain `POST` to the URL in the settings, `Content-Type: application/json`:
 | `title` | yes | what kind of event it is, a few words |
 | `message` | yes | the sentence a person reads |
 | `device` | yes | the device's hostname, so several devices can share one endpoint |
+| `at` | no | when it happened, in Unix seconds - there once the device's clock is set |
 | `log` | no | the tail of the device log, only while **Attach the log tail** is on |
 
 Nothing is uploaded to a webhook: a clip is named in `message` as the file on
@@ -46,6 +48,34 @@ node, a Home Assistant `webhook` trigger, an ntfy or Gotify endpoint behind a
 small script, a Slack or Discord relay. There is no signature or shared secret,
 so put the endpoint somewhere only your network can reach it, or give the URL a
 long unguessable path.
+
+## When the network is down
+
+An alert that cannot go out - no network, a timeout, the server busy - waits
+and goes out when the device can reach it again. It is retried oldest first,
+after 15 seconds and then less and less often, up to every 5 minutes. A new
+event tries the waiting ones again at once.
+
+The screenshot and the log tail are taken when the event happens, not when it
+is finally sent, so a late message shows the screen as it was. One sent more
+than a minute late says when it happened: "(Happened at 03:12:05, 28 min ago -
+the device could not send it then.)" A webhook gets the same in `at`.
+
+With a microSD card the device can write to, each waiting alert is a few files
+in `.notify/` on the card - what it says, its screenshot and its log tail - so
+the list survives a restart, and the screenshots do not sit in memory. After a
+restart the rest go out with "(Happened at ..., before the device restarted.)".
+Without a writable card (none, handed to the target, or a board that cannot
+write to it) they wait in memory and a restart loses them.
+
+Up to 50 alerts wait; past that the oldest gives way, and once the rest are
+through one more message says how many were dropped. In memory, the
+screenshots share at most 2 MB, and one is only kept while at least 3 MB of
+PSRAM stays free - otherwise the alert goes as text. A refusal - a wrong token
+or chat id, a 4xx from the webhook - is not retried. Telegram and the webhook
+are counted apart: if one went through, only the other is tried again.
+`GET /api/v1/notify/status` shows how many are waiting in `pending`. Switching
+notifications off clears the list, on the card too.
 
 ## The tailnet key
 

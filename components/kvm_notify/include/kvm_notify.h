@@ -41,6 +41,7 @@ typedef struct {
     bool enabled;
     char last_result[96]; /* "ok", or why the last send failed */
     char last_at[24];     /* device local time of the last attempt, or "" */
+    int pending;          /* events waiting for the network to come back */
 } kvm_notify_status_t;
 
 void kvm_notify_status(kvm_notify_status_t *out);

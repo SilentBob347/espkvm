@@ -134,6 +134,24 @@ int main(void)
     }
 
     {
+        /* The OLED and the clock chip on their own pins share one I2C bus. */
+        const kvm_pin_claim_t bus[] = {
+            {"disp_sda", 26, false},
+            {"disp_scl", 27, false},
+            {"rtc_sda", 26, true},
+            {"rtc_scl", 27, true},
+        };
+        check(!kvm_pin_conflict_find(bus, 4, board_holds, &c),
+              "the OLED and the clock chip may share their I2C lines");
+        const kvm_pin_claim_t crossed[] = {
+            {"disp_sda", 26, false},
+            {"rtc_scl", 26, true},
+        };
+        check(kvm_pin_conflict_find(crossed, 2, board_holds, &c),
+              "but SDA of one on SCL of the other is still a clash");
+    }
+
+    {
         check(!kvm_pin_conflict_find(NULL, 0, board_holds, &c), "no claims is not a conflict");
     }
 

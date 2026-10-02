@@ -513,7 +513,7 @@ menu "ESP-KVM"
     menu "Updates"
         config KVM_UPDATE_URL
             string "Default update manifest URL"
-            default "https://espkvm.github.io/espkvm/firmware/manifest.json"
+            default "https://fw.espkvm.io/firmware/manifest.json"
             help
                 The default value of the runtime "Update manifest" setting - the
                 manifest.json the console's update check reads. Per board, because

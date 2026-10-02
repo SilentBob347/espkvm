@@ -5,6 +5,7 @@ idf_component_register(
         "auth.c"
         "fw_install.c"
         "record_api.c"
+        "totp.c"
     INCLUDE_DIRS "include"
     PRIV_INCLUDE_DIRS "."
     REQUIRES
@@ -23,9 +24,11 @@ idf_component_register(
         kvm_log
         kvm_mqtt
         espressif__cjson
+        espressif__qrcode
         kvm_runbook
         kvm_sched
         kvm_notify
+        kvm_rtc
         app_update
         esp_app_format
         espcoredump

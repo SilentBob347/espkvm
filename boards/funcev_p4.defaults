@@ -28,7 +28,7 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_16mb.csv"
 # This board has its own build, hence its own manifest. Without this, the funcev
 # device would default to the root (Waveshare) manifest and try to OTA a rev<3.0
 # image, which will not boot on this rev v3.2 chip.
-CONFIG_KVM_UPDATE_URL="https://espkvm.github.io/espkvm/firmware/funcev/manifest.json"
+CONFIG_KVM_UPDATE_URL="https://fw.espkvm.io/firmware/funcev/manifest.json"
 
 # --- WiFi (via the onboard ESP32-C6) ----------------------------------------
 # The P4 has no radio; this board carries an ESP32-C6-MINI-1 reached over SDIO,

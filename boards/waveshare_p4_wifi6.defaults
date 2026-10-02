@@ -39,5 +39,5 @@ CONFIG_KVM_SD_PWR_GPIO=45
 # own power-on reset, so do not toggle or reserve an unrelated expansion GPIO.
 CONFIG_KVM_TC358743_RST_GPIO=-1
 
-CONFIG_KVM_UPDATE_URL="https://espkvm.github.io/espkvm/firmware/p4-wifi6/manifest.json"
+CONFIG_KVM_UPDATE_URL="https://fw.espkvm.io/firmware/p4-wifi6/manifest.json"
 CONFIG_KVM_BOARD_WAVESHARE_WIFI6=y

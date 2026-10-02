@@ -33,7 +33,7 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_16mb.csv"
 # --- updates ----------------------------------------------------------------
 # Its own binary (rev + flash size), so its own OTA manifest. Release CI must
 # publish firmware/p4-nano/manifest.json for this to resolve.
-CONFIG_KVM_UPDATE_URL="https://espkvm.github.io/espkvm/firmware/p4-nano/manifest.json"
+CONFIG_KVM_UPDATE_URL="https://fw.espkvm.io/firmware/p4-nano/manifest.json"
 
 # --- WiFi (via the onboard ESP32-C6-MINI) -----------------------------------
 # CONFIRMED from the wiki: the C6 SDIO pins are identical to the Function EV

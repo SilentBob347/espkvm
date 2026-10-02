@@ -71,7 +71,7 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_16mb.csv"
 # CONFIG_ESP32P4_REV_MIN_300=y
 
 # --- updates ----------------------------------------------------------------
-CONFIG_KVM_UPDATE_URL="https://espkvm.github.io/espkvm/firmware/viewe-p4-pi/manifest.json"
+CONFIG_KVM_UPDATE_URL="https://fw.espkvm.io/firmware/viewe-p4-pi/manifest.json"
 
 # --- WiFi co-processor ------------------------------------------------------
 # The C6 sits inside the module on the Function EV board's SDIO pins, so the
