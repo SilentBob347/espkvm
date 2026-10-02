@@ -485,19 +485,17 @@ jobs:
           cp site/firmware/p4-eth/. site/firmware/ -r
           cp site/flash/p4-eth/. site/flash/ -r
 
-          # Same list again, from the same source, so the page cannot drift
-          # from what was published.
-          list="$(for b in ${boards}; do printf '<code>%s</code>, ' "$b"; done | sed 's/, $//')"
-          cat > site/index.html <<EOF
-          <!doctype html><meta charset="utf-8"><title>ESP-KVM firmware</title>
-          <p>Artefacts for the ESP-KVM console and the browser flasher, per board:
-          <code>firmware/&lt;board&gt;/manifest.json</code> is the update check,
-          <code>flash/&lt;board&gt;/manifest.json</code> is esp-web-tools.
-          Boards: ${list}. The <code>-rev3</code> ones are for ESP32-P4 rev
-          3.x silicon and will not start on an older chip, nor the plain ones on a
-          rev 3.x chip. <code>p4-poe</code> is configured from the schematic and not
-          yet verified on hardware. The root <code>firmware/</code> and
-          <code>flash/</code> mirror <code>p4-eth</code> for older clients.</p>
+          # fw.espkvm.io itself is only a file host; a person who opens it is
+          # sent to the flasher. Pages cannot answer with a real redirect.
+          cat > site/index.html <<'EOF'
+          <!doctype html>
+          <meta charset="utf-8">
+          <meta name="robots" content="noindex">
+          <meta http-equiv="refresh" content="0; url=https://espkvm.io/flash/">
+          <link rel="canonical" href="https://espkvm.io/flash/">
+          <title>ESP-KVM firmware</title>
+          <script>location.replace("https://espkvm.io/flash/")</script>
+          <p><a href="https://espkvm.io/flash/">Install ESP-KVM from the browser</a></p>
           EOF
           # The board list the site's flasher reads, so adding a board here is
           # the whole job - the site needs no change. A -rev3 image is not a
