@@ -7,6 +7,8 @@ bumps the patch).
 
 ## [Unreleased]
 
+## [0.57.0] - 2026-10-02
+
 ### Added
 - **A battery-backed clock, if you fit one.** A DS3231 or DS3231M module on
   the capture board's I2C bus (on the Function EV and the Waveshare boards,
@@ -35,8 +37,8 @@ bumps the patch).
 - **Links to where things are explained**: the version in the update panel
   opens its release notes, Diagnostics has "Tell me what you think" (the
   feedback thread), "Report a bug" and "If it does not work", the
-  notifications panel links its write-up, the ATX settings link the wiring,
-  and the sign-in page names the source.
+  notifications panel links its write-up, and the ATX settings link the
+  wiring.
 - **Alerts wait for the network.** A notification that could not go out - the
   network down, a timeout, Telegram busy - used to be lost. Now it waits and is
   sent when the device can reach the server again, oldest first, with the time
@@ -57,6 +59,15 @@ bumps the patch).
   Wi-Fi on 0.56.2. The flasher no longer marks it untested.
 
 ### Fixed
+- **A console left open through a restart now asks you to sign in.** The
+  restart signs everyone out, and if the device was still starting when the
+  console noticed, the console gave up asking: no sign-in form, and buttons
+  that did nothing. Now any "signed out" answer brings the form back.
+- **Tailscale: steadier links.** The microlink client no longer drops
+  WireGuard packets silently, waits for a peer's direct address to be
+  confirmed before using it (DERP until then), frees a failed DERP connection's
+  TLS memory, and takes lwIP's lock for its own sends. Thanks to the upstream
+  microlink contributors.
 - **Wi-Fi on four boards not yet run on hardware**: the Waveshare
   ESP32-P4-Module-DEV-KIT, ESP32-P4-WIFI6-DEV-KIT and ESP32-P4-NANO-WIFI6-DB,
   and the VIEWE ESP32-P4-Pi. Their schematics show the same weak 51k pull-ups
