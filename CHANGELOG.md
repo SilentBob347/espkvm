@@ -7,6 +7,16 @@ bumps the patch).
 
 ## [Unreleased]
 
+## [0.57.1] - 2026-10-02
+
+### Fixed
+- **H.264 over Wi-Fi flashed "Cannot play this stream" every few seconds.**
+  When a viewer's socket was not ready, the device skipped a frame for it, and
+  the browser's decoder broke on the next one. The device now holds that
+  viewer's frames until a keyframe and asks for one at once. The console also
+  asks for a keyframe after a decoder error and shows the message only when
+  errors keep coming.
+
 ## [0.57.0] - 2026-10-02
 
 ### Added

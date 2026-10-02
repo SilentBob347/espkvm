@@ -3845,6 +3845,18 @@ static void text_push(httpd_handle_t server)
  * wrapped in an async request handler - doing so leaves the handshake
  * unfinished and no frame ever reaches the client.
  */
+/* Ask for an IDR to repair a broken reference chain, at most every 300 ms:
+   IDRs are the biggest frames and would feed the overload they repair. */
+static void video_request_repair_idr(void)
+{
+    static int64_t s_last_us;
+    const int64_t now_us = esp_timer_get_time();
+    if (now_us - s_last_us > 300000) {
+        s_last_us = now_us;
+        video_frame_request_keyframe();
+    }
+}
+
 static void video_pump_task(void *arg)
 {
     httpd_handle_t server = (httpd_handle_t)arg;
@@ -3895,18 +3907,11 @@ static void video_pump_task(void *arg)
          * delta breaks the decoder's reference chain and the picture shatters
          * until a keyframe. The gap says exactly when that happened: ask for an
          * IDR now and the repair arrives within a frame or two instead of at the
-         * next scheduled keyframe. Rate-limited so a sustained overload asks for
-         * keyframes at a bounded rate rather than for every dropped frame (IDRs
-         * are the biggest frames - that would feed the very overload it repairs).
+         * next scheduled keyframe.
          */
         if (last_seq != 0 && (uint32_t)(f.seq - last_seq) > 1u &&
             f.payload == VIDEO_PAYLOAD_H264) {
-            static int64_t s_gap_idr_us;
-            const int64_t now_us = esp_timer_get_time();
-            if (now_us - s_gap_idr_us > 300000) {
-                s_gap_idr_us = now_us;
-                video_frame_request_keyframe();
-            }
+            video_request_repair_idr();
         }
         last_seq = f.seq;
 
@@ -3939,6 +3944,7 @@ static void video_pump_task(void *arg)
         memcpy(packet + VIDEO_HDR_LEN, f.data, f.len);
         const size_t packet_len = VIDEO_HDR_LEN + f.len;
         const bool keyframe = f.keyframe;
+        const int f_payload = f.payload;
         video_frame_release(&f);
 
         httpd_ws_frame_t frame = {
@@ -3957,6 +3963,7 @@ static void video_pump_task(void *arg)
          */
         int targets[VIDEO_MAX_CLIENTS];
         int target_count = 0;
+        bool repair = false;
         if (xSemaphoreTake(s_video_mu, portMAX_DELAY) != pdTRUE) {
             continue;
         }
@@ -3988,6 +3995,12 @@ static void video_pump_task(void *arg)
             if (select(fd + 1, NULL, &wfds, NULL, &tv0) <= 0 || !FD_ISSET(fd, &wfds)) {
                 if (++s_video_stall[i] >= VIDEO_STALL_DROP_FRAMES) {
                     video_drop_client_locked(i);
+                } else if (f_payload == VIDEO_PAYLOAD_H264 && !s_video_need_key[i]) {
+                    /* This viewer misses a frame its decoder needs: hold its
+                       deltas until a keyframe, and ask for one. A slow Wi-Fi
+                       link hit this every few seconds. */
+                    s_video_need_key[i] = true;
+                    repair = true;
                 }
                 continue;
             }
@@ -3996,6 +4009,9 @@ static void video_pump_task(void *arg)
             targets[target_count++] = fd;
         }
         xSemaphoreGive(s_video_mu);
+        if (repair) {
+            video_request_repair_idr();
+        }
 
         for (int i = 0; i < target_count; i++) {
             const int64_t send_t0 = esp_timer_get_time();
