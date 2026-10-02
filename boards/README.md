@@ -109,7 +109,7 @@ ports; the target must be on the OTG-HS one. Being Guition's own design (not a
 Waveshare layout), its undocumented data pins are less certain than the NANO's;
 see `boards/guition_p4.defaults`.
 
-### Waveshare ESP32-P4-Module-DEV-KIT (chip rev unconfirmed, 16 MB flash)
+### Waveshare ESP32-P4-Module-DEV-KIT (rev 1.x or 3.x, an image for each; 16 MB flash)
 
 ```
 idf.py -B build.moduledevkit \
@@ -196,7 +196,9 @@ idf.py -B build.waveshare_wifi6_db \
 The ESP32-P4-WIFI6 with a C5 instead of the C6 and an ESP32-P4NRW32X. The pin
 table on Waveshare's documentation page matches the WIFI6 apart from the
 co-processor, so the overlay sets rev 3.x and the C5 profile and keeps the
-WIFI6's SDIO pull-ups. No schematic is published; not run on one yet.
+WIFI6's SDIO pull-ups; its schematic, published since, agrees. One difference:
+the camera connector is the 22-pin 0.5 mm kind, so a C790 needs a 15-to-22-pin
+ribbon. Not run on one yet.
 
 ### Waveshare ESP32-P4-NANO-WIFI6-DB (chip rev 3.x, 16 MB flash)
 

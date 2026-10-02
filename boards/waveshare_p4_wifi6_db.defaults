@@ -10,8 +10,11 @@
 # microSD on 43/44/39-42 with power on 45, low to enable; camera SCCB on 7/8;
 # the HS OTG on a 4-pin header; BOOT on 35; console through a CH343P on 37/38.
 # Everything but the co-processor and the chip revision matches the WIFI6,
-# including no Ethernet. No schematic is published, so the WIFI6's pull-ups on
-# the SDIO lines are kept on the assumption the board shares them.
+# including no Ethernet. Its schematic (waveshareteam/ESP32-P4-WIFI6-DB,
+# hardware/ESP32-P4-WIFI6-DB.pdf) confirms the 51k SDIO pull-ups, so the WIFI6's
+# internal ones stay on, and GPIO 6 to the C5's IO2. One difference that
+# matters: the camera connector J1 is the 22-pin 0.5 mm (Pi 5) kind, not the
+# WIFI6's 15-pin - a C790 needs a 15-to-22-pin ribbon.
 #
 # NOT YET VERIFIED ON HARDWARE.
 

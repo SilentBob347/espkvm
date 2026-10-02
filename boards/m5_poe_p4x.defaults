@@ -1,4 +1,4 @@
-# M5Stack Unit PoE-P4X - the rev 3.x silicon product
+# M5Stack Unit PoE-P4X - the Unit PoE-P4 on rev 3.x silicon, IF one ships
 #
 # Build it with:
 #   idf.py -B build.m5poex -D SDKCONFIG=build.m5poex/sdkconfig \
@@ -7,10 +7,12 @@
 # Everything about the board is in m5_poe_p4.defaults; this only moves the
 # silicon revision and the update slug, so the two stay in step when pins change.
 #
-# Here the two products differ, not just the part in the box: M5Stack sell the
-# "Unit PoE-P4" on pre-3.0 silicon and the "Unit PoE-P4X" on rev 3.x. Read the
-# boot log anyway. "chip revision: v3.x" - this image; anything else - the plain
-# m5-poe-p4 image. This one will not start on older silicon: the bootloader
+# As of 2026-10-02 M5Stack list only the Unit PoE-P4 (U213, ESP32-P4NRW32, so
+# pre-3.0); no rev 3.x unit is listed, and this image has never run. Also
+# untested: the LT6911D's byte order on the rev 3.x capture path. The
+# YUV-swap handling is gated to pre-3.0, so the colours may come out wrong
+# here. Read the boot log: "chip revision: v3.x" - this image; anything else -
+# the plain m5-poe-p4 image. This one will not start on older silicon: the bootloader
 # refuses an image that declares a higher minimum revision, and the board waits,
 # unharmed, until the other image is flashed.
 #

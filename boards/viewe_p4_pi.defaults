@@ -18,7 +18,8 @@
 #            All of it is the firmware's default, pin for pin.
 #   microSD: CLK 43, CMD 44, D0 39, D1 40, D2 41, D3 42 - which are the module's
 #            own dedicated SD pins - and the slot's 3.3 V through an AO3401
-#            P-channel MOSFET off GPIO 45, gate pulled up, so low enables it.
+#            P-channel MOSFET off GPIO 45, gate pulled down (R140 10K), so the
+#            slot is on by default; low enables it.
 #   Capture I2C: SDA 7, SCL 8, shared with the audio codecs (0x18, 0x41) and the
 #            IMU (0x6a). None of those collide with the bridge.
 #   BOOT button: GPIO 35, which is also Ethernet TXD1 - the sharing the password

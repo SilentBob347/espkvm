@@ -364,6 +364,11 @@ menu "ESP-KVM"
             default y if KVM_BOARD_WAVESHARE_WIFI6
             # No SDIO pull-ups at all on its schematic (DFR1172 V1.0).
             default y if KVM_BOARD_FIREBEETLE2_P4
+            # The same 51k as the WIFI6 on their schematics (2026-10-02 audit):
+            # the ESP32-P4-Module (DEV-KIT, and the WIFI6-DEV-KIT built on the
+            # same design), the VIEWE P4-Pi core and the NANO-WIFI6-DB.
+            default y if KVM_BOARD_WAVESHARE_MODULE_DEVKIT || KVM_BOARD_WAVESHARE_WIFI6_DEVKIT
+            default y if KVM_BOARD_VIEWE_P4_PI || KVM_BOARD_WAVESHARE_NANO_WIFI6_DB
             default n
             help
                 SDIO needs its lines pulled up, and Espressif ask for 10k on CMD

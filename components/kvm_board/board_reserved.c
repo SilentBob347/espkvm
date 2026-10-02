@@ -59,8 +59,10 @@ static const kvm_board_reserved_t s_reserved[] = {
     {CONFIG_ESP_HOSTED_SDIO_D3_GPIO_RANGE_MIN, "WiFi co-processor D3"},
     {CONFIG_ESP_HOSTED_HOST_RESET_GPIO, "WiFi co-processor reset"},
 #if CONFIG_KVM_BOARD_WAVESHARE_WIFI6_DEVKIT || CONFIG_KVM_BOARD_WAVESHARE_WIFI6 || \
-    CONFIG_KVM_BOARD_FIREBEETLE2_P4
-    /* The schematic ties P4 GPIO 6 to the C6's IO2 (its wake line). esp-hosted
+    CONFIG_KVM_BOARD_FIREBEETLE2_P4 || CONFIG_KVM_BOARD_WAVESHARE_MODULE_DEVKIT || \
+    CONFIG_KVM_BOARD_VIEWE_P4_PI || CONFIG_KVM_BOARD_WAVESHARE_NANO_WIFI6_DB || \
+    CONFIG_KVM_BOARD_FUNCEV
+    /* The schematic ties P4 GPIO 6 to the co-processor's IO2 (its wake line). esp-hosted
      * does not claim it, but offering it as free would let something an owner
      * plugs in fight the co-processor. */
     {6, "WiFi co-processor IO2"},

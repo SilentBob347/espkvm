@@ -321,10 +321,11 @@ measures the source's mode itself, so changing the resolution on the machine at
 the other end is all it takes.
 
 H.264 works here too - 15 frames a second at 720p, 6 at 1080p, each for about a
-third of MJPEG's bandwidth. The **PoE-P4X** pays neither cost. Two products,
-two images: the **Unit PoE-P4** is pre-3.0
-(`boards/m5_poe_p4.defaults`), the **Unit PoE-P4X** is rev 3.x
-(`boards/m5_poe_p4x.defaults`).
+third of MJPEG's bandwidth. The **Unit PoE-P4** sold today is pre-3.0
+(`boards/m5_poe_p4.defaults`). There is also an image for the same unit on
+rev 3.x silicon (`boards/m5_poe_p4x.defaults`, "PoE-P4X"), which would pay
+neither cost - but M5Stack does not list such a unit yet, nobody has run it,
+and the colour order of its picture on rev 3.x is untested.
 
 </td>
 </tr>
@@ -426,7 +427,8 @@ Raspberry Pi camera connector. Build overlay: `boards/nano_wifi6_db_p4.defaults`
 It carries an ESP32-P4NRW32**X**, which is rev 3.x silicon, so unlike every other
 board here it has **one image and no pre-3.0 twin**. Its right-hand header also
 brings out the high-speed USB pair, so the target can be wired there instead of
-the Type-A socket.
+the Type-A socket. That socket always carries 5 V, as on the NANO, so the lead to
+the target is an A-to-A cable with the 5 V wire cut.
 
 </td>
 </tr>
@@ -460,6 +462,8 @@ ESP32-P4NRW32X (rev 3.x only), 32 MB flash, microSD, the HS OTG on a 4-pin
 header, and no Ethernet. Waveshare's pin table matches the WIFI6 apart from the
 co-processor, so the build is the WIFI6's with the C5 and the revision changed:
 `boards/waveshare_p4_wifi6.defaults` + `boards/waveshare_p4_wifi6_db.defaults`.
+One difference to plan for: its camera connector is the 22-pin 0.5 mm (Pi 5)
+kind, not the WIFI6's 15-pin, so a C790 needs a 15-to-22-pin ribbon.
 
 </td>
 </tr>

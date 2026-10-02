@@ -13,6 +13,22 @@ bumps the patch).
   Wi-Fi on 0.56.2. The flasher no longer marks it untested.
 
 ### Fixed
+- **Wi-Fi on four boards not yet run on hardware**: the Waveshare
+  ESP32-P4-Module-DEV-KIT, ESP32-P4-WIFI6-DEV-KIT and ESP32-P4-NANO-WIFI6-DB,
+  and the VIEWE ESP32-P4-Pi. Their schematics show the same weak 51k pull-ups
+  on the SDIO lines as the ESP32-P4-WIFI6, where the link stalled until the
+  chip's own pull-ups were added; they are on for these boards now. GPIO 6, the
+  co-processor's wake line, is no longer offered as a free pin on them or on the
+  Function EV boards. Found by checking every untested board against its
+  schematic.
+- **Board notes that would have sent people wrong.** The ESP32-P4-WIFI6-DB's
+  camera connector is the 22-pin 0.5 mm kind, not 15-pin, so a C790 needs a
+  15-to-22-pin ribbon. The NANO-WIFI6-DB's Type-A always carries 5 V, so the
+  lead to the target is an A-to-A cable with the 5 V wire cut, as on the NANO.
+- **The M5Stack Unit PoE-P4X image no longer claims a product that exists.**
+  M5Stack list only the Unit PoE-P4, with a rev 1.x chip. The rev 3.x image
+  stays, for a unit with the newer chip should one appear, and says it has
+  never run and that its colours on that chip are untested.
 - **Building from a release archive.** GitHub's source archives leave out the
   console and microlink, and with them fetched by hand the build still stopped
   at `wireguard_lwip`, which microlink reaches through a symlink. The build now

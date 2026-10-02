@@ -57,7 +57,8 @@ CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
 CONFIG_ESP_HOSTED_AUTO_CALL_INIT_BEFORE_APP_MAIN=n
 
 # --- board pins -------------------------------------------------------------
-# This board's microSD slot is always powered (no power-gate GPIO).
+# GPIO 45 is SD_PWRn (a P-MOSFET, low = on) and the slot is powered by
+# default, so the firmware leaves it alone - verified that way on hardware.
 CONFIG_KVM_SD_PWR_GPIO=-1
 
 # These match the Waveshare defaults, so no override is needed:

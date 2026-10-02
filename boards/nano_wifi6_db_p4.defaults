@@ -18,9 +18,9 @@
 #            addresses do not collide with the bridge's.
 #   BOOT button: GPIO 35, which is also Ethernet TXD1, the sharing the password
 #            reset already handles.
-#   Console: UART0 on 37/38, as on the NANO, whose Type-C reaches them through a
-#            USB-to-UART bridge. CONFIRM on hardware: the DB's page says "power,
-#            flashing and serial debugging" without naming the bridge, and a
+#   Console: UART0 on 37/38 through a CH343P, confirmed on the schematic
+#            (waveshareteam/ESP32-P4-NANO-WIFI6-DB, hardware/schematics/).
+#            Before the schematic was out this was the open question: a
 #            console pointed at a port the board does not have looks exactly
 #            like a device stuck at boot (#42).
 #   Camera: "XCLK / RESET not connected", so there is no RESETN to drive.
@@ -37,8 +37,10 @@
 # from the header instead of the Type-A socket.
 #
 # NOT YET VERIFIED ON HARDWARE. Configured from the vendor's pin table and
-# published so owners can try it. Waveshare has not put a schematic out for this
-# SKU yet, so the console CONFIRM above is the one to check first.
+# published so owners can try it. Checked against its schematic on 2026-10-02:
+# the SDIO pull-ups are 51k (so the internal ones are on), GPIO 6 is the C5's
+# IO2, and the Type-A to the target always carries 5 V (a DIO7003 with EN tied
+# high) - use an A-to-A cable with the 5 V wire cut.
 
 # --- flash and partitions ---------------------------------------------------
 # 16 MB Nor flash, 32 MB PSRAM in the chip's package.

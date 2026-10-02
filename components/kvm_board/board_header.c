@@ -104,14 +104,14 @@ static const kvm_board_header_t s_headers[] = {
  */
 static const kvm_board_pin_t s_moddev_odd[] = {
     PWR("3V3"), IO(7),  IO(8),  IO(23), PWR("GND"), IO(21), IO(20),
-    IO(6),      PWR("3V3"), IO(3), IO(2), IO(0),    PWR("GND"), IO(24),
+    IO_NOTE(6, "C6 IO2"), PWR("3V3"), IO(3), IO(2), IO_NOTE(0, "32 kHz crystal"), PWR("GND"), IO(24),
     IO(33),     IO(26), IO(48), IO(53), IO(47),     PWR("GND"),
 };
 _Static_assert(sizeof(s_moddev_odd) / sizeof(s_moddev_odd[0]) == 20,
                "s_moddev_odd: the column must hold exactly 20 pins");
 static const kvm_board_pin_t s_moddev_even[] = {
     PWR("5V"), PWR("5V"), PWR("GND"), IO(37), IO(38),     IO(22), PWR("GND"),
-    IO(5),     IO(4),     PWR("GND"), IO(1),  IO(36),     IO(32), IO(25),
+    IO(5),     IO(4),     PWR("GND"), IO_NOTE(1, "32 kHz crystal"), IO(36), IO(32), IO(25),
     PWR("GND"), IO(54),   PWR("GND"), IO(46), IO(27),     IO(45),
 };
 _Static_assert(sizeof(s_moddev_even) / sizeof(s_moddev_even[0]) == 20,
@@ -244,8 +244,8 @@ static const kvm_board_header_t s_headers[] = {
  */
 static const kvm_board_pin_t s_j1_odd[] = {
     PWR("3V3"), IO(7),  IO(8),  IO(23), PWR("GND"), IO(21), IO(20),
-    IO(6),      PWR("3V3"), IO(3), IO(2), IO_NOTE(0, "32 kHz crystal"), PWR("GND"), NC(),
-    IO(33),     IO(26), IO(48), IO(53), IO(47),     PWR("GND"),
+    IO_NOTE(6, "Wi-Fi chip wake"), PWR("3V3"), IO(3), IO(2), IO_NOTE(0, "32 kHz crystal"), PWR("GND"), NC(),
+    IO(33),     IO(26), IO(48), IO_NOTE(53, "speaker amp enable"), IO(47), PWR("GND"),
 };
 _Static_assert(sizeof(s_j1_odd) / sizeof(s_j1_odd[0]) == 20,
                "s_j1_odd: the column must hold exactly 20 pins");
@@ -378,7 +378,7 @@ _Static_assert(sizeof(s_nanodb_b_odd) / sizeof(s_nanodb_b_odd[0]) == 13,
                "s_nanodb_b_odd: the column must hold exactly 13 pins");
 static const kvm_board_pin_t s_nanodb_b_even[] = {
     PWR("ESP_LDO_VO4"), PWR("GND"), IO_NOTE(0, "32 kHz crystal"),
-    IO_NOTE(1, "32 kHz crystal"), PWR("GND"), IO(6), IO(53),
+    IO_NOTE(1, "32 kHz crystal"), PWR("GND"), IO_NOTE(6, "C5 IO2"), IO(53),
     IO(48), PWR("GND"), PWR("C5 U0RXD"), PWR("C5 U0TXD"), PWR("C5 BOOT"),
     PWR("GND"),
 };
