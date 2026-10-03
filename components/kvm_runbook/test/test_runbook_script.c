@@ -166,6 +166,14 @@ int main(void)
     CHECK(!rb_parse("record 0", &s, err, sizeof(err)) && strstr(err, "record wants") != NULL);
     CHECK(!rb_parse("screenshot now", &s, err, sizeof(err)) && strstr(err, "takes nothing") != NULL);
 
+    /* HDMI-CEC: standby, wake, a remote key; the key name is checked when it runs. */
+    CHECK(rb_parse("hdmi standby\nHDMI Wake\nhdmi key up\n", &s, err, sizeof(err)));
+    CHECK(s.count == 3 && s.steps[0].kind == RB_HDMI && strcmp(s.steps[1].arg, "wake") == 0);
+    CHECK(strcmp(s.steps[2].arg, "key up") == 0);
+    CHECK(!rb_parse("hdmi", &s, err, sizeof(err)) && strstr(err, "hdmi wants") != NULL);
+    CHECK(!rb_parse("hdmi key", &s, err, sizeof(err)) && strstr(err, "hdmi wants") != NULL);
+    CHECK(!rb_parse("hdmi reboot", &s, err, sizeof(err)) && strstr(err, "hdmi wants") != NULL);
+
     printf(g_fail ? "%d FAILED\n" : "runbook script: all checks passed\n", g_fail);
     return g_fail ? 1 : 0;
 }

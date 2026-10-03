@@ -46,6 +46,7 @@ typedef enum {
     RB_RECORD_STOP,
     RB_SCREENSHOT,
     RB_TIMELAPSE,   /* every: seconds between frames; value: seconds to run, 0 = until stopped */
+    RB_HDMI,        /* HDMI-CEC: arg "standby", "wake" or "key <name>" */
 } rb_kind_t;
 
 typedef struct {

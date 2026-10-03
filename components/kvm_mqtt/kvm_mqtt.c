@@ -36,6 +36,7 @@
 #include "screentext_store.h"
 #include "ethernet.h"
 #include "kvm_atx.h"
+#include "kvm_cec.h"
 #include "kvm_caps.h"
 #include "kvm_record.h"
 #include "kvm_settings.h"
@@ -195,6 +196,16 @@ static int build_state(char *b, size_t n)
     }
     json_escape(rb_json, sizeof(rb_json), rb_text);
 
+    /* HDMI-CEC: who is on the other end of the cable, and whether it is awake.
+       The name comes from the device itself, so it is quoted like the rest. */
+    static char cec_name[24];
+    static char cec_json[sizeof(cec_name) * 2];
+    const char *cec_power = "unknown";
+    if (!kvm_cec_source(cec_name, sizeof(cec_name), &cec_power)) {
+        snprintf(cec_name, sizeof(cec_name), "none");
+    }
+    json_escape(cec_json, sizeof(cec_json), cec_name);
+
     static kvm_record_status_t rec; /* file names are the recorder's own: no quoting needed */
     kvm_record_status(&rec);
 
@@ -219,7 +230,7 @@ static int build_state(char *b, size_t n)
              "\"runbook\":\"%s\",\"runbookText\":\"%s\","
              /* The recorder: whether it runs, and the file it writes to. */
              "\"recording\":\"%s\",\"recordingFile\":\"%s\",\"timelapseSec\":%d,"
-             "\"boardTempC\":%s}",
+             "\"boardTempC\":%s,\"cecSource\":\"%s\",\"cecPower\":\"%s\"}",
              t10 < 0 ? "-" : "", t_abs / 10u, t_abs % 10u, kvm_thermal_state_name(kvm_thermal_state()), viewers,
              v.signal ? "ON" : "OFF", res, (unsigned)(v.fps_x100 / 100),
              (unsigned)(v.fps_x100 % 100), codec, (unsigned)v.kbps,
@@ -232,7 +243,8 @@ static int build_state(char *b, size_t n)
              (unsigned)(v.skipped_fps_x100 / 100u), (unsigned)(v.skipped_fps_x100 % 100u),
              running_slot(), boot_reason(), fw_version(), jiggle_s > 0 ? "ON" : "OFF", (int)jiggle_s,
              (unsigned)usb_hid_jiggler_nudges(), k_rb_states[rb.state], rb_json,
-             rec.recording ? "ON" : "OFF", rec.file, (int)kvm_setting_int("rec_tl_every"), board_temp);
+             rec.recording ? "ON" : "OFF", rec.file, (int)kvm_setting_int("rec_tl_every"), board_temp,
+             cec_json, cec_power);
 }
 
 /*
@@ -253,9 +265,10 @@ static int build_state(char *b, size_t n)
  * spare; the compiler checks the arithmetic at -O2 (format-truncation) and the
  * caller checks the result at runtime, because a truncated payload is not JSON.
  */
-/* The alert and the runbook line, both escaped, the recording's file name, plus the
+/* The alert and the runbook line, both escaped, the recording's file name, the CEC
+ * source name, plus the
  * fixed fields. */
-#define STATE_JSON_MAX (SCREENTEXT_ALERT_MAX * 2 + (RUNBOOK_NAME_MAX + RB_ERR_MAX + 32) * 2 + 800)
+#define STATE_JSON_MAX (SCREENTEXT_ALERT_MAX * 2 + (RUNBOOK_NAME_MAX + RB_ERR_MAX + 32) * 2 + 900)
 static void publish_snapshot(void);      /* defined with the discovery helpers below */
 static void publish_update_state(bool force);
 
@@ -586,6 +599,20 @@ static void publish_discovery(void)
         disco_clear("button", "btn_reset");
         disco_clear("button", "btn_forceoff");
     }
+    if (kvm_cap_active(KVM_CAP_CEC)) {
+        disco_sensor("sensor", "cec_source", "HDMI source", "{{ value_json.cecSource }}", NULL, NULL,
+                     "mdi:television-play", NULL);
+        disco_sensor("sensor", "cec_power", "HDMI source power", "{{ value_json.cecPower }}", NULL,
+                     NULL, "mdi:power-sleep", NULL);
+        disco_button("btn_cec_wake", "HDMI: wake source", "cec_wake", "mdi:power-on", NULL);
+        disco_button("btn_cec_standby", "HDMI: put source to sleep", "cec_standby", "mdi:power-sleep",
+                     NULL);
+    } else {
+        disco_clear("sensor", "cec_source");
+        disco_clear("sensor", "cec_power");
+        disco_clear("button", "btn_cec_wake");
+        disco_clear("button", "btn_cec_standby");
+    }
     if (kvm_cap_available(KVM_CAP_WOL) && kvm_setting_str("pwr_wol_mac")[0]) {
         disco_button("btn_wol", "Wake on LAN", "wol", "mdi:lan-connect", NULL);
     } else {
@@ -828,6 +855,10 @@ static void handle_command(esp_mqtt_event_handle_t e)
         kvm_atx_reset();
     } else if (strcmp(action, "forceoff") == 0) {
         kvm_atx_power_hold();
+    } else if (strcmp(action, "cec_wake") == 0) {
+        (void)kvm_cec_wake(-1);
+    } else if (strcmp(action, "cec_standby") == 0) {
+        (void)kvm_cec_standby(-1);
     } else if (strcmp(action, "wol") == 0) {
         kvm_wol_send(kvm_setting_str("pwr_wol_mac"));
     } else if (strcmp(action, "restart") == 0) {

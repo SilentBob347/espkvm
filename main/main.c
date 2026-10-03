@@ -40,6 +40,7 @@
 #include "kvm_thermal.h"
 #include "kvm_settings.h"
 #include "kvm_notify.h"
+#include "kvm_cec.h"
 #include "kvm_sched.h"
 #include "runbook.h"
 #include "usb_hid.h"
@@ -750,6 +751,8 @@ void app_main(void)
 
     ESP_LOGI(TAG, "boot: capture");
     capture_start();
+    /* HDMI-CEC waits on its own task for the bridge capture brings up. */
+    kvm_cec_init();
 
     report_pending_capabilities();
     kvm_caps_log();

@@ -68,6 +68,21 @@ typedef enum {
     KVM_BRIDGE_EDID_1024X768,
 } kvm_bridge_edid_profile_t;
 
+/** One HDMI-CEC frame: header (initiator << 4 | destination), opcode, operands. */
+typedef struct {
+    uint8_t len;
+    uint8_t data[16];
+} kvm_bridge_cec_frame_t;
+
+/** How the line answered the last frame sent. */
+typedef enum {
+    KVM_BRIDGE_CEC_TX_NONE = 0, /**< still going, or nothing sent */
+    KVM_BRIDGE_CEC_TX_OK,
+    KVM_BRIDGE_CEC_TX_NACK,     /**< nobody acknowledged a directed frame */
+    KVM_BRIDGE_CEC_TX_ARB_LOST, /**< another initiator won the line */
+    KVM_BRIDGE_CEC_TX_ERROR,
+} kvm_bridge_cec_tx_t;
+
 /**
  * Everything the capture path does to a bridge.
  *
@@ -88,6 +103,14 @@ typedef struct {
     void (*debug_bridge)(void *dev);
     void (*debug_stall_extras)(void *dev);
     void (*remove)(void *dev);
+    /* HDMI-CEC, for a bridge that has a controller and a board that wires pin 13
+     * to it. All three or none. */
+    esp_err_t (*cec_enable)(void *dev, bool on, uint8_t logical_addr);
+    esp_err_t (*cec_transmit)(void *dev, const kvm_bridge_cec_frame_t *f, uint8_t free_bits);
+    /** Collect what happened since the last call: a received frame and/or the
+     *  verdict on the frame being sent. Never blocks. */
+    esp_err_t (*cec_poll)(void *dev, kvm_bridge_cec_frame_t *rx, bool *got_rx,
+                          kvm_bridge_cec_tx_t *tx);
 } kvm_bridge_ops_t;
 
 /** A bridge that answered. */
@@ -219,6 +242,11 @@ static inline void kvm_bridge_debug_stall_extras(const kvm_bridge_t *b)
         b->ops->debug_stall_extras(b->dev);
     }
 }
+static inline bool kvm_bridge_has_cec(const kvm_bridge_t *b)
+{
+    return b && b->ops && b->ops->cec_enable && b->ops->cec_transmit && b->ops->cec_poll;
+}
+
 static inline void kvm_bridge_remove(kvm_bridge_t *b)
 {
     if (b->ops && b->ops->remove) {

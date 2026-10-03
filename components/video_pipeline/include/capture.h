@@ -4,6 +4,8 @@
  */
 #pragma once
 
+#include "kvm_bridge.h"
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -116,6 +118,9 @@ esp_err_t capture_snapshot_jpeg(uint8_t **out, size_t *out_len, uint32_t timeout
 esp_err_t capture_i2c_bus_init(void);
 
 i2c_master_bus_handle_t capture_i2c_bus(void);
+
+/** The HDMI bridge once capture has it running, NULL before (or with no chip). */
+const kvm_bridge_t *capture_bridge(void);
 
 #ifdef __cplusplus
 }

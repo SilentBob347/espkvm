@@ -31,6 +31,8 @@ Runbooks add these:
 | `timelapse <every>` | record one frame every that many seconds, played back at 25 fps, until stopped |
 | `timelapse <every> <seconds>` | the same, stopping by itself after that long |
 | `screenshot` | save the screen as a JPEG on the microSD card |
+| `hdmi standby`, `hdmi wake` | put the HDMI source to standby, or wake it, over HDMI-CEC |
+| `hdmi key <name>` | send a remote-control key over HDMI-CEC: `up`, `down`, `left`, `right`, `select`, `back`, `home`, `menu`, `play`, `pause`, `stop`, `volume_up`, `volume_down`, `mute`, `0` .. `9`, `red`, `green`, `yellow`, `blue` and more |
 
 A recording started by a runbook carries on after the runbook ends, until
 `record stop`, its length, or the length limit in Settings. A timelapse has no

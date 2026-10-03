@@ -287,7 +287,10 @@ static const kvm_setting_t s_settings[] = {
         .title = "Pointer mode",
         .help = "Absolute puts the target's cursor exactly where you click and is "
                 "the right choice almost always. Relative is for software that "
-                "captures the pointer, such as games and 3D viewers.",
+                "captures the pointer, such as games and 3D viewers, and for "
+                "SteamOS in game mode, where the absolute one does not move. In "
+                "relative mode the console hides your own cursor while in "
+                "control, so the target's is the only one; Esc gives it back.",
         .min = 0, .max = ENUM_MAX(s_mouse_choices), .def = 0, .choices = s_mouse_choices, .requires_cap = KVM_CAP_HID,
     },
     {
@@ -545,6 +548,14 @@ static const kvm_setting_t s_settings[] = {
                 "it a magic packet. The target must have Wake-on-LAN enabled in its BIOS and "
                 "keep standby power.",
         .def_str = "", .max_len = 17, .requires_cap = KVM_CAP_WOL,
+    },
+    {
+        .key = "cec_enable", .section = "power", .group = "HDMI-CEC", .type = KVM_VT_BOOL,
+        .title = "HDMI-CEC",
+        .help = "Talk to the target over the HDMI cable's CEC line: see what is connected, "
+                "put it to sleep, wake it and send remote-control keys. Works with TV boxes, "
+                "consoles, a Raspberry Pi; most PCs do not speak CEC.",
+        .def = 1, .requires_cap = KVM_CAP_CEC,
     },
     {
         .key = "atx_enable", .section = "power", .group = "ATX wiring", .type = KVM_VT_BOOL,

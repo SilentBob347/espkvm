@@ -7,6 +7,38 @@ bumps the patch).
 
 ## [Unreleased]
 
+## [0.58.0] - 2026-10-03
+
+### Added
+- **HDMI-CEC.** On boards with a TC358743 capture chip the device now talks
+  over the CEC line of the HDMI cable. It acts as a TV, finds what is
+  connected and shows its name, vendor and power state. From the console's
+  new remote panel you can send remote-control keys, put the source to
+  standby or wake it. Also in the API (`/api/v1/cec`), in runbooks
+  (`hdmi standby`, `hdmi wake`, `hdmi key <name>`) and in Home Assistant.
+  Only media boxes, consoles and the like speak CEC; an ordinary PC does
+  not. What the source says about itself is under the HDMI icon at the
+  bottom, and the remote button shows up only when a source answers. Tried
+  with a Steam Deck in its dock: the name, the remote keys in the Steam menus
+  and standby work; wake does not, SteamOS does not wake on CEC. Off with one
+  switch in Settings &rarr; Power.
+- **Pointer lock in relative mode.** While you are in control, the console
+  hides your own cursor and sends only movements, so the target's cursor is the
+  only one on the screen. Esc gives it back. This is what SteamOS in game mode
+  needs: an absolute pointer does not move there.
+
+### Changed
+- The buttons under the picture are icons now: touch, fit / stretch / 1:1,
+  select text, copy text.
+
+### Fixed
+- **Clicks in relative mode moved the cursor first.** They went out as
+  absolute reports, so the target's cursor jumped to the browser's spot before
+  every click.
+- **A Steam Deck was shown as Android.** Steam re-reads the USB strings the
+  way Android does. Android also re-reads the device's own name strings, and
+  that is what the guess looks for now.
+
 ## [0.57.4] - 2026-10-03
 
 ### Fixed

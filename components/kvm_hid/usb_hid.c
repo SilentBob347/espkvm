@@ -375,6 +375,11 @@ void tud_hid_report_complete_cb(uint8_t instance, uint8_t const *report, uint16_
  *   Windows  requests string 0xEE (the MS OS descriptor); the others never do.
  *   Android  D D C0 C0 <strings> then a second pass re-reading every string,
  *            each preceded by a langid (S00) request - so many S00 requests.
+ *            The device's own strings (1-3) are among them: that is the tell.
+ *            A Linux desktop does a langid-led second pass too, from user
+ *            space (Steam on a Steam Deck: D D D C0 C0 S00 S02 S01 S03 C0 ...
+ *            then S00 S04 S00 S05 S00 S06 over and over), but only over the
+ *            interface strings (4 and up).
  *   macOS    reads each string twice in a row (S02 S02 ...) and asks for the
  *            langid (S00) last.
  *   Linux    reads the langid (S00) first and each string once; ~16 requests.
@@ -416,7 +421,8 @@ const char *usb_hid_target_os(void)
     if (n < 6) {
         return "unknown"; /* too little of an enumeration to tell */
     }
-    int langid = 0;
+    int reread_dev = 0; /* a device string (1-3) read again, right after a langid */
+    bool seen[4] = {false};
     bool has_ee = false, dup = false, langid_first = false, first_string = true;
     int prev = -1;
     for (int i = 0; i < n; i++) {
@@ -435,8 +441,13 @@ const char *usb_hid_target_os(void)
         if (idx == 0xEE) {
             has_ee = true;
         }
+        if (idx >= 1 && idx <= 3) {
+            if (seen[idx] && prev == 0) {
+                reread_dev++;
+            }
+            seen[idx] = true;
+        }
         if (idx == 0) {
-            langid++;
             prev = 0;
         } else {
             if (idx == prev) {
@@ -448,7 +459,7 @@ const char *usb_hid_target_os(void)
     if (has_ee) {
         return "windows";
     }
-    if (langid >= 3) {
+    if (reread_dev >= 2) {
         return "android";
     }
     /* macOS reads strings twice in a row AND requests the langid last; a lone

@@ -20,6 +20,9 @@
 #include "tc358743_edid.h"
 #include "tc358743_hdmi_debug.h"
 
+/* CEC is on: keep its block out of reset and its events unmasked across a re-init. */
+static bool s_cec_on;
+
 static const char *TAG = "tc358743";
 
 /* How hard to look for the bridge before deciding it is not there. */
@@ -382,14 +385,12 @@ static uint16_t rd16(tc358743_t *d, uint16_t r)
     return (uint16_t)b[0] | ((uint16_t)b[1] << 8);
 }
 
-#if CONFIG_KVM_TC358743_ADV_DEBUG
 static uint32_t rd32(tc358743_t *d, uint16_t r)
 {
     uint8_t b[4] = {0};
     i2c_read_reg(d, r, b, 4);
     return (uint32_t)b[0] | ((uint32_t)b[1] << 8) | ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
 }
-#endif
 
 static void wr16_and_or(tc358743_t *d, uint16_t r, uint16_t mask, uint16_t val)
 {
@@ -547,7 +548,8 @@ static void initial_setup(tc358743_t *d)
 {
     tc358743_cfg_t *pdata = &d->cfg;
 
-    wr16_and_or(d, SYSCTL, (uint16_t) ~(MASK_IRRST | MASK_CECRST), MASK_IRRST | MASK_CECRST);
+    wr16_and_or(d, SYSCTL, (uint16_t) ~(MASK_IRRST | MASK_CECRST),
+                MASK_IRRST | (s_cec_on ? 0 : MASK_CECRST));
     reset_blocks(d, MASK_CTXRST | MASK_HDMIRST);
     sleep_mode(d, false);
 
@@ -814,7 +816,7 @@ esp_err_t tc358743_init_streaming(tc358743_t *d)
     apply_csi_color_space(d);
 
     wr16(d, INTSTATUS, 0xffff);
-    wr16(d, INTMASK, (uint16_t)(~(MASK_HDMI_MSK | MASK_CSI_MSK) & 0xffff));
+    wr16(d, INTMASK, (uint16_t)(~(MASK_HDMI_MSK | MASK_CSI_MSK | (s_cec_on ? 0x000c : 0)) & 0xffff));
 
     /* HPD and enable_stream(true): call tc358743_enable_hdmi_output() before esp_cam_ctlr_start() so MIPI is active. */
     tc358743_debug_status(d);
@@ -1020,5 +1022,113 @@ esp_err_t tc358743_set_streaming(tc358743_t *d, bool on)
     if (!on) {
         set_csi_lanes(d, d->cfg.lanes);
     }
+    return ESP_OK;
+}
+
+/* ------------------------------------------------------------------ CEC */
+/*
+ * The chip's own HDMI-CEC controller. Register names and the order things are
+ * done in come from the Linux tc358743 driver; the protocol itself lives in
+ * kvm_cec, which drives this through the bridge's three CEC operations.
+ */
+#define CECEN 0x0600
+#define CECADD 0x0604
+#define CECREN 0x060c
+#define CECTEN 0x0620
+#define CECTCTL 0x0628
+#define MASK_CECBRD (1u << 4)
+#define CECRSTAT 0x062c
+#define MASK_CECRIEND (1u << 0)
+#define CECTSTAT 0x0630
+#define MASK_CECTIUR (1u << 4)
+#define MASK_CECTIACK (1u << 3)
+#define MASK_CECTIAL (1u << 2)
+#define MASK_CECTIEND (1u << 1)
+#define CECRBUF1 0x0634
+#define CECTBUF1 0x0674
+#define MASK_CECTEOM (1u << 8)
+#define CECRCTR 0x06b4
+#define CECIMSK 0x06c0
+#define CECICLR 0x06cc
+#define MASK_CECTICLR (1u << 1)
+#define MASK_CECRICLR (1u << 0)
+#define MASK_CEC_TINT 0x0008
+#define MASK_CEC_RINT 0x0004
+
+esp_err_t tc358743_cec_enable(tc358743_t *d, bool on, uint8_t logical_addr)
+{
+    if (!d) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!on) {
+        wr32(d, CECEN, 0);
+        wr16_and_or(d, SYSCTL, (uint16_t)~MASK_CECRST, MASK_CECRST);
+        s_cec_on = false;
+        return ESP_OK;
+    }
+    s_cec_on = true;
+    wr16_and_or(d, SYSCTL, (uint16_t)~MASK_CECRST, 0);
+    /* Let the CEC events into INTSTATUS: that is the "something new" flag.
+     * CECRSTAT/CECTSTAT keep their last value and cannot tell old from new. */
+    wr16(d, INTMASK, rd16(d, INTMASK) & (uint16_t)~(MASK_CEC_RINT | MASK_CEC_TINT));
+    wr16(d, INTSTATUS, MASK_CEC_RINT | MASK_CEC_TINT);
+    wr32(d, CECIMSK, 0x3);
+    wr32(d, CECICLR, MASK_CECTICLR | MASK_CECRICLR);
+    /* Enable first: the address does not take while the block is off. */
+    wr32(d, CECEN, 1);
+    wr32(d, CECREN, 1);
+    wr32(d, CECADD, logical_addr < 15 ? (1u << logical_addr) : 0);
+    return ESP_OK;
+}
+
+esp_err_t tc358743_cec_transmit(tc358743_t *d, const uint8_t *msg, uint8_t len, uint8_t free_bits)
+{
+    if (!d || !s_cec_on || len < 1 || len > 16) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    wr32(d, CECTCTL, ((msg[0] & 0x0f) == 0x0f ? MASK_CECBRD : 0) | (free_bits ? free_bits - 1u : 4u));
+    for (int i = 0; i < len; i++) {
+        wr32(d, CECTBUF1 + i * 4, msg[i] | (i == len - 1 ? MASK_CECTEOM : 0));
+    }
+    wr32(d, CECTEN, 1);
+    return ESP_OK;
+}
+
+esp_err_t tc358743_cec_poll(tc358743_t *d, uint8_t *rx, uint8_t *rx_len, int *tx_result)
+{
+    *rx_len = 0;
+    *tx_result = 0;
+    if (!d || !s_cec_on) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    const uint16_t is = rd16(d, INTSTATUS) & (MASK_CEC_RINT | MASK_CEC_TINT);
+    if (!is) {
+        return ESP_OK;
+    }
+    uint32_t clr = 0;
+    if (is & MASK_CEC_TINT) {
+        const uint32_t tx = rd32(d, CECTSTAT);
+        *tx_result = (tx & MASK_CECTIEND)  ? 1
+                     : (tx & MASK_CECTIACK) ? 2
+                     : (tx & MASK_CECTIAL)  ? 3
+                     : tx                   ? 4
+                                            : 0;
+        clr |= MASK_CECTICLR;
+    }
+    if (is & MASK_CEC_RINT) {
+        if (rd32(d, CECRSTAT) & MASK_CECRIEND) {
+            uint8_t n = (uint8_t)(rd32(d, CECRCTR) & 0x1f);
+            if (n > 16) {
+                n = 16;
+            }
+            for (int i = 0; i < n; i++) {
+                rx[i] = (uint8_t)(rd32(d, CECRBUF1 + i * 4) & 0xff);
+            }
+            *rx_len = n;
+        }
+        clr |= MASK_CECRICLR;
+    }
+    wr32(d, CECICLR, clr);
+    wr16(d, INTSTATUS, is);
     return ESP_OK;
 }

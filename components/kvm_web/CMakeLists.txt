@@ -6,6 +6,7 @@ idf_component_register(
         "fw_install.c"
         "record_api.c"
         "totp.c"
+        "cec_api.c"
     INCLUDE_DIRS "include"
     PRIV_INCLUDE_DIRS "."
     REQUIRES
@@ -28,6 +29,7 @@ idf_component_register(
         kvm_runbook
         kvm_sched
         kvm_notify
+        kvm_cec
         kvm_rtc
         app_update
         esp_app_format

@@ -84,6 +84,11 @@ i2c_master_bus_handle_t capture_i2c_bus(void)
     return s_i2c_bus;
 }
 
+const kvm_bridge_t *capture_bridge(void)
+{
+    return (s_cap.bridge.ops && kvm_cap_available(KVM_CAP_VIDEO)) ? &s_cap.bridge : NULL;
+}
+
 
 /*
  * Are there external pull-ups on the capture I2C at all?

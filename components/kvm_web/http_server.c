@@ -4464,15 +4464,15 @@ httpd_handle_t http_server_start(void)
      * and input die with a 404 on wss while every REST route still answers, which
      * looks like anything but a table that is one entry too small.
      *
-     * The count, as of writing: 47 in api_uris, 8 from record_api_routes(), 4 from
-     * kvm_auth_register(), and 12 standalone (the console files, /cert.pem, /stream,
-     * /video, /ws) = 71. Adding the log endpoint once took it from 44 to 45 and
+     * The count, as of writing: 49 in api_uris, 9 from record_api_routes(), 5 from
+     * cec_api_routes(), 8 from kvm_auth_register(), and 12 standalone (the console
+     * files, /cert.pem, /stream, /video, /ws) = 83. Adding the log endpoint once took it from 44 to 45 and
      * cost the keyboard; the recorder's routes took it past 64.
      *
      * The check below now logs a failed registration rather than swallowing it, so
      * the next person gets a line instead of a mystery - but keep headroom anyway.
      */
-    cfg.max_uri_handlers = 80;
+    cfg.max_uri_handlers = 96;
 
     if (kvm_auth_init() != ESP_OK) {
         /* Without a working password store the only safe answer is not to
@@ -4667,6 +4667,11 @@ httpd_handle_t http_server_start(void)
     const httpd_uri_t *record_uris = record_api_routes(&n_record);
     for (size_t i = 0; i < n_record; i++) {
         register_route(h, &record_uris[i]);
+    }
+    size_t n_cec = 0;
+    const httpd_uri_t *cec_uris = cec_api_routes(&n_cec);
+    for (size_t i = 0; i < n_cec; i++) {
+        register_route(h, &cec_uris[i]);
     }
 
     /* Before anything else is registered: a request that arrives while the

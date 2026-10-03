@@ -73,6 +73,26 @@ static void op_remove(void *dev)
     tc358743_remove((tc358743_t *)dev);
 }
 
+static esp_err_t op_cec_enable(void *dev, bool on, uint8_t la)
+{
+    return tc358743_cec_enable((tc358743_t *)dev, on, la);
+}
+
+static esp_err_t op_cec_transmit(void *dev, const kvm_bridge_cec_frame_t *f, uint8_t free_bits)
+{
+    return tc358743_cec_transmit((tc358743_t *)dev, f->data, f->len, free_bits);
+}
+
+static esp_err_t op_cec_poll(void *dev, kvm_bridge_cec_frame_t *rx, bool *got_rx,
+                             kvm_bridge_cec_tx_t *tx)
+{
+    int t = 0;
+    esp_err_t err = tc358743_cec_poll((tc358743_t *)dev, rx->data, &rx->len, &t);
+    *got_rx = rx->len > 0;
+    *tx = (kvm_bridge_cec_tx_t)t;
+    return err;
+}
+
 static const kvm_bridge_ops_t s_ops = {
     .init_streaming = op_init_streaming,
     .set_edid_profile = op_set_edid_profile,
@@ -86,6 +106,9 @@ static const kvm_bridge_ops_t s_ops = {
     .debug_bridge = op_debug_bridge,
     .debug_stall_extras = op_debug_stall_extras,
     .remove = op_remove,
+    .cec_enable = op_cec_enable,
+    .cec_transmit = op_cec_transmit,
+    .cec_poll = op_cec_poll,
 };
 
 /*

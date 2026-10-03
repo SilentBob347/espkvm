@@ -298,6 +298,18 @@ static bool parse_native(const char *src, rb_script_t *out, char *err, size_t er
                 fail(err, err_cap, line_no, "screenshot takes nothing after it");
                 return false;
             }
+        } else if (strcmp(verb, "hdmi") == 0) {
+            /* HDMI-CEC to the source: "hdmi standby", "hdmi wake", "hdmi key up".
+             * The key name is checked when it runs: the list lives with CEC. */
+            st->kind = RB_HDMI;
+            for (size_t i = 0; i < rlen; i++) {
+                arg[i] = (char)tolower((unsigned char)arg[i]);
+            }
+            const bool key = strncmp(arg, "key ", 4) == 0 && arg[4];
+            if (strcmp(arg, "standby") != 0 && strcmp(arg, "wake") != 0 && !key) {
+                fail(err, err_cap, line_no, "hdmi wants standby, wake or key <name>");
+                return false;
+            }
         } else if (strcmp(verb, "wait") == 0 || strcmp(verb, "gone") == 0) {
             st->kind = verb[0] == 'w' ? RB_WAIT : RB_GONE;
             if (!rlen) {
@@ -753,6 +765,7 @@ const char *rb_kind_name(rb_kind_t kind)
     case RB_RECORD_STOP: return "record stop";
     case RB_SCREENSHOT: return "screenshot";
     case RB_TIMELAPSE: return "timelapse";
+    case RB_HDMI: return "hdmi";
     }
     return "?";
 }

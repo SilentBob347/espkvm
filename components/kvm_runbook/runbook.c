@@ -12,6 +12,7 @@
 #include "runbook.h"
 
 #include "kvm_record.h"
+#include "kvm_cec.h"
 
 #include "cJSON.h"
 #include "esp_heap_caps.h"
@@ -211,6 +212,30 @@ static void run_task(void *arg)
         case RB_RECORD_STOP:
             kvm_record_stop("stopped by a runbook");
             break;
+        case RB_HDMI: {
+            esp_err_t err;
+            uint8_t code = 0;
+            if (strcmp(st->arg, "standby") == 0) {
+                err = kvm_cec_standby(-1);
+            } else if (strcmp(st->arg, "wake") == 0) {
+                err = kvm_cec_wake(-1);
+            } else if (kvm_cec_key_from_name(st->arg + 4, &code)) {
+                err = kvm_cec_key(-1, code);
+            } else {
+                snprintf(msg, sizeof(msg), "line %u: no such remote key \"%.32s\"", (unsigned)st->line,
+                         st->arg + 4);
+                end = RUNBOOK_FAILED;
+                ok = false;
+                break;
+            }
+            if (err != ESP_OK) {
+                snprintf(msg, sizeof(msg), "line %u: HDMI-CEC: %s", (unsigned)st->line,
+                         err == ESP_ERR_NOT_FOUND ? "no device on the line" : "CEC is off or busy");
+                end = RUNBOOK_FAILED;
+                ok = false;
+            }
+            break;
+        }
         case RB_SCREENSHOT: {
             char file[64], why[96];
             if (kvm_record_screenshot(file, sizeof(file), why, sizeof(why)) != ESP_OK) {

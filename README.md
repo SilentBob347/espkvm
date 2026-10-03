@@ -101,6 +101,7 @@ Useful for what it does today, and honest about the rest.
 | Watching the screen for words while nobody is looking | works; off by default. Give it phrases, it alerts in the log and in Home Assistant |
 | Guessing the target's OS from how it enumerates USB | works |
 | Wake-on-LAN | works |
+| HDMI-CEC: see the source, send it remote keys, standby and wake | works on boards with a TC358743 capture chip; the device acts as a TV. Only media boxes, consoles, a Raspberry Pi and the like speak CEC - an ordinary PC does not. Tried with a Steam Deck in its dock: name, remote keys in the Steam menus and standby work, wake does not ([clip](https://www.youtube.com/watch?v=hXiaOugYkVM)) |
 | A battery-backed clock chip | optional; with one fitted the device knows the time after a restart with no network - file names and two-factor codes need it. A DS3231 (DS3231M, DS3232) works and shows its thermometer too; a PCF8563 / BM8563, PCF85063 or PCF8523 is supported from the datasheet but not tried yet. Found by itself on the capture board's I2C bus, or chosen with its own pins in Settings &rarr; System &rarr; Clock. A DS1307 is not used |
 | WiFi - station or its own access point | works; on boards with an ESP32-C6, or an ESP32-C5 for 5 GHz. One link at a time, plus a rescue hotspot and a captive portal |
 | ATX power control (power, reset, power LED) | works; wiring in [docs/wiring.md](docs/wiring.md) |
@@ -1249,6 +1250,8 @@ Everything the console does is available over HTTP.
 | `GET /api/v1/storage/images` | disk images on the card and in flash, and which one is active |
 | `POST /api/v1/storage/upload`, `/rescue`, `/delete` | manage the virtual-media images; a file of 4 GB and over goes in parts, each with `&offset=` |
 | `POST /api/v1/power/wake` | send a Wake-on-LAN magic packet to the target's MAC |
+| `GET /api/v1/cec` | HDMI-CEC: the devices on the line (name, vendor, power state) and the last messages |
+| `POST /api/v1/cec/key`, `/power`, `/send`, `/scan` | send a remote key (`{"key":"up"}`), `{"action":"standby"\|"wake"}`, a raw message (`{"hex":"04 8f"}`), or look for devices again; `"la"` picks a device other than the active one |
 | `POST /api/v1/power/click`, `/hold`, `/reset` | ATX: tap power, hold power for a hard off, tap reset |
 | `GET /api/v1/video/frame.jpg` | one frame as a JPEG, on either codec |
 | `POST /api/v1/record/start`, `/stop`, `GET /api/v1/record/status` | record the screen to VIDEO/ on the card; `?seconds=` for a set length, `?every=` for a timelapse |
@@ -1328,6 +1331,7 @@ components/
                   IPv6, mDNS, Wake-on-LAN, and the VPN clients (WireGuard,
                   or Tailscale through third_party/microlink)
   kvm_atx/        power and reset buttons, power-LED sensing
+  kvm_cec/        HDMI-CEC: acting as a TV, remote keys, standby and wake
   kvm_display/    the optional status screen (I2C OLED, round SPI LCD)
   kvm_log/        the log kept in RTC memory across a restart
   kvm_mqtt/       Home Assistant discovery and state

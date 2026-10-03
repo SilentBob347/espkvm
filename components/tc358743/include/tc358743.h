@@ -154,6 +154,14 @@ esp_err_t tc358743_get_avi_color_format(tc358743_t *dev, uint8_t *out_y);
 
 void tc358743_cfg_defaults_waveshare_pi(tc358743_cfg_t *c);
 
+
+/** HDMI-CEC: take @p logical_addr (0..14) and listen, or switch the block off. */
+esp_err_t tc358743_cec_enable(tc358743_t *dev, bool on, uint8_t logical_addr);
+/** Start sending one frame; the verdict arrives through tc358743_cec_poll(). */
+esp_err_t tc358743_cec_transmit(tc358743_t *dev, const uint8_t *msg, uint8_t len, uint8_t free_bits);
+/** A received frame (@p rx_len > 0) and/or the last send's result: 0 none, 1 ok, 2 nack,
+ *  3 arbitration lost, 4 error. */
+esp_err_t tc358743_cec_poll(tc358743_t *dev, uint8_t *rx, uint8_t *rx_len, int *tx_result);
 #ifdef __cplusplus
 }
 #endif

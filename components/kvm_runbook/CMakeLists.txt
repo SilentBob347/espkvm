@@ -10,4 +10,5 @@ idf_component_register(
         kvm_hid
         kvm_screentext
         kvm_record
+        kvm_cec
 )
