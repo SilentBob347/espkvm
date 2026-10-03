@@ -17,4 +17,6 @@ esp_err_t send_json_error(httpd_req_t *req, const char *status, const char *mess
 const httpd_uri_t *record_api_routes(size_t *count);
 /** Set the clock from the browser's time (Unix seconds) if it was never set. */
 void kvm_web_clock_from_browser(long long t);
+/** Restart a moment after the reply has gone out, from a timer. */
+void kvm_web_restart_soon(uint32_t delay_ms);
 

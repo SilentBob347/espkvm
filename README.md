@@ -829,8 +829,11 @@ away. It is open
 because the password it would otherwise invent is printed to a serial console
 and a display, and some of these boards have neither. Nothing is handed over
 with it: until a real password is set, the only thing that answers is the page
-that sets one. It stops happening as soon as one exists, and there is a switch
-in **Settings -> Network** to turn it off.
+that sets one. There is a switch in **Settings -> Network** to turn it off.
+
+Setting the password closes the open hotspot, so the same form asks where the
+device goes next: the network cable (on boards that have one), your WiFi, or
+its own hotspot with a password you choose. The device then restarts into it.
 
 After that the cable is only needed if something goes badly wrong - updates are
 installed from the console itself. Checking for them is **off by default**:
@@ -1269,7 +1272,7 @@ Everything the console does is available over HTTP.
 | `POST`/`GET /api/v1/wifi/scan` | start a scan, then read what it found (boards with an ESP32-C6) |
 | `GET /api/v1/pins` | the board's expansion header, and which GPIOs it leaves free |
 | `GET /api/v1/auth/session` | whether a login is required, and who is signed in |
-| `POST /api/v1/auth/login`, `/logout`, `/password` | the session, and changing the password. With two-factor on, a login without `code` (or with a wrong one) answers 401 with `"needCode": true` |
+| `POST /api/v1/auth/login`, `/logout`, `/password` | the session, and changing the password. With two-factor on, a login without `code` (or with a wrong one) answers 401 with `"needCode": true`. On the setup hotspot the first password also takes `network` (`ethernet`, `wifi` with `ssid` and `wifiPass`, or `ap` with `apPass`) - the choices are in the session's `setupNetwork` - and the device restarts |
 | `POST /api/v1/auth/2fa/begin`, `/enable`, `/disable`, `/recovery` | set up two-factor sign-in (a secret and its QR code), confirm it with a code, turn it off, or make new recovery codes; the last three take `password` and `code` |
 | `GET /stream` | MJPEG as `multipart/x-mixed-replace`; answers 409 while H.264 is selected |
 | `GET /cert.pem` | the device's CA certificate, to import and trust the device (also on port 80) |

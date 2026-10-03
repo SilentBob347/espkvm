@@ -11,6 +11,7 @@
 
 #include "driver/gpio.h"
 #include "esp_log.h"
+#include "sdkconfig.h"
 #include "esp_random.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -1026,6 +1027,8 @@ static esp_err_t send_json(httpd_req_t *req, const char *status, const char *bod
     return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
 }
 
+static bool setup_net_needed(void);
+
 static esp_err_t auth_session_get(httpd_req_t *req)
 {
     char token[TOKEN_CHARS + 1] = {0};
@@ -1054,14 +1057,20 @@ static esp_err_t auth_session_get(httpd_req_t *req)
                                                       : "no cookie sent");
     }
 
-    char body[224];
+    char body[320];
     snprintf(body, sizeof(body),
              "{\"required\":%s,\"authenticated\":%s,\"mustChange\":%s,\"user\":\"%s\","
              /* Whether a viewing token exists, never what it is. */
-             "\"viewToken\":%s,\"twoFactor\":%s}",
+             "\"viewToken\":%s,\"twoFactor\":%s,\"setupNetwork\":%s}",
              kvm_auth_required() ? "true" : "false", authenticated ? "true" : "false",
              must_change ? "true" : "false", kvm_setting_str("sec_user"),
-             kvm_auth_token_exists() ? "true" : "false", s_totp_on ? "true" : "false");
+             kvm_auth_token_exists() ? "true" : "false", s_totp_on ? "true" : "false",
+             !setup_net_needed() ? "null"
+#if CONFIG_KVM_ETH_ENABLE
+                                 : "[\"ethernet\",\"wifi\",\"ap\"]");
+#else
+                                 : "[\"wifi\",\"ap\"]");
+#endif
     return send_json(req, "200 OK", body);
 }
 
@@ -1157,20 +1166,89 @@ static esp_err_t auth_logout_post(httpd_req_t *req)
     return send_json(req, "200 OK", "{\"status\":\"logged out\"}");
 }
 
+/*
+ * The first password, set over the open setup hotspot, also has to say how the
+ * device reaches a network afterwards. A password ends the setup hotspot, and
+ * without a choice the next boot would bring up a hotspot whose password only
+ * the serial log shows - on a board with no network port, that is no way in.
+ */
+typedef struct {
+    int mode; /* kvm_net_mode_t */
+    char ssid[33];
+    char pass[64];
+} setup_net_t;
+
+static bool setup_net_needed(void)
+{
+    return kvm_wifi_setup_ap_active() && !s_have_password;
+}
+
+static const char *setup_net_parse(const cJSON *j, setup_net_t *net)
+{
+    char mode[12] = {0};
+    if (!json_str_field(j, "network", mode, sizeof(mode))) {
+        return "choose how the device joins a network";
+    }
+    if (strcmp(mode, "ethernet") == 0) {
+#if CONFIG_KVM_ETH_ENABLE
+        net->mode = KVM_NET_ETHERNET;
+        return NULL;
+#else
+        return "this board has no network port";
+#endif
+    }
+    if (strcmp(mode, "wifi") == 0) {
+        net->mode = KVM_NET_WIFI_STA;
+        if (!json_str_field(j, "ssid", net->ssid, sizeof(net->ssid)) || !net->ssid[0]) {
+            return "the WiFi network name is required";
+        }
+        (void)json_str_field(j, "wifiPass", net->pass, sizeof(net->pass));
+        const size_t n = strlen(net->pass);
+        return n == 0 || n >= 8 ? NULL : "a WiFi password has at least 8 characters";
+    }
+    if (strcmp(mode, "ap") == 0) {
+        net->mode = KVM_NET_WIFI_AP;
+        (void)json_str_field(j, "apPass", net->pass, sizeof(net->pass));
+        return strlen(net->pass) >= 8 ? NULL : "the hotspot password must be at least 8 characters";
+    }
+    return "network must be ethernet, wifi or ap";
+}
+
+static void setup_net_apply(const setup_net_t *net)
+{
+    (void)kvm_setting_set_int("net_mode", net->mode);
+    if (net->mode == KVM_NET_WIFI_STA) {
+        (void)kvm_setting_set_str("wifi_ssid", net->ssid);
+        (void)kvm_setting_set_str("wifi_pass", net->pass);
+    } else if (net->mode == KVM_NET_WIFI_AP) {
+        (void)kvm_setting_set_int("ap_open", 0);
+        (void)kvm_setting_set_str("ap_pass", net->pass);
+    }
+    ESP_LOGI(TAG, "first password set over the setup hotspot; network: %s - restarting",
+             net->mode == KVM_NET_WIFI_STA ? "wifi" : net->mode == KVM_NET_WIFI_AP ? "hotspot" : "ethernet");
+}
+
 static esp_err_t auth_password_post(httpd_req_t *req)
 {
     if (!kvm_auth_check(req)) {
         return kvm_auth_challenge(req);
     }
-    char body[256];
+    char body[512];
     if (read_body(req, body, sizeof(body)) != ESP_OK) {
         return send_json(req, "400 Bad Request", "{\"error\":\"malformed request\"}");
     }
     char current[80] = {0};
     char next[80] = {0};
+    setup_net_t net = {0};
+    const bool need_net = setup_net_needed();
+    const char *net_err = NULL;
     cJSON *j = cJSON_Parse(body);
+    memset(body, 0, sizeof(body));
     bool fields_ok = j && json_str_field(j, "current", current, sizeof(current)) &&
                      json_str_field(j, "next", next, sizeof(next));
+    if (fields_ok && need_net) {
+        net_err = setup_net_parse(j, &net);
+    }
     cJSON_Delete(j);
     if (!fields_ok) {
         return send_json(req, "400 Bad Request",
@@ -1179,6 +1257,12 @@ static esp_err_t auth_password_post(httpd_req_t *req)
     if (strlen(next) < 8) {
         return send_json(req, "400 Bad Request",
                          "{\"error\":\"the new password must be at least 8 characters\"}");
+    }
+    if (net_err) {
+        memset(&net, 0, sizeof(net));
+        char msg[96];
+        snprintf(msg, sizeof(msg), "{\"error\":\"%s\"}", net_err);
+        return send_json(req, "400 Bad Request", msg);
     }
     if (!password_matches(current)) {
         memset(current, 0, sizeof(current));
@@ -1199,6 +1283,13 @@ static esp_err_t auth_password_post(httpd_req_t *req)
     char cookie[192];
     set_session_cookie(req, cookie, sizeof(cookie), "", true);
     ESP_LOGI(TAG, "password changed; all sessions ended");
+    if (need_net) {
+        /* The restart is what closes the open hotspot. */
+        setup_net_apply(&net);
+        memset(&net, 0, sizeof(net));
+        kvm_web_restart_soon(1500);
+        return send_json(req, "200 OK", "{\"status\":\"changed\",\"restart\":true}");
+    }
     return send_json(req, "200 OK", "{\"status\":\"changed\"}");
 }
 

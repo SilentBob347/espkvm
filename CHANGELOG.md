@@ -7,6 +7,17 @@ bumps the patch).
 
 ## [Unreleased]
 
+## [0.57.4] - 2026-10-03
+
+### Fixed
+- **Locked out after the first restart on boards with no network port.** On
+  the ESP32-P4-WIFI6 and the FireBeetle 2, a password set over the open setup
+  hotspot was followed, at the next boot, by a hotspot with a made-up password
+  only the serial log showed. Now the first password comes with a choice:
+  join your WiFi, keep the hotspot with a password you pick, or (on boards
+  with a port) use the cable. The device restarts into it, which also closes
+  the open hotspot at once.
+
 ## [0.57.3] - 2026-10-03
 
 ### Fixed

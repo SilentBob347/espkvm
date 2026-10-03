@@ -1010,7 +1010,7 @@ static void restart_soon_cb(void *arg)
     esp_restart();
 }
 
-static void restart_soon(uint32_t delay_ms)
+void kvm_web_restart_soon(uint32_t delay_ms)
 {
     /* Everyone watching gets the same warning, not only whoever asked. */
     ws_broadcast_update(UPDATE_RESTARTING, 100);
@@ -1154,7 +1154,7 @@ static esp_err_t api_system_update_post_body(httpd_req_t *req)
     ESP_LOGW(TAG, "update written to %s, restarting", target->label);
     /* Arm the reboot before replying, so it fires even if the send below blocks or
      * the connection is already gone (issue #13). */
-    restart_soon(1000);
+    kvm_web_restart_soon(1000);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, "{\"status\":\"written\",\"restarting\":true}");
 }
@@ -2081,8 +2081,8 @@ static esp_err_t api_system_boot_slot_post(httpd_req_t *req)
     ESP_LOGW(TAG, "boot slot switched to %s (%s); restarting", label, d.version);
     httpd_resp_set_type(req, "application/json");
     esp_err_t sent = httpd_resp_sendstr(req, "{\"status\":\"restarting\"}");
-    /* From a timer, a moment after the reply reaches the browser (see restart_soon). */
-    restart_soon(300);
+    /* From a timer, a moment after the reply reaches the browser (see kvm_web_restart_soon). */
+    kvm_web_restart_soon(300);
     return sent;
 }
 
