@@ -564,6 +564,13 @@ void *__wrap_eh_host_port_dma_alloc(size_t n)
     return p ? p : __real_eh_host_port_dma_alloc(n);
 }
 
+static bool s_unclaimed;
+
+void kvm_wifi_set_unclaimed(bool unclaimed)
+{
+    s_unclaimed = unclaimed;
+}
+
 esp_err_t kvm_wifi_init(void)
 {
     const int32_t m = kvm_setting_int("net_mode");
@@ -578,7 +585,16 @@ esp_err_t kvm_wifi_init(void)
     if (coproc_wifi_up() != ESP_OK) {
         return ESP_OK; /* WiFi is optional; the warning is already logged */
     }
-    esp_err_t err = (s_mode == KVM_NET_WIFI_AP) ? wifi_start_ap(false) : wifi_start_sta();
+    /* A device nobody has claimed starts as the open setup hotspot, the same
+     * one a board with Ethernet falls back to: only the page that sets the
+     * password answers on it. */
+    const bool setup = s_mode == KVM_NET_WIFI_AP && s_unclaimed && kvm_setting_bool("setup_ap");
+    esp_err_t err = (s_mode == KVM_NET_WIFI_AP) ? wifi_start_ap(setup) : wifi_start_sta();
+    if (err == ESP_OK && setup) {
+        s_setup_ap = true;
+        ESP_LOGW(TAG, "no password set - setup hotspot \"%s\" is open; "
+                      "join it and set a password at http://192.168.4.1/", s_ssid);
+    }
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "WiFi %s start failed", s_mode == KVM_NET_WIFI_AP ? "AP" : "station");
     }
@@ -770,6 +786,11 @@ void kvm_wifi_scan_json(char *buf, size_t len)
 }
 
 #else /* !CONFIG_KVM_WIFI */
+
+void kvm_wifi_set_unclaimed(bool unclaimed)
+{
+    (void)unclaimed;
+}
 
 esp_err_t kvm_wifi_init(void)
 {

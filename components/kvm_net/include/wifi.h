@@ -29,6 +29,15 @@ typedef enum {
 esp_err_t kvm_wifi_init(void);
 
 /**
+ * Tell WiFi that nobody has set the console password yet. In AP mode the
+ * hotspot then comes up open, as the setup hotspot does on a board with
+ * Ethernet: on a board with no network port AP is where a new device starts,
+ * and a password invented for it reaches only a serial console or a display,
+ * which a new owner may have neither of. Call before kvm_wifi_init().
+ */
+void kvm_wifi_set_unclaimed(bool unclaimed);
+
+/**
  * Report the WiFi capability as present (hardware compiled in) without spinning
  * up the co-processor. Call this at boot in every mode so the console's
  * Connection switcher and WiFi settings appear even on Ethernet - the C6 is only

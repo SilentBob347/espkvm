@@ -7,6 +7,16 @@ bumps the patch).
 
 ## [Unreleased]
 
+## [0.57.3] - 2026-10-03
+
+### Fixed
+- **The first hotspot asked for a password on boards with no network port**
+  (the ESP32-P4-WIFI6 and the FireBeetle 2). They start in hotspot mode, and
+  that path made up a WPA2 password that only the serial log of the very first
+  boot showed. Now a device with no console password set opens the same open
+  setup hotspot as a board with Ethernet does, as the README always said.
+  Reported in #67.
+
 ## [0.57.2] - 2026-10-03
 
 ### Fixed

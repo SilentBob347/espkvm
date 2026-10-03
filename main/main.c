@@ -681,6 +681,7 @@ void app_main(void)
     } else {
         ESP_LOGI(TAG, "boot: wifi %s (Ethernet left down)",
                  net_mode == KVM_NET_WIFI_AP ? "AP" : "station");
+        kvm_wifi_set_unclaimed(kvm_auth_init() == ESP_OK && !kvm_auth_password_set());
         ESP_ERROR_CHECK(kvm_wifi_init());
     }
 
