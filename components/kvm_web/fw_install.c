@@ -357,8 +357,9 @@ static void install_task(void *arg)
  * console reads (the upd_url setting), same rule as the rest of this file - the
  * device only reaches outside when fw_fetch says it may.
  *
- * Small answer, one request, no redirect handling: the manifest is served by
- * Pages from the URL as given.
+ * Small answer. Redirects are followed by hand, as for the download: when the
+ * update host moved, 0.56 and older stopped here on a 301 and never heard of a
+ * newer build again.
  */
 esp_err_t fw_latest_version(char *out, size_t out_len)
 {
@@ -380,6 +381,7 @@ esp_err_t fw_latest_version(char *out, size_t out_len)
         .crt_bundle_attach = esp_crt_bundle_attach,
         .buffer_size = HTTP_BUF,
         .buffer_size_tx = HTTP_BUF,
+        .disable_auto_redirect = true,
         .keep_alive_enable = false,
     };
     esp_http_client_handle_t http = esp_http_client_init(&cfg);
@@ -389,10 +391,25 @@ esp_err_t fw_latest_version(char *out, size_t out_len)
 
     esp_err_t res = ESP_FAIL;
     char body[512] = {0};
-    if (esp_http_client_open(http, 0) == ESP_OK) {
-        const int64_t len = esp_http_client_fetch_headers(http);
-        (void)len;
-        if (esp_http_client_get_status_code(http) == 200) {
+    bool open = false;
+    int status = 0;
+    for (int hop = 0; hop <= MAX_REDIRECTS; hop++) {
+        if (esp_http_client_open(http, 0) != ESP_OK) {
+            break;
+        }
+        open = true;
+        (void)esp_http_client_fetch_headers(http);
+        status = esp_http_client_get_status_code(http);
+        if (status != 301 && status != 302 && status != 303 && status != 307 &&
+            status != 308) {
+            break;
+        }
+        esp_http_client_set_redirection(http);
+        esp_http_client_close(http);
+        open = false;
+    }
+    if (open) {
+        if (status == 200) {
             const int n = esp_http_client_read(http, body, sizeof(body) - 1);
             if (n > 0) {
                 body[n] = '\0';

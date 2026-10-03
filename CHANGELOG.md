@@ -7,6 +7,22 @@ bumps the patch).
 
 ## [Unreleased]
 
+## [0.57.2] - 2026-10-03
+
+### Fixed
+- **Devices on 0.56 and older did not see new releases.** Their update address,
+  espkvm.github.io/espkvm, started answering with a redirect to fw.espkvm.io,
+  which the browser refused (no CORS on the redirect) and the device did not
+  follow. That address answers directly again, and fw.espkvm.io is now served
+  from its own repository. The device's own update check also follows
+  redirects now.
+- **The device's update check failed behind Cloudflare.** Cloudflare's
+  certificate chain ends in a root that is cross-signed by one the device does
+  not carry. Such chains are accepted now.
+- **A boot loop on Wi-Fi boards.** When the Wi-Fi co-processor did not answer
+  at start-up, the network stack was never started, and the web server then
+  crashed the device on every boot. It now starts without the network instead.
+
 ## [0.57.1] - 2026-10-02
 
 ### Fixed

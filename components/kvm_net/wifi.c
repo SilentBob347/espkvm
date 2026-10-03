@@ -569,6 +569,12 @@ esp_err_t kvm_wifi_init(void)
     const int32_t m = kvm_setting_int("net_mode");
     s_mode = (m == KVM_NET_WIFI_AP) ? KVM_NET_WIFI_AP : KVM_NET_WIFI_STA;
 
+    /* The stack comes up even when the C6 does not answer: the web server opens
+     * its sockets next, and with no lwIP behind them that is an assert in
+     * tcpip's lock - a boot loop after a warm restart caught the C6 mid-reset. */
+    (void)esp_netif_init();
+    (void)esp_event_loop_create_default();
+
     if (coproc_wifi_up() != ESP_OK) {
         return ESP_OK; /* WiFi is optional; the warning is already logged */
     }
