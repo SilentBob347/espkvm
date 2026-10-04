@@ -8,6 +8,14 @@ bumps the patch).
 ## [Unreleased]
 
 ### Added
+- **Ethernet with WiFi as the backup.** A new choice under Connection:
+  "Auto". The device uses the cable and keeps the WiFi network joined and
+  waiting. Pull the cable and traffic moves to WiFi; plug it back and it
+  returns, with no restart. The console answers on both addresses and the
+  certificate names both. Only on boards with a network port and a WiFi chip.
+  Tried on the Function EV: the switch took about a second each way, the
+  console stayed open over WiFi, Tailscale stayed up and MQTT came back in
+  15 s. IPv6 stays on the cable.
 - **EDID profile "480p".** Offers 720x480 and nothing bigger, for old
   consoles and TV boxes. Settings &rarr; Video.
 

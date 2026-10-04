@@ -44,6 +44,7 @@
 #include "psa/crypto.h"
 
 #include "kvm_settings.h"
+#include "wifi.h" /* KVM_NET_AUTO */
 
 #define TAG "tls"
 
@@ -87,6 +88,7 @@
 #define NVS_KEY_IP6 "ip6"
 #define NVS_KEY_IP6_ULA "ip6_ula"
 #define NVS_KEY_IP4 "ip4"
+#define NVS_KEY_IP4_BACKUP "ip4w" /* the WiFi station's lease in net_mode "auto" */
 
 /* One NVS string tops out at 4000 bytes; keep each PEM comfortably under that.
  * A leaf plus a couple of intermediates and a P-256 or RSA-2048 key fit easily -
@@ -176,6 +178,7 @@ static bool parse_ip6(const char *s, uint8_t out[16])
  * naming it would churn the certificate; DHCP stays hostname-only.
  */
 static void nvs_load_ip4(char *out, size_t len);
+static void nvs_load_ip4_key(const char *key, char *out, size_t len);
 
 static void cert_ip_now(char *out, size_t len)
 {
@@ -446,7 +449,8 @@ done:
 /** Generate a server (leaf) certificate signed by the CA, naming @p name and,
  *  if given, @p ip in its SANs. */
 static esp_err_t gen_leaf(const char *ca_key_pem, const char *name, const char *ip,
-                          const char *ca_host, const char *ts_ip, const char *ts_fqdn,
+                          const char *ip_backup, const char *ca_host, const char *ts_ip,
+                          const char *ts_fqdn,
                           const char *ip6, const char *ip6_ula, char **cert_out, char **key_out)
 {
     esp_err_t res = ESP_FAIL;
@@ -499,6 +503,17 @@ static esp_err_t gen_leaf(const char *ca_key_pem, const char *name, const char *
         .next = &san_mdns,
     };
     mbedtls_x509_san_list *san_head = have_ip ? &san_ip : &san_mdns;
+
+    uint8_t ip_backup_bytes[4];
+    mbedtls_x509_san_list san_ip_backup = {
+        .node = {.type = MBEDTLS_X509_SAN_IP_ADDRESS,
+                 .san = {.unstructured_name = {.p = ip_backup_bytes,
+                                               .len = sizeof(ip_backup_bytes)}}},
+        .next = san_head,
+    };
+    if (ip_backup && parse_ip4(ip_backup, ip_backup_bytes)) {
+        san_head = &san_ip_backup;
+    }
 
     /* Tailscale identity, so the console's certificate is valid when the device
      * is reached over the tailnet - by its 100.x address and/or its MagicDNS
@@ -615,6 +630,7 @@ typedef struct {
     const char *ca_key_pem; /* JOB_LEAF */
     const char *name;       /* JOB_LEAF */
     const char *ip;         /* JOB_LEAF */
+    const char *ip_backup;  /* JOB_LEAF: the standby WiFi lease ("auto"), or "" */
     const char *ca_host;    /* JOB_LEAF: CA's own hostname, for the issuer */
     const char *ts_ip;      /* JOB_LEAF: Tailscale 100.x address, or "" */
     const char *ts_fqdn;    /* JOB_LEAF: Tailscale MagicDNS name, or "" */
@@ -631,7 +647,8 @@ static void gen_task(void *arg)
     gen_job_t *job = (gen_job_t *)arg;
     job->result = (job->kind == JOB_CA)
                       ? gen_ca(&job->cert, &job->key)
-                      : gen_leaf(job->ca_key_pem, job->name, job->ip, job->ca_host, job->ts_ip,
+                      : gen_leaf(job->ca_key_pem, job->name, job->ip, job->ip_backup,
+                                 job->ca_host, job->ts_ip,
                                  job->ts_fqdn, job->ip6, job->ip6_ula, &job->cert,
                                  &job->key);
     xSemaphoreGive(job->done);
@@ -919,7 +936,7 @@ static void nvs_load_tailnet(char *ip, size_t iplen, char *fqdn, size_t fqdnlen)
     nvs_close(h);
 }
 
-static void nvs_load_ip4(char *out, size_t len)
+static void nvs_load_ip4_key(const char *key, char *out, size_t len)
 {
     if (!out || !len) {
         return;
@@ -930,8 +947,13 @@ static void nvs_load_ip4(char *out, size_t len)
         return;
     }
     size_t l = len;
-    nvs_get_str(h, NVS_KEY_IP4, out, &l);
+    nvs_get_str(h, key, out, &l);
     nvs_close(h);
+}
+
+static void nvs_load_ip4(char *out, size_t len)
+{
+    nvs_load_ip4_key(NVS_KEY_IP4, out, len);
 }
 
 static void nvs_load_ip6(char *global, size_t glen, char *ula, size_t ulen)
@@ -991,19 +1013,21 @@ bool kvm_tls_set_ip6(const char *global, const char *ula)
     return true;
 }
 
-bool kvm_tls_set_ip4(const char *ip)
+bool kvm_tls_set_ip4(const char *ip, bool backup)
 {
     if (!ip) {
         ip = "";
     }
     /* A static address is already named from the setting, and is what the leaf
      * uses; recording the lease as well would only re-issue the certificate for
-     * an address it does not name. */
-    if (!kvm_setting_bool("net_dhcp")) {
+     * an address it does not name. The static setting is Ethernet's; the backup
+     * WiFi station always takes a lease. */
+    if (!backup && !kvm_setting_bool("net_dhcp")) {
         return false;
     }
+    const char *key = backup ? NVS_KEY_IP4_BACKUP : NVS_KEY_IP4;
     char cur[16] = {0};
-    nvs_load_ip4(cur, sizeof(cur));
+    nvs_load_ip4_key(key, cur, sizeof(cur));
     if (strcmp(cur, ip) == 0) {
         return false; /* unchanged - the served leaf already names it */
     }
@@ -1011,7 +1035,7 @@ bool kvm_tls_set_ip4(const char *ip)
     if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) {
         return false;
     }
-    esp_err_t err = nvs_set_str(h, NVS_KEY_IP4, ip);
+    esp_err_t err = nvs_set_str(h, key, ip);
     if (err == ESP_OK) {
         err = nvs_commit(h);
     }
@@ -1019,7 +1043,8 @@ bool kvm_tls_set_ip4(const char *ip)
     if (err != ESP_OK) {
         return false;
     }
-    ESP_LOGI(TAG, "IPv4 address recorded for the certificate: %s", ip[0] ? ip : "(none)");
+    ESP_LOGI(TAG, "IPv4 address%s recorded for the certificate: %s", backup ? " (WiFi backup)" : "",
+             ip[0] ? ip : "(none)");
     return true;
 }
 
@@ -1110,9 +1135,15 @@ esp_err_t kvm_tls_identity_get(kvm_tls_identity_t *out, bool allow_byo)
     char ip6[KVM_TLS_IP6_MAX] = {0};
     char ip6_ula[KVM_TLS_IP6_MAX] = {0};
     nvs_load_ip6(ip6, sizeof(ip6), ip6_ula, sizeof(ip6_ula));
-    char idkey[320];
-    snprintf(idkey, sizeof(idkey), "v%d|%s|%s|%s|%s|%s|%s", LEAF_VERSION, name, ip[0] ? ip : "",
-             ts_ip, ts_fqdn, ip6, ip6_ula);
+    /* The standby WiFi lease, in "auto" only. Kept out of the id unless there is
+     * one, so every other device's stored leaf still matches. */
+    char ip_backup[16] = {0};
+    if (kvm_setting_int("net_mode") == KVM_NET_AUTO) {
+        nvs_load_ip4_key(NVS_KEY_IP4_BACKUP, ip_backup, sizeof(ip_backup));
+    }
+    char idkey[340];
+    snprintf(idkey, sizeof(idkey), "v%d|%s|%s|%s|%s|%s|%s%s%s", LEAF_VERSION, name,
+             ip[0] ? ip : "", ts_ip, ts_fqdn, ip6, ip6_ula, ip_backup[0] ? "|" : "", ip_backup);
 
     /* The CA: generated once and kept, so importing it is a one-time act. Its
      * subject carries the hostname it was born with; remember that so the leaf's
@@ -1154,6 +1185,7 @@ esp_err_t kvm_tls_identity_get(kvm_tls_identity_t *out, bool allow_byo)
                          .ca_key_pem = ca_key,
                          .name = name,
                          .ip = ip,
+                         .ip_backup = ip_backup,
                          .ca_host = ca_host,
                          .ts_ip = ts_ip,
                          .ts_fqdn = ts_fqdn,

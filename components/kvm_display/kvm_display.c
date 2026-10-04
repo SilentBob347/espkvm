@@ -188,9 +188,9 @@ static void gather(kvm_display_status_t *st)
     kvm_wifi_status(&w);
     st->ap_mode = (w.mode == KVM_NET_WIFI_AP);
     snprintf(st->link, sizeof(st->link), "%s",
-             w.mode == KVM_NET_WIFI_AP    ? "AP mode"
-             : w.mode == KVM_NET_WIFI_STA ? "Wi-Fi"
-                                          : "Ethernet");
+             w.mode == KVM_NET_WIFI_AP ? "AP mode"
+             : w.active                ? "Wi-Fi"
+                                       : "Ethernet");
     if (w.ssid[0]) {
         snprintf(st->ssid, sizeof(st->ssid), "%s", w.ssid);
     }

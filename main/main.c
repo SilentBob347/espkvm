@@ -641,7 +641,8 @@ void app_main(void)
      * On most boards the card sits on SDMMC slot 0 and the WiFi co-processor on
      * slot 1, so both run. Where they need the same slot, a WiFi mode gives it to
      * the co-processor - mounting the card first would make its SDIO init assert -
-     * and Ethernet mode mounts the card. (esp-hosted's own eager constructor init
+     * and Ethernet mode mounts the card. "auto" counts as WiFi here: the backup
+     * link comes before the card. (esp-hosted's own eager constructor init
      * is blocked so it never races for the bus; see wifi.c.) */
     if (net_mode == KVM_NET_ETHERNET || !kvm_storage_shares_wifi_slot()) {
         ESP_LOGI(TAG, "boot: storage (SDMMC slot %d)", kvm_storage_sd_slot());
@@ -675,10 +676,17 @@ void app_main(void)
      * the C6 is only spun up (which costs a few seconds) when a WiFi mode is
      * actually chosen. If WiFi cannot be reached, the reset button clears the
      * setting back to Ethernet.
+     *
+     * "auto" starts both: the station joins and waits, and takes the default
+     * route only while the cable is down (wifi.c sets its route priority).
      */
     if (net_mode == KVM_NET_ETHERNET) {
         ESP_LOGI(TAG, "boot: ethernet");
         ESP_ERROR_CHECK(ethernet_init());
+    } else if (net_mode == KVM_NET_AUTO) {
+        ESP_LOGI(TAG, "boot: ethernet, WiFi as the backup");
+        ESP_ERROR_CHECK(ethernet_init());
+        ESP_ERROR_CHECK(kvm_wifi_init());
     } else {
         ESP_LOGI(TAG, "boot: wifi %s (Ethernet left down)",
                  net_mode == KVM_NET_WIFI_AP ? "AP" : "station");

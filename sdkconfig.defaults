@@ -131,6 +131,11 @@ CONFIG_HTTPD_WS_PRE_HANDSHAKE_CB_SUPPORT=y
 # create a bridge - this is only here for that side effect.
 CONFIG_ESP_NETIF_BRIDGE_EN=y
 
+# net_mode "auto" runs Ethernet and a WiFi station at once. lwIP keeps one set of
+# DNS servers; this swaps in the default link's own whenever the default changes,
+# or a failover to WiFi would keep asking the Ethernet side's resolver.
+CONFIG_ESP_NETIF_SET_DNS_PER_DEFAULT_NETIF=y
+
 # IPv6. lwIP compiles it in by default but only ever gets a link-local address
 # without SLAAC, which is useless from another subnet. With autoconfiguration on,
 # the device picks up a routable address from the router's advertisements and the

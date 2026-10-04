@@ -95,16 +95,22 @@ esp_err_t kvm_wol_send(const char *mac)
  * as much there.
  */
 static kvm_net_ip4_identity_cb_t s_ip4_cb;
-static volatile bool s_ip4_busy;
+/* One per link: in "auto" both get a lease at boot, seconds apart. */
+static volatile bool s_ip4_busy[2];
+
+typedef struct {
+    bool backup;
+    char ip[16];
+} ip4_job_t;
 
 static void ip4_identity_task(void *arg)
 {
-    char *ip = (char *)arg;
-    if (s_ip4_cb && s_ip4_cb(ip)) {
+    ip4_job_t *job = (ip4_job_t *)arg;
+    if (s_ip4_cb && s_ip4_cb(job->ip, job->backup)) {
         ESP_LOGI(TAG, "recorded for the certificate; it names this address from the next restart");
     }
-    free(ip);
-    s_ip4_busy = false;
+    s_ip4_busy[job->backup] = false;
+    free(job);
     vTaskDelete(NULL);
 }
 
@@ -113,19 +119,21 @@ void kvm_net_set_ip4_identity_cb(kvm_net_ip4_identity_cb_t cb)
     s_ip4_cb = cb;
 }
 
-void kvm_net_record_ip4(const char *ip)
+void kvm_net_record_ip4(const char *ip, bool backup)
 {
-    if (!s_ip4_cb || s_ip4_busy || !ip || !ip[0]) {
+    if (!s_ip4_cb || s_ip4_busy[backup] || !ip || !ip[0]) {
         return;
     }
-    char *copy = strdup(ip);
-    if (!copy) {
+    ip4_job_t *job = calloc(1, sizeof(*job));
+    if (!job) {
         return;
     }
-    s_ip4_busy = true;
-    if (xTaskCreate(ip4_identity_task, "ip4_ident", 4096, copy, 4, NULL) != pdPASS) {
-        s_ip4_busy = false;
-        free(copy); /* the next lease or the next boot tries again */
+    job->backup = backup;
+    strlcpy(job->ip, ip, sizeof(job->ip));
+    s_ip4_busy[backup] = true;
+    if (xTaskCreate(ip4_identity_task, "ip4_ident", 4096, job, 4, NULL) != pdPASS) {
+        s_ip4_busy[backup] = false;
+        free(job); /* the next lease or the next boot tries again */
     }
 }
 
@@ -148,7 +156,7 @@ static void eth_on_got_ip(void *arg, esp_event_base_t base, int32_t id, void *da
              kvm_setting_str("net_hostname"));
     char text[16];
     snprintf(text, sizeof(text), IPSTR, IP2STR(&e->ip_info.ip));
-    kvm_net_record_ip4(text);
+    kvm_net_record_ip4(text, false);
 }
 
 /* Live link state, so the console can show whether the cable is up and at what

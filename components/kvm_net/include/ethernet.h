@@ -25,14 +25,15 @@ void kvm_net_advertise(const char *hostname);
  * in the network layer and the certificate lives up in the web layer, which
  * already depends on this one.
  */
-typedef bool (*kvm_net_ip4_identity_cb_t)(const char *ip);
+typedef bool (*kvm_net_ip4_identity_cb_t)(const char *ip, bool backup);
 void kvm_net_set_ip4_identity_cb(kvm_net_ip4_identity_cb_t cb);
 
 /**
  * Hand a freshly-acquired IPv4 address to that callback, off the event task.
  * Called by whichever link came up; safe to call with no callback registered.
+ * @p backup is the WiFi station that stands by for Ethernet ("auto" mode).
  */
-void kvm_net_record_ip4(const char *ip);
+void kvm_net_record_ip4(const char *ip, bool backup);
 
 /**
  * Current Ethernet link state. @p up is set to whether the cable is up, @p mbps

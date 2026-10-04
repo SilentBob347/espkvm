@@ -90,9 +90,10 @@ bool kvm_tls_set_tailnet(const char *ip, const char *fqdn);
  * name it from the next restart. Returns true if it changed anything.
  *
  * A no-op when the address is static: that one is named from the setting
- * already, and is known before the network is even up.
+ * already, and is known before the network is even up. @p backup is the WiFi
+ * station standing by in net_mode "auto"; its lease is named as well.
  */
-bool kvm_tls_set_ip4(const char *ip);
+bool kvm_tls_set_ip4(const char *ip, bool backup);
 
 bool kvm_tls_set_ip6(const char *global, const char *ula);
 

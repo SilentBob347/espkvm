@@ -787,7 +787,17 @@ static esp_err_t api_system_info_get(httpd_req_t *req)
     kvm_wifi_status(&wifi);
     const char *net_mode = wifi.mode == KVM_NET_WIFI_AP     ? "ap"
                            : wifi.mode == KVM_NET_WIFI_STA ? "wifi"
+                           : wifi.mode == KVM_NET_AUTO     ? "auto"
                                                            : "ethernet";
+#if CONFIG_KVM_ETH_ENABLE
+    const bool has_eth = true;
+#else
+    const bool has_eth = false;
+#endif
+    /* The link carrying traffic now; differs from the mode only in "auto". */
+    const char *net_active = !wifi.active                   ? "ethernet"
+                             : wifi.mode == KVM_NET_WIFI_AP ? "ap"
+                                                            : "wifi";
     kvm_atx_status_t atx;
     kvm_atx_status(&atx);
     bool mqtt_on = false, mqtt_conn = false;
@@ -815,6 +825,14 @@ static esp_err_t api_system_info_get(httpd_req_t *req)
     char ip4[16] = "";
     if (netif && esp_netif_get_ip_info(netif, &ip4_info) == ESP_OK && ip4_info.ip.addr) {
         snprintf(ip4, sizeof(ip4), IPSTR, IP2STR(&ip4_info.ip));
+    }
+    /* In "auto" the device answers on the standby link's address as well. */
+    char ip4_backup[16] = "";
+    if (wifi.mode == KVM_NET_AUTO && !wifi.active) {
+        esp_netif_t *sta = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+        if (sta && esp_netif_get_ip_info(sta, &ip4_info) == ESP_OK && ip4_info.ip.addr) {
+            snprintf(ip4_backup, sizeof(ip4_backup), IPSTR, IP2STR(&ip4_info.ip));
+        }
     }
     uint8_t mac_raw[6] = {0};
     char mac_str[18] = "";
@@ -874,9 +892,11 @@ static esp_err_t api_system_info_get(httpd_req_t *req)
                      "\"uptimeSeconds\":%llu,\"heapFree\":%u,\"psramFree\":%u,"
                      "\"internalFree\":%u,\"internalLargest\":%u,"
                      "\"tempC\":%d.%01u,\"thermal\":\"%s\","
-                     "\"net\":{\"up\":%s,\"mbps\":%d,\"mode\":\"%s\",\"wifiUp\":%s,"
+                     "\"net\":{\"up\":%s,\"mbps\":%d,\"mode\":\"%s\",\"active\":\"%s\","
+                     "\"hasEth\":%s,\"wifiUp\":%s,"
                      "\"rssi\":%d,\"ssid\":\"%s\",\"apClients\":%d,"
-                     "\"hostname\":\"%s\",\"ip4\":\"%s\",\"mac\":\"%s\",\"ipv6\":%s},"
+                     "\"hostname\":\"%s\",\"ip4\":\"%s\",\"ip4Backup\":\"%s\",\"mac\":\"%s\","
+                     "\"ipv6\":%s},"
                      "\"atx\":{\"enabled\":%s,\"known\":%s,\"on\":%s},"
                      "\"mqtt\":{\"enabled\":%s,\"connected\":%s},"
                      "\"wg\":{\"enabled\":%s,\"up\":%s,\"address\":\"%s\",\"publicKey\":\"%s\"},"
@@ -895,9 +915,10 @@ static esp_err_t api_system_info_get(httpd_req_t *req)
                      (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL), (int)temp_c,
                      (unsigned)((temp_c < 0 ? -temp_c : temp_c) * 10.0f) % 10u,
                      kvm_thermal_state_name(kvm_thermal_state()),
-                     net_up ? "true" : "false", net_mbps, net_mode,
+                     net_up ? "true" : "false", net_mbps, net_mode, net_active,
+                     has_eth ? "true" : "false",
                      wifi.up ? "true" : "false", wifi.rssi, wifi.ssid, wifi.ap_clients, hostname,
-                     ip4, mac_str, ip6_json,
+                     ip4, ip4_backup, mac_str, ip6_json,
                      atx.enabled ? "true" : "false", atx.have_led ? "true" : "false",
                      atx.power_on ? "true" : "false", mqtt_on ? "true" : "false",
                      mqtt_conn ? "true" : "false", wg.enabled ? "true" : "false",

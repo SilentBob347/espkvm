@@ -78,7 +78,7 @@ static const char *const s_display_choices[] = {
 };
 /* "auto" follows the OS guessed from USB enumeration; the rest force it. */
 static const char *const s_targetos_choices[] = {"auto", "windows", "macos", "linux", "android"};
-static const char *const s_netmode_choices[] = {"ethernet", "wifi", "ap"};
+static const char *const s_netmode_choices[] = {"ethernet", "wifi", "ap", "auto"};
 static const char *const s_fallback_choices[] = {"keep_trying", "hotspot"};
 
 /* clang-format off */
@@ -674,10 +674,12 @@ static const kvm_setting_t s_settings[] = {
     {
         .key = "net_mode", .section = "network", .group = "WiFi", .type = KVM_VT_ENUM,
         .title = "Connection",
-        .help = "The device uses one link at a time. \"ethernet\": the wired port. "
-                "\"wifi\": join the network below (Ethernet is left down). \"ap\": the "
-                "device makes its own WiFi hotspot for setup where there is no "
-                "network to join. If WiFi is unreachable: reset the board, then hold "
+        .help = "\"ethernet\": the wired port. \"wifi\": join the network below "
+                "(Ethernet is left down). \"ap\": the device makes its own WiFi hotspot "
+                "for setup where there is no network to join. \"auto\": the wired port, "
+                "with the WiFi network below joined and waiting - when the cable is "
+                "pulled the device moves to WiFi, and back when the cable returns. It "
+                "answers on both addresses. If WiFi is unreachable: reset the board, then hold "
                 "the button for two seconds - that returns it to Ethernet, and "
                 "clears the password too. Hold it AFTER the reset, not through it.",
         .min = 0, .max = ENUM_MAX(s_netmode_choices),

@@ -5,7 +5,8 @@
  * WiFi on boards that carry an ESP32-C6 co-processor. The ESP32-P4 has no radio
  * of its own, so the standard esp_wifi API here is serviced by esp_wifi_remote,
  * which forwards to the C6 over SDIO (esp-hosted). The device uses one link at a
- * time (see main.c): Ethernet, WiFi station, or its own access point.
+ * time (see main.c): Ethernet, WiFi station, or its own access point - or, in
+ * "auto", Ethernet with the station standing by beside it.
  */
 #include "wifi.h"
 
@@ -44,6 +45,10 @@ __attribute__((unused)) static const char *TAG = "wifi";
 
 /* The rescue hotspot's own address (the default softAP gateway/DHCP server). */
 #define KVM_AP_IP_STR "192.168.4.1"
+
+/* "auto": below Ethernet's 50, so the station is the default route only while
+ * the cable is down. esp_netif picks the default again on every link change. */
+#define WIFI_BACKUP_ROUTE_PRIO 20
 
 static esp_netif_t *s_netif;
 static esp_netif_t *s_ap_netif; /* the rescue hotspot's netif in APSTA mode */
@@ -310,8 +315,11 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *da
         }
     } else if (id == WIFI_EVENT_STA_CONNECTED) {
         /* Association, not the address: IPv6 needs the interface up to form its
-         * link-local address, and does not wait for DHCP the way IPv4 does. */
-        kvm_ipv6_start(s_netif);
+         * link-local address, and does not wait for DHCP the way IPv4 does. In
+         * "auto" IPv6 stays on Ethernet. */
+        if (s_mode != KVM_NET_AUTO) {
+            kvm_ipv6_start(s_netif);
+        }
     } else if (id == WIFI_EVENT_STA_DISCONNECTED) {
         s_up = false;
         s_rssi = 0;
@@ -336,14 +344,15 @@ static void on_got_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
         s_rssi = ap.rssi;
     }
     const char *scheme = kvm_setting_bool("sec_https") ? "https" : "http";
-    ESP_LOGI(TAG, "WiFi got IP: " IPSTR " - open %s://" IPSTR "/ or %s://%s.local/",
-             IP2STR(&e->ip_info.ip), scheme, IP2STR(&e->ip_info.ip), scheme, wifi_hostname());
-    /* WiFi is the sole active link when it associates (Ethernet is not started in
-     * that mode), so it advertises the console over mDNS itself. */
+    ESP_LOGI(TAG, "WiFi got IP: " IPSTR " - open %s://" IPSTR "/ or %s://%s.local/%s",
+             IP2STR(&e->ip_info.ip), scheme, IP2STR(&e->ip_info.ip), scheme, wifi_hostname(),
+             s_mode == KVM_NET_AUTO ? " (backup for Ethernet)" : "");
+    /* In a WiFi mode this is the sole link, so it advertises the console over
+     * mDNS itself; in "auto" Ethernet already did, and this is a no-op. */
     kvm_net_advertise(wifi_hostname());
     char text[16];
     snprintf(text, sizeof(text), IPSTR, IP2STR(&e->ip_info.ip));
-    kvm_net_record_ip4(text);
+    kvm_net_record_ip4(text, s_mode == KVM_NET_AUTO);
 }
 
 /*
@@ -358,6 +367,9 @@ static void on_got_ip6(void *arg, esp_event_base_t base, int32_t id, void *data)
     (void)base;
     (void)id;
     (void)data;
+    if (s_mode == KVM_NET_AUTO) {
+        return; /* IPv6 is Ethernet's in "auto" */
+    }
     if (!kvm_ipv6_routable(NULL, 0)) {
         return; /* a link-local address reaches nobody; wait for a real one */
     }
@@ -380,6 +392,9 @@ static esp_err_t wifi_start_sta(void)
     /* Sent as the DHCP client hostname (option 12) so the router lists the device
      * by name, matching Ethernet. */
     (void)esp_netif_set_hostname(s_netif, wifi_hostname());
+    if (s_mode == KVM_NET_AUTO) {
+        (void)esp_netif_set_route_prio(s_netif, WIFI_BACKUP_ROUTE_PRIO);
+    }
     (void)esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, on_wifi_event, NULL);
     (void)esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_got_ip, NULL);
     (void)esp_event_handler_register(IP_EVENT, IP_EVENT_GOT_IP6, on_got_ip6, NULL);
@@ -433,7 +448,8 @@ static esp_err_t wifi_start_sta(void)
         ESP_LOGI(TAG, "WiFi station \"%s\" + rescue hotspot \"%s\" (http://192.168.4.1/)",
                  s_ssid[0] ? s_ssid : "(no SSID)", apssid);
     } else if (s_ssid[0]) {
-        ESP_LOGI(TAG, "WiFi joining \"%s\"", s_ssid);
+        ESP_LOGI(TAG, "WiFi joining \"%s\"%s", s_ssid,
+                 s_mode == KVM_NET_AUTO ? " as the backup for Ethernet" : "");
     } else {
         ESP_LOGW(TAG, "WiFi mode but no SSID set");
     }
@@ -574,7 +590,7 @@ void kvm_wifi_set_unclaimed(bool unclaimed)
 esp_err_t kvm_wifi_init(void)
 {
     const int32_t m = kvm_setting_int("net_mode");
-    s_mode = (m == KVM_NET_WIFI_AP) ? KVM_NET_WIFI_AP : KVM_NET_WIFI_STA;
+    s_mode = (m == KVM_NET_WIFI_AP || m == KVM_NET_AUTO) ? (kvm_net_mode_t)m : KVM_NET_WIFI_STA;
 
     /* The stack comes up even when the C6 does not answer: the web server opens
      * its sockets next, and with no lwIP behind them that is an assert in
@@ -651,6 +667,8 @@ void kvm_wifi_status(kvm_wifi_status_t *out)
         return;
     }
     out->mode = s_mode;
+    out->active = s_mode == KVM_NET_WIFI_STA || s_mode == KVM_NET_WIFI_AP ||
+                  (s_mode == KVM_NET_AUTO && s_netif && esp_netif_get_default_netif() == s_netif);
     out->up = s_up;
     out->rssi = s_rssi;
     out->ap_clients = 0;
@@ -691,7 +709,7 @@ static void wifi_scan_task(void *arg)
 {
     (void)arg;
     esp_err_t err;
-    if (s_wifi_running && s_mode == KVM_NET_WIFI_STA) {
+    if (s_wifi_running && (s_mode == KVM_NET_WIFI_STA || s_mode == KVM_NET_AUTO)) {
         /* A WiFi station is already up - scan on it (harmless if it is
          * associated; the scan briefly hops channels). No co-processor bring-up
          * and no teardown, so nothing to race. */
@@ -827,6 +845,7 @@ void kvm_wifi_status(kvm_wifi_status_t *out)
 {
     if (out) {
         out->mode = KVM_NET_ETHERNET;
+        out->active = false;
         out->up = false;
         out->rssi = 0;
         out->ap_clients = 0;

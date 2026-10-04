@@ -14,13 +14,16 @@ typedef enum {
     KVM_NET_ETHERNET = 0, /**< wired Ethernet */
     KVM_NET_WIFI_STA = 1, /**< join a WiFi network (station) */
     KVM_NET_WIFI_AP = 2,  /**< be a WiFi hotspot (access point) */
+    KVM_NET_AUTO = 3,     /**< Ethernet, with a WiFi station kept up as the backup */
 } kvm_net_mode_t;
 
 /**
  * Bring up WiFi in the mode the `net_mode` setting selects (station or AP). The
  * ESP32-P4 has no radio; this runs through an onboard ESP32-C6 over SDIO
  * (esp-hosted + esp_wifi_remote), compiled in only where a board carries a C6
- * (CONFIG_KVM_WIFI). Called by main only when net_mode is not Ethernet.
+ * (CONFIG_KVM_WIFI). Called by main only when net_mode is not Ethernet. In
+ * "auto" the station runs beside Ethernet with a lower route priority, so it
+ * carries traffic only while the cable is down.
  *
  * Non-fatal: a missing or silent co-processor logs and returns ESP_OK rather than
  * faulting the boot (the reset button clears the mode back to Ethernet). A no-op
@@ -59,6 +62,7 @@ bool kvm_wifi_setup_ap_active(void);
 /** Live WiFi state for the console's network indicator. */
 typedef struct {
     kvm_net_mode_t mode; /**< the active mode (Ethernet when WiFi is not running) */
+    bool active;         /**< WiFi carries the default route (always, outside "auto") */
     bool up;             /**< station: has an IP; AP: hotspot started */
     int rssi;            /**< station only: associated AP signal, dBm (0 otherwise) */
     int ap_clients;      /**< AP only: number of associated stations */
