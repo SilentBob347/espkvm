@@ -124,6 +124,7 @@ def dtd(clock_khz: int, hact: int, hbl: int, hfp: int, hsw: int,
 # The modes a profile can be capped at, as their standard timings.
 DTD_1280x720p60 = dtd(74250, 1280, 370, 110, 40, 720, 30, 5, 5, positive=True)
 DTD_1024x768p60 = dtd(65000, 1024, 320, 24, 136, 768, 38, 3, 6, positive=False)
+DTD_720x480p60 = dtd(27000, 720, 138, 16, 62, 480, 45, 9, 6, positive=False)  # CEA-861 VIC 2/3
 
 
 def checksum(block: bytes) -> int:
@@ -178,6 +179,10 @@ PROFILES = {
                                         VIC_720x480p60_16_9, VIC_720x480p60_4_3,
                                         VIC_640x480p60], (1280, 720)),
     "1024x768": (DTD_1024x768p60, False, 7, [VIC_640x480p60 | VIC_NATIVE], (1024, 768)),
+    # Old consoles and set-top boxes: 720x480 and nothing bigger, so a source
+    # that can do more is held to it.
+    "480p": (DTD_720x480p60, False, 3, [VIC_720x480p60_16_9 | VIC_NATIVE, VIC_720x480p60_4_3,
+                                        VIC_640x480p60], (720, 480)),
 }
 
 # An EDID descriptor slot that says "nothing here", for a profile that has no
@@ -208,6 +213,10 @@ def build_profile(base: bytes, name: str) -> bytes:
     # 720x400 is the text mode a BIOS draws its setup on.
     e[35] = EST1_640x480_60 | EST1_800x600_60 | EST1_720x400_70
     e[36] = EST2_1024x768_60 | EST2_800x600_72
+    if cap[1] <= 480:
+        # A profile capped below 800x600 drops those too; 720x400 stays for text.
+        e[35] = EST1_640x480_60 | EST1_720x400_70
+        e[36] = 0x00
     e[37] = 0x00
 
     # Standard timings: one useful widescreen mode, the rest stay unused (0x0101).
@@ -376,6 +385,7 @@ def main() -> int:
         "1080p30": cap_range(base, 8),  # the original single-mode EDID
         "720p": build_profile(base, "720p"),
         "1024x768": build_profile(base, "1024x768"),
+        "480p": build_profile(base, "480p"),
     }
     for name, edid in profiles.items():
         audit(name, edid)
@@ -396,6 +406,7 @@ def main() -> int:
     print(" *   1080p30   the original single-mode EDID, for sources that reject a list")
     print(" *   720p      the same list without 1080p, and 1280x720 preferred")
     print(" *   1024x768  everything up to 1024x768, which is also preferred")
+    print(" *   480p      720x480 preferred, 640x480 and 720x400 text - old consoles")
     print(" *")
     print(" * The capped ones are not about what the link can carry - they are about")
     print(" * what the target should send. A smaller picture encodes faster, and on")
@@ -419,6 +430,8 @@ def main() -> int:
     print(c_array("tc358743_edid_720p", profiles["720p"]))
     print()
     print(c_array("tc358743_edid_1024x768", profiles["1024x768"]))
+    print()
+    print(c_array("tc358743_edid_480p", profiles["480p"]))
     return 0
 
 

@@ -284,6 +284,7 @@ struct tc358743 {
     i2c_master_dev_handle_t i2c;
     tc358743_cfg_t cfg;
     bool csi_uyvy422;
+    uint16_t fifo_set; /* FIFOCTL as last written */
     tc358743_edid_profile_t edid_profile;
     bool i2c_ok; /* tracks I2C health so a wedged bus is logged once, not per-register */
 };
@@ -554,6 +555,7 @@ static void initial_setup(tc358743_t *d)
     sleep_mode(d, false);
 
     wr16(d, FIFOCTL, pdata->fifo_level);
+    d->fifo_set = pdata->fifo_level;
     set_ref_clk(d);
     wr8_and_or(d, DDC_CTL, (uint8_t)~MASK_DDC5V_MODE, pdata->ddc5v_mode & MASK_DDC5V_MODE);
     wr8_and_or(d, EDID_MODE, (uint8_t)~MASK_EDID_MODE, MASK_EDID_MODE_E_DDC);
@@ -680,6 +682,10 @@ static void edid_write_builtin(tc358743_t *d)
     case TC358743_EDID_1024X768:
         bin = tc358743_edid_1024x768;
         what = "up to 1024x768";
+        break;
+    case TC358743_EDID_480P:
+        bin = tc358743_edid_480p;
+        what = "up to 720x480";
         break;
     default:
         break;
@@ -876,6 +882,27 @@ static uint16_t tc358743_read_hact_vact_htotal(tc358743_t *d, uint16_t *vact, ui
     return (uint16_t)h0 | (uint16_t)((h1 & 0x1fu) << 8);
 }
 
+/*
+ * FIFOCTL counts 32-bit words. If it is not below one line, the chip waits for
+ * part of the next line before it sends this one, and frames come out short or
+ * long - 720x480 UYVY is 360 words a line, under the default 374, and gave no
+ * frames at all. Only such modes are changed; 7/8 of a line still starts late
+ * enough not to run dry at 27 MHz.
+ */
+static void fit_fifo_level(tc358743_t *d, uint16_t hact)
+{
+    const uint32_t words = (uint32_t)hact * (d->csi_uyvy422 ? 16u : 24u) / 32u;
+    uint16_t level = d->cfg.fifo_level;
+    if (words <= level) {
+        level = (uint16_t)(words * 7u / 8u);
+    }
+    if (level != d->fifo_set) {
+        wr16(d, FIFOCTL, level);
+        d->fifo_set = level;
+        ESP_LOGI(TAG, "FIFOCTL %u for %u px lines", level, hact);
+    }
+}
+
 esp_err_t tc358743_get_timings(tc358743_t *d, tc358743_timings_t *out)
 {
     ESP_RETURN_ON_FALSE(d && out, ESP_ERR_INVALID_ARG, TAG, "args");
@@ -890,6 +917,9 @@ esp_err_t tc358743_get_timings(tc358743_t *d, tc358743_timings_t *out)
     out->hdmi_mode = (st & TC358743_SYS_HDMI_MODE) != 0u;
     out->sync = (st & TC358743_SYS_SYNC) != 0u;
     out->interlaced = (rd8(d, VI_STATUS1) & MASK_S_V_INTERLACE) != 0u;
+    if (out->sync && out->hact >= 320u) {
+        fit_fifo_level(d, out->hact);
+    }
     const uint32_t interval = ((uint32_t)(rd8(d, FV_CNT_HI) & 0x03u) << 8) | rd8(d, FV_CNT_LO);
     if (out->sync && interval > 0u) {
         const uint32_t hz = (10000u + interval / 2u) / interval;

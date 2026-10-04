@@ -49,7 +49,7 @@
 
 static const char *const s_codec_choices[] = {"mjpeg", "h264"};
 static const char *const s_rec_subs_choices[] = {"off", "keys", "everything"};
-static const char *const s_edid_choices[] = {"full", "1080p30", "720p", "1024x768"};
+static const char *const s_edid_choices[] = {"full", "1080p30", "720p", "1024x768", "480p"};
 static const char *const s_mouse_choices[] = {"absolute", "relative"};
 static const char *const s_engage_choices[] = {"click", "hover"};
 /* Must match the layout ids in web/src/layouts.ts. New ones go on the end:
@@ -246,7 +246,8 @@ static const kvm_setting_t s_settings[] = {
                 "modes from 640x480 up to 1920x1080@30. \"720p\" and \"1024x768\" stop "
                 "lower, which is often what you want: a smaller picture encodes faster "
                 "and costs less bandwidth. \"1080p30\" offers that one mode alone, for a "
-                "source that refuses a list. Text modes stay on offer either way, so a "
+                "source that refuses a list. \"480p\" offers 720x480 and nothing bigger, "
+                "for old consoles and TV boxes. Text modes stay on offer either way, so a "
                 "BIOS still comes through as text.",
         .min = 0, .max = ENUM_MAX(s_edid_choices), .def = 0, .choices = s_edid_choices,
         .requires_cap = KVM_CAP_VIDEO, .flags = KVM_SF_REBOOT,

@@ -7,6 +7,19 @@ bumps the patch).
 
 ## [Unreleased]
 
+### Added
+- **EDID profile "480p".** Offers 720x480 and nothing bigger, for old
+  consoles and TV boxes. Settings &rarr; Video.
+
+### Fixed
+- **No picture at 720x480 on rev 3 boards with a TC358743.**
+  The chip's line buffer was set to start sending a line later than the line
+  is long at this width (640x480 too, by the same sum), so every frame came
+  out a little short and capture never finished one. The level now follows
+  the line width; wider modes keep the old value. Found by Zach in his fork
+  with an original Xbox; checked here with a Steam Deck at 720x480: 30 fps,
+  and 720p and 1080p30 unchanged.
+
 ## [0.58.0] - 2026-10-03
 
 ### Added

@@ -66,6 +66,7 @@ typedef enum {
     KVM_BRIDGE_EDID_1080P30,
     KVM_BRIDGE_EDID_720P,
     KVM_BRIDGE_EDID_1024X768,
+    KVM_BRIDGE_EDID_480P,
 } kvm_bridge_edid_profile_t;
 
 /** One HDMI-CEC frame: header (initiator << 4 | destination), opcode, operands. */
