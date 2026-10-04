@@ -5,6 +5,7 @@
 #include "usb_hid.h"
 
 #include <string.h>
+#include <strings.h>
 
 #include "class/hid/hid.h"
 #include "class/hid/hid_device.h"
@@ -26,6 +27,7 @@
 #include "kvm_settings.h"
 #include "kvm_storage.h"
 #include "mmc.h"
+#include "xinput.h"
 
 static const char *TAG = "usb_hid";
 
@@ -50,6 +52,11 @@ enum {
 };
 
 #define NUM_HID_ITF 3 /* keyboard, pointer, relative mouse */
+
+/* The gamepad, when on: after the three above (MSC then moves to 4), or alone. */
+#define ITF_PAD_ADDED 3
+#define EPNUM_PAD_IN_ADDED 0x85
+#define EPNUM_PAD_OUT_ADDED 0x05
 
 #define HID_KBD_KEYS 6            /* boot-protocol keyboard: 6-key rollover */
 #define HID_QUEUE_DEPTH 192       /* HID reports that can queue to the worker */
@@ -84,8 +91,8 @@ enum {
     RID_CONSUMER = 3,
 };
 
-#if CFG_TUD_HID < 2
-#error "Set CONFIG_TINYUSB_HID_COUNT to 2: keyboard and pointer are separate interfaces."
+#if CFG_TUD_HID < 4
+#error "Set CONFIG_TINYUSB_HID_COUNT to 4: keyboard, pointer, relative mouse and gamepad."
 #endif
 
 /*
@@ -157,6 +164,39 @@ static const uint8_t s_rel_report_desc[] = {
     REPORT_DESC_REL_MOUSE(),
 };
 
+/*
+ * The gamepad: a HORI Pokken Tournament Pro Pad. The Switch takes it as a
+ * wired Pro Controller since system 3.0.0, and SDL - so Steam on a Steam Deck -
+ * knows it by its IDs. 14 buttons, a hat, two 8-bit sticks, one vendor byte,
+ * and an 8-byte output report the pad ignores. From the reverse-engineered
+ * descriptor the Switch-Fightstick project published.
+ */
+static const uint8_t s_pad_report_desc[] = {
+    HID_USAGE_PAGE(HID_USAGE_PAGE_DESKTOP), HID_USAGE(HID_USAGE_DESKTOP_GAMEPAD),
+    HID_COLLECTION(HID_COLLECTION_APPLICATION),
+    HID_LOGICAL_MIN(0), HID_LOGICAL_MAX(1), HID_PHYSICAL_MIN(0), HID_PHYSICAL_MAX(1),
+    HID_REPORT_SIZE(1), HID_REPORT_COUNT(16), HID_USAGE_PAGE(HID_USAGE_PAGE_BUTTON),
+    HID_USAGE_MIN(1), HID_USAGE_MAX(16), HID_INPUT(HID_DATA | HID_VARIABLE | HID_ABSOLUTE),
+    HID_USAGE_PAGE(HID_USAGE_PAGE_DESKTOP), HID_LOGICAL_MAX(7), HID_PHYSICAL_MAX_N(315, 2),
+    HID_REPORT_SIZE(4), HID_REPORT_COUNT(1), HID_UNIT(0x14), HID_USAGE(HID_USAGE_DESKTOP_HAT_SWITCH),
+    HID_INPUT(HID_DATA | HID_VARIABLE | HID_ABSOLUTE | HID_NULL_STATE), HID_UNIT(0),
+    HID_REPORT_COUNT(1), HID_INPUT(HID_CONSTANT),
+    HID_LOGICAL_MAX_N(255, 2), HID_PHYSICAL_MAX_N(255, 2), HID_USAGE(HID_USAGE_DESKTOP_X),
+    HID_USAGE(HID_USAGE_DESKTOP_Y), HID_USAGE(HID_USAGE_DESKTOP_Z), HID_USAGE(HID_USAGE_DESKTOP_RZ),
+    HID_REPORT_SIZE(8), HID_REPORT_COUNT(4), HID_INPUT(HID_DATA | HID_VARIABLE | HID_ABSOLUTE),
+    HID_USAGE_PAGE_N(HID_USAGE_PAGE_VENDOR, 2), HID_USAGE(0x20), HID_REPORT_COUNT(1),
+    HID_INPUT(HID_DATA | HID_VARIABLE | HID_ABSOLUTE),
+    HID_USAGE_N(0x2621, 2), HID_REPORT_COUNT(8), HID_OUTPUT(HID_DATA | HID_VARIABLE | HID_ABSOLUTE),
+    HID_COLLECTION_END,
+};
+
+typedef struct __attribute__((packed)) {
+    uint16_t buttons;
+    uint8_t hat;
+    uint8_t lx, ly, rx, ry;
+    uint8_t vendor;
+} pad_report_t;
+
 typedef struct __attribute__((packed)) {
     uint8_t buttons;
     uint16_t x;
@@ -175,7 +215,9 @@ typedef struct __attribute__((packed)) {
 
 /* Order matters: the string index each interface names below is this array's
  * subscript. 0 is the language ID, 1..3 are the device strings, 4+ name the
- * interfaces (keyboard 4, pointer 5, relative mouse 6, virtual media 7). */
+ * interfaces (keyboard 4, pointer 5, relative mouse 6, virtual media 7). Eight
+ * is esp_tinyusb's limit, so the gamepad's interface has no name - nor does the
+ * real pad's. Not const: the gamepad modes swap in the pad's own names. */
 static const char *s_string_descriptor[] = {
     (char[]){0x09, 0x04},
     "ESP-KVM",
@@ -185,6 +227,28 @@ static const char *s_string_descriptor[] = {
     "Pointer",
     "Relative Mouse",
     "Virtual Media",
+};
+
+/*
+ * With the gamepad on, the device carries the pad's IDs and names. The Switch
+ * picks its controllers by vendor and product, so a pad behind Espressif's IDs
+ * would be just another HID device to it.
+ */
+static const tusb_desc_device_t k_pad_device_desc = {
+    .bLength = sizeof(tusb_desc_device_t),
+    .bDescriptorType = TUSB_DESC_DEVICE,
+    .bcdUSB = 0x0200,
+    .bDeviceClass = 0,
+    .bDeviceSubClass = 0,
+    .bDeviceProtocol = 0,
+    .bMaxPacketSize0 = CFG_TUD_ENDPOINT0_SIZE,
+    .idVendor = 0x0F0D,  /* HORI */
+    .idProduct = 0x0092, /* Pokken Tournament Pro Pad */
+    .bcdDevice = 0x0100,
+    .iManufacturer = 1,
+    .iProduct = 2,
+    .iSerialNumber = 3,
+    .bNumConfigurations = 1,
 };
 
 /*
@@ -201,7 +265,9 @@ static const char *s_string_descriptor[] = {
  * The two speeds differ only in the MSC bulk endpoint size (512 high speed, 64
  * full speed), so each optional block that has one is kept in both flavours.
  */
-#define CFG_DESC_MAX (TUD_CONFIG_DESC_LEN + NUM_HID_ITF * TUD_HID_DESC_LEN + TUD_MSC_DESC_LEN + 64)
+#define CFG_DESC_MAX                                                                               \
+    (TUD_CONFIG_DESC_LEN + NUM_HID_ITF * TUD_HID_DESC_LEN + TUD_HID_INOUT_DESC_LEN +              \
+     XINPUT_IFACE_DESC_LEN + TUD_MSC_DESC_LEN + 64)
 
 /* A placeholder header: wTotalLength and bNumInterfaces are patched in once the
  * enabled blocks are known. */
@@ -225,6 +291,16 @@ static const uint8_t k_hid_ifaces[] = {
 static const uint8_t k_hid_kbd_legacy[] = {
     TUD_HID_DESCRIPTOR(ITF_KEYBOARD, 4, HID_ITF_PROTOCOL_KEYBOARD, sizeof(s_kbd_report_desc), 0x81, 8, 10),
 };
+/* The gamepad: 64-byte endpoints like the real pad. An interval of 4 is 4 ms at
+ * full speed and 1 ms at high speed. */
+static const uint8_t k_pad_iface_added[] = {
+    TUD_HID_INOUT_DESCRIPTOR(ITF_PAD_ADDED, 0, HID_ITF_PROTOCOL_NONE, sizeof(s_pad_report_desc),
+                             EPNUM_PAD_OUT_ADDED, EPNUM_PAD_IN_ADDED, 64, 4),
+};
+static const uint8_t k_pad_iface_alone[] = {
+    TUD_HID_INOUT_DESCRIPTOR(0, 0, HID_ITF_PROTOCOL_NONE, sizeof(s_pad_report_desc), 0x01, 0x81,
+                             64, 4),
+};
 /* interface, string index, EP out, EP in, EP size */
 static const uint8_t k_msc_iface_fs[] = {
     TUD_MSC_DESCRIPTOR(ITF_MSC, 7, EPNUM_MSC_OUT, EPNUM_MSC_IN, 64),
@@ -236,31 +312,58 @@ static const uint8_t k_msc_iface_hs[] = {
 static uint8_t s_fs_config_descriptor[CFG_DESC_MAX];
 static uint8_t s_hs_config_descriptor[CFG_DESC_MAX];
 
+/* usb_pad setting: which pad, and whether it is alone on the device. */
+typedef enum { PAD_OFF = 0, PAD_ADDED = 1, PAD_ALONE = 2 } pad_mode_t;
+typedef enum { PAD_HORI = 0, PAD_XINPUT = 1 } pad_kind_t;
+static pad_kind_t s_pad_kind;
+
 /*
  * Assemble the configuration descriptor for the enabled functions into @p buf
  * and return its length. HID is always included (only the keyboard when
- * @p kbd_only); @p msc_iface (the speed's MSC
- * block) is appended when @p with_msc. The config header's wTotalLength and
- * bNumInterfaces are then patched to match what was actually emitted.
+ * @p kbd_only, only the gamepad when @p pad is PAD_ALONE); @p msc_iface (the
+ * speed's MSC block) is appended when @p with_msc. The config header's
+ * wTotalLength and bNumInterfaces are then patched to match what was actually
+ * emitted.
  */
-static size_t build_config_descriptor(uint8_t *buf, bool kbd_only, bool with_msc,
+static size_t build_config_descriptor(uint8_t *buf, bool kbd_only, pad_mode_t pad, bool with_msc,
                                       const uint8_t *msc_iface, size_t msc_len)
 {
     size_t n = 0;
-    uint8_t ifaces = kbd_only ? 1 : NUM_HID_ITF;
+    uint8_t ifaces = 0;
     memcpy(buf + n, k_cfg_header, sizeof(k_cfg_header));
     n += sizeof(k_cfg_header);
-    if (kbd_only) {
+    if (pad == PAD_ALONE) {
+        if (s_pad_kind == PAD_XINPUT) {
+            n += xinput_iface_desc(buf + n, 0, 0x81, 0x01);
+        } else {
+            memcpy(buf + n, k_pad_iface_alone, sizeof(k_pad_iface_alone));
+            n += sizeof(k_pad_iface_alone);
+        }
+        ifaces = 1;
+    } else if (kbd_only) {
         memcpy(buf + n, k_hid_kbd_legacy, sizeof(k_hid_kbd_legacy));
         n += sizeof(k_hid_kbd_legacy);
+        ifaces = 1;
     } else {
         memcpy(buf + n, k_hid_ifaces, sizeof(k_hid_ifaces));
         n += sizeof(k_hid_ifaces);
+        ifaces = NUM_HID_ITF;
+        if (pad == PAD_ADDED) {
+            if (s_pad_kind == PAD_XINPUT) {
+                n += xinput_iface_desc(buf + n, ITF_PAD_ADDED, EPNUM_PAD_IN_ADDED,
+                                       EPNUM_PAD_OUT_ADDED);
+            } else {
+                memcpy(buf + n, k_pad_iface_added, sizeof(k_pad_iface_added));
+                n += sizeof(k_pad_iface_added);
+            }
+            ifaces++;
+        }
     }
     if (with_msc) {
         memcpy(buf + n, msc_iface, msc_len);
+        buf[n + 2] = ifaces; /* bInterfaceNumber: next after the HID ones */
         n += msc_len;
-        ifaces++; /* MSC is ITF_MSC == NUM_HID_ITF, appended last, no renumbering */
+        ifaces++;
     }
     buf[2] = (uint8_t)(n & 0xff); /* wTotalLength, little-endian */
     buf[3] = (uint8_t)(n >> 8);
@@ -275,6 +378,7 @@ typedef enum {
     Q_MOUSE_REL,
     Q_KEY,
     Q_CONSUMER,
+    Q_PAD,
     Q_RELEASE_ALL,
 } q_type_t;
 
@@ -296,6 +400,10 @@ typedef struct {
             uint8_t keycode[HID_KBD_KEYS];
         } key;
         uint16_t consumer;
+        struct {
+            pad_report_t r;
+            uint16_t hold_ms; /* >0: a tap - press, hold this long, let go */
+        } pad;
     } u;
 } q_msg_t;
 
@@ -308,6 +416,14 @@ static uint16_t s_last_abs_y;
 static volatile uint8_t s_leds;
 /* Old BIOS mode: the keyboard is the only interface there is. */
 static bool s_kbd_only;
+static pad_mode_t s_pad;
+
+/*
+ * TinyUSB numbers HID instances in descriptor order, which depends on the mode.
+ * Each function's instance, or -1 when the mode leaves it out.
+ */
+enum { FN_KBD, FN_PTR, FN_REL, FN_PAD, FN_COUNT };
+static int8_t s_inst[FN_COUNT] = {0, 1, 2, -1};
 static usb_hid_led_cb_t s_led_cb;
 static void *s_led_cb_user;
 
@@ -315,20 +431,32 @@ static void *s_led_cb_user;
 
 uint8_t const *tud_hid_descriptor_report_cb(uint8_t instance)
 {
-    switch (instance) {
-    case ITF_KEYBOARD:
-        return s_kbd_report_desc;
-    case ITF_REL_MOUSE:
-        return s_rel_report_desc;
-    default:
-        return s_pointer_report_desc;
+    if (instance == s_inst[FN_PAD]) {
+        return s_pad_report_desc;
     }
+    if (instance == s_inst[FN_KBD]) {
+        return s_kbd_report_desc;
+    }
+    if (instance == s_inst[FN_REL]) {
+        return s_rel_report_desc;
+    }
+    return s_pointer_report_desc;
 }
+
+static pad_report_t s_pad_last = {
+    .buttons = 0, .hat = USB_HID_PAD_HAT_NONE, .lx = 128, .ly = 128, .rx = 128, .ry = 128,
+};
 
 uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_t report_type,
                                uint8_t *buffer, uint16_t reqlen)
 {
-    (void)instance;
+    /* A host may ask the pad for its state instead of waiting for it; a stall
+     * there reads as a broken device. */
+    if (instance == s_inst[FN_PAD] && report_type == HID_REPORT_TYPE_INPUT) {
+        const uint16_t n = reqlen < sizeof(s_pad_last) ? reqlen : sizeof(s_pad_last);
+        memcpy(buffer, &s_pad_last, n);
+        return n;
+    }
     (void)report_id;
     (void)report_type;
     (void)buffer;
@@ -340,10 +468,13 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_
                            uint8_t const *buffer, uint16_t bufsize)
 {
     (void)report_id;
+    if (instance == s_inst[FN_PAD]) {
+        return; /* the pad's output report carries nothing we use */
+    }
     /* The only output report we expect is the keyboard LED bitmap. Reflecting it
      * to the browser is the only way an operator can tell whether Caps Lock is
      * on: the target's own indicator is not visible remotely. */
-    if (instance != ITF_KEYBOARD || report_type != HID_REPORT_TYPE_OUTPUT || bufsize < 1) {
+    if (instance != s_inst[FN_KBD] || report_type != HID_REPORT_TYPE_OUTPUT || bufsize < 1) {
         return;
     }
     const uint8_t leds = buffer[0];
@@ -870,14 +1001,15 @@ static bool wait_report_sent(void)
  * key-up/button-up after the host stalled an IN transfer past the 80 ms wait -
  * was never resent, leaving the key or button stuck down on the target.
  */
-static void hid_emit(uint8_t itf, uint8_t id, const void *data, uint16_t len)
+static void hid_emit(int fn, uint8_t id, const void *data, uint16_t len)
 {
-    if (s_kbd_only && itf != ITF_KEYBOARD) {
-        return; /* no such interface: waiting on it would stall the keyboard */
+    const int inst = s_inst[fn];
+    if (inst < 0) {
+        return; /* no such interface: waiting on it would stall the others */
     }
     (void)ulTaskNotifyTake(pdTRUE, 0); /* drop any stale completion from a prior timeout */
     for (int attempt = 0; attempt < 2; attempt++) {
-        if (tud_hid_n_report(itf, id, data, len)) {
+        if (tud_hid_n_report((uint8_t)inst, id, data, len)) {
             (void)wait_report_sent();
             return;
         }
@@ -892,7 +1024,7 @@ static void send_abs(const abs_mouse_report_t *r)
 {
     s_last_abs_x = r->x;
     s_last_abs_y = r->y;
-    hid_emit(ITF_POINTER, RID_ABS_MOUSE, r, sizeof(*r));
+    hid_emit(FN_PTR, RID_ABS_MOUSE, r, sizeof(*r));
 }
 
 static void send_rel(uint8_t buttons, int32_t dx, int32_t dy, int8_t wheel, int8_t pan)
@@ -914,14 +1046,17 @@ static void send_rel(uint8_t buttons, int32_t dx, int32_t dy, int8_t wheel, int8
         .wheel = wheel,
         .pan = pan,
     };
-    hid_emit(ITF_REL_MOUSE, 0, &r, sizeof(r));
+    hid_emit(FN_REL, 0, &r, sizeof(r));
 }
 
 static void send_keyboard(uint8_t modifier, const uint8_t keycode[HID_KBD_KEYS])
 {
+    if (s_inst[FN_KBD] < 0) {
+        return;
+    }
     (void)ulTaskNotifyTake(pdTRUE, 0); /* drop any stale completion from a prior timeout */
     for (int attempt = 0; attempt < 2; attempt++) {
-        if (tud_hid_n_keyboard_report(ITF_KEYBOARD, 0, modifier, (uint8_t *)keycode)) {
+        if (tud_hid_n_keyboard_report((uint8_t)s_inst[FN_KBD], 0, modifier, (uint8_t *)keycode)) {
             (void)wait_report_sent();
             return;
         }
@@ -933,13 +1068,89 @@ static void send_keyboard(uint8_t modifier, const uint8_t keycode[HID_KBD_KEYS])
 
 static void send_consumer(uint16_t usage)
 {
-    hid_emit(ITF_POINTER, RID_CONSUMER, &usage, sizeof(usage));
+    hid_emit(FN_PTR, RID_CONSUMER, &usage, sizeof(usage));
+}
+
+static const pad_report_t k_pad_idle = {
+    .buttons = 0, .hat = USB_HID_PAD_HAT_NONE, .lx = 128, .ly = 128, .rx = 128, .ry = 128,
+};
+
+/* The same state in the Xbox 360 pad's words. Buttons go by position: the
+ * bottom face button (the Switch's B) is the Xbox's A. Its Y axes point up. */
+static void to_xinput(const pad_report_t *r, uint8_t out[XINPUT_REPORT_LEN])
+{
+    static const struct {
+        uint16_t pad;
+        uint16_t xi;
+    } map[] = {
+        {USB_HID_PAD_PLUS, 0x0010},   {USB_HID_PAD_MINUS, 0x0020}, {USB_HID_PAD_LSTICK, 0x0040},
+        {USB_HID_PAD_RSTICK, 0x0080}, {USB_HID_PAD_L, 0x0100},     {USB_HID_PAD_R, 0x0200},
+        {USB_HID_PAD_HOME, 0x0400},   {USB_HID_PAD_B, 0x1000},     {USB_HID_PAD_A, 0x2000},
+        {USB_HID_PAD_Y, 0x4000},      {USB_HID_PAD_X, 0x8000},
+    };
+    /* hat 0..7 clockwise from up -> up 1, down 2, left 4, right 8 */
+    static const uint16_t hat_bits[8] = {0x1, 0x9, 0x8, 0xA, 0x2, 0x6, 0x4, 0x5};
+    uint16_t b = r->hat < 8 ? hat_bits[r->hat] : 0;
+    for (size_t i = 0; i < sizeof(map) / sizeof(map[0]); i++) {
+        if (r->buttons & map[i].pad) {
+            b |= map[i].xi;
+        }
+    }
+    const int16_t axes[4] = {
+        (int16_t)((r->lx - 128) * 256),
+        (int16_t)(r->ly <= 0 ? 32767 : -((r->ly - 128) * 256)),
+        (int16_t)((r->rx - 128) * 256),
+        (int16_t)(r->ry <= 0 ? 32767 : -((r->ry - 128) * 256)),
+    };
+    memset(out, 0, XINPUT_REPORT_LEN);
+    out[0] = 0x00; /* message type: input */
+    out[1] = XINPUT_REPORT_LEN;
+    out[2] = (uint8_t)(b & 0xff);
+    out[3] = (uint8_t)(b >> 8);
+    out[4] = (r->buttons & USB_HID_PAD_ZL) ? 255 : 0;
+    out[5] = (r->buttons & USB_HID_PAD_ZR) ? 255 : 0;
+    for (int i = 0; i < 4; i++) {
+        out[6 + 2 * i] = (uint8_t)((uint16_t)axes[i] & 0xff);
+        out[7 + 2 * i] = (uint8_t)((uint16_t)axes[i] >> 8);
+    }
+}
+
+static void xinput_done(void)
+{
+    if (s_hid_task) {
+        xTaskNotifyGive(s_hid_task);
+    }
+}
+
+static void send_pad(const pad_report_t *r)
+{
+    s_pad_last = *r;
+    if (s_pad == PAD_OFF) {
+        return;
+    }
+    if (s_pad_kind == PAD_HORI) {
+        hid_emit(FN_PAD, 0, r, sizeof(*r));
+        return;
+    }
+    uint8_t rep[XINPUT_REPORT_LEN];
+    to_xinput(r, rep);
+    (void)ulTaskNotifyTake(pdTRUE, 0);
+    for (int attempt = 0; attempt < 2; attempt++) {
+        if (xinput_send(rep)) {
+            (void)wait_report_sent();
+            return;
+        }
+        if (!wait_report_sent()) {
+            return;
+        }
+    }
 }
 
 static void send_release_all(void)
 {
     const uint8_t none[HID_KBD_KEYS] = {0};
     send_keyboard(0, none);
+    send_pad(&k_pad_idle);
     send_consumer(0);
     send_rel(0, 0, 0, 0, 0);
     /*
@@ -1081,6 +1292,15 @@ static void dispatch(const q_msg_t *m)
     case Q_CONSUMER:
         send_consumer(m->u.consumer);
         break;
+    case Q_PAD:
+        send_pad(&m->u.pad.r);
+        if (m->u.pad.hold_ms) {
+            /* A console reads a pad every few milliseconds and wants a press to
+             * last a frame or two; a tap that only lasts one poll can be lost. */
+            vTaskDelay(pdMS_TO_TICKS(m->u.pad.hold_ms) ? pdMS_TO_TICKS(m->u.pad.hold_ms) : 1);
+            send_pad(&k_pad_idle);
+        }
+        break;
     case Q_RELEASE_ALL:
         send_release_all();
         break;
@@ -1097,7 +1317,15 @@ static void hid_worker(void *arg)
     (void)esp_task_wdt_add(NULL);
     for (;;) {
         esp_task_wdt_reset();
-        if (xQueueReceive(s_hid_q, &msg, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        /* A real pad reports on every poll, wanted or not, and a console may
+         * not take a pad that only speaks when something changes. Repeat the
+         * last state when nothing else is queued. */
+        const TickType_t idle = s_pad != PAD_OFF ? pdMS_TO_TICKS(8) : pdMS_TO_TICKS(1000);
+        if (xQueueReceive(s_hid_q, &msg, idle ? idle : 1) != pdTRUE) {
+            if (s_pad != PAD_OFF && tud_mounted() && !tud_suspended()) {
+                const pad_report_t last = s_pad_last;
+                send_pad(&last);
+            }
             continue;
         }
         if (!tud_mounted()) {
@@ -1259,6 +1487,88 @@ void usb_hid_consumer(uint16_t usage)
     enqueue(&m);
 }
 
+static const struct {
+    const char *name;
+    uint16_t bit;
+} k_pad_names[] = {
+    {"y", USB_HID_PAD_Y},           {"b", USB_HID_PAD_B},           {"a", USB_HID_PAD_A},
+    {"x", USB_HID_PAD_X},           {"l", USB_HID_PAD_L},           {"r", USB_HID_PAD_R},
+    {"zl", USB_HID_PAD_ZL},         {"zr", USB_HID_PAD_ZR},         {"minus", USB_HID_PAD_MINUS},
+    {"plus", USB_HID_PAD_PLUS},     {"lstick", USB_HID_PAD_LSTICK}, {"rstick", USB_HID_PAD_RSTICK},
+    {"home", USB_HID_PAD_HOME},     {"capture", USB_HID_PAD_CAPTURE},
+    /* Xbox and PlayStation words for the same places. The face buttons keep
+     * the Switch letters only, so "a" never means two different buttons. */
+    {"lb", USB_HID_PAD_L},          {"rb", USB_HID_PAD_R},          {"lt", USB_HID_PAD_ZL},
+    {"rt", USB_HID_PAD_ZR},         {"l1", USB_HID_PAD_L},          {"r1", USB_HID_PAD_R},
+    {"l2", USB_HID_PAD_ZL},         {"r2", USB_HID_PAD_ZR},         {"back", USB_HID_PAD_MINUS},
+    {"view", USB_HID_PAD_MINUS},    {"start", USB_HID_PAD_PLUS},    {"menu", USB_HID_PAD_PLUS},
+    {"guide", USB_HID_PAD_HOME},    {"ls", USB_HID_PAD_LSTICK},     {"rs", USB_HID_PAD_RSTICK},
+    {"south", USB_HID_PAD_B},       {"east", USB_HID_PAD_A},        {"west", USB_HID_PAD_Y},
+    {"north", USB_HID_PAD_X},
+};
+
+uint16_t usb_hid_pad_button(const char *name)
+{
+    for (size_t i = 0; name && i < sizeof(k_pad_names) / sizeof(k_pad_names[0]); i++) {
+        if (strcasecmp(name, k_pad_names[i].name) == 0) {
+            return k_pad_names[i].bit;
+        }
+    }
+    return 0;
+}
+
+uint8_t usb_hid_pad_hat(const char *name)
+{
+    static const char *const dirs[] = {"up",   "up_right",  "right", "down_right",
+                                       "down", "down_left", "left",  "up_left"};
+    for (uint8_t i = 0; name && i < 8; i++) {
+        if (strcasecmp(name, dirs[i]) == 0) {
+            return i;
+        }
+    }
+    return USB_HID_PAD_HAT_NONE;
+}
+
+bool usb_hid_pad_present(void)
+{
+    return s_pad != PAD_OFF;
+}
+
+const char *usb_hid_pad_kind(void)
+{
+    return s_pad == PAD_OFF ? "" : s_pad_kind == PAD_XINPUT ? "xinput" : "switch";
+}
+
+static void pad_enqueue(uint16_t buttons, uint8_t hat, uint8_t lx, uint8_t ly, uint8_t rx,
+                        uint8_t ry, uint16_t hold_ms)
+{
+    if (s_pad == PAD_OFF) {
+        return;
+    }
+    q_msg_t m = {.type = Q_PAD};
+    m.u.pad.hold_ms = hold_ms > 2000 ? 2000 : hold_ms;
+    m.u.pad.r = (pad_report_t){
+        .buttons = buttons & 0x3fff,
+        .hat = hat <= 7 ? hat : USB_HID_PAD_HAT_NONE,
+        .lx = lx,
+        .ly = ly,
+        .rx = rx,
+        .ry = ry,
+    };
+    enqueue(&m);
+}
+
+void usb_hid_pad(uint16_t buttons, uint8_t hat, uint8_t lx, uint8_t ly, uint8_t rx, uint8_t ry)
+{
+    pad_enqueue(buttons, hat, lx, ly, rx, ry, 0);
+}
+
+void usb_hid_pad_tap(uint16_t buttons, uint8_t hat, uint16_t hold_ms)
+{
+    pad_enqueue(buttons, hat, USB_HID_PAD_CENTER, USB_HID_PAD_CENTER, USB_HID_PAD_CENTER,
+                USB_HID_PAD_CENTER, hold_ms ? hold_ms : 1);
+}
+
 void usb_hid_release_all(void)
 {
     if (!s_hid_q) {
@@ -1297,21 +1607,66 @@ esp_err_t usb_hid_init(void)
      * is a plain keyboard and mouse by default and only claims the extra
      * endpoints when virtual media is actually wanted.
      */
-    s_kbd_only = kvm_setting_bool("usb_legacy");
-    const bool with_msc = !s_kbd_only && kvm_setting_bool("msc_enable");
+    /* off, switch, switch_alone, xinput, xinput_alone */
+    const int32_t pad_setting = kvm_setting_int("usb_pad");
+    s_pad = pad_setting == 1 || pad_setting == 3 ? PAD_ADDED
+            : pad_setting == 2 || pad_setting == 4 ? PAD_ALONE
+                                                   : PAD_OFF;
+    s_pad_kind = pad_setting >= 3 ? PAD_XINPUT : PAD_HORI;
+    s_kbd_only = s_pad != PAD_ALONE && kvm_setting_bool("usb_legacy");
+    if (s_kbd_only) {
+        s_pad = PAD_OFF; /* an old BIOS gets the keyboard and nothing else */
+    }
+    if (s_pad == PAD_ALONE) {
+        s_inst[FN_KBD] = s_inst[FN_PTR] = s_inst[FN_REL] = -1;
+        s_inst[FN_PAD] = 0;
+    } else if (s_kbd_only) {
+        s_inst[FN_PTR] = s_inst[FN_REL] = s_inst[FN_PAD] = -1;
+    } else if (s_pad == PAD_ADDED) {
+        s_inst[FN_PAD] = ITF_PAD_ADDED;
+    }
+    if (s_pad_kind == PAD_XINPUT) {
+        /* Not a HID instance: its own class driver (xinput.c). */
+        s_inst[FN_PAD] = -1;
+    }
+    xinput_enable(s_pad != PAD_OFF && s_pad_kind == PAD_XINPUT);
+    xinput_set_done_cb(xinput_done);
+    const bool with_msc = !s_kbd_only && s_pad != PAD_ALONE && kvm_setting_bool("msc_enable");
     s_msc_present = with_msc;
-    build_config_descriptor(s_fs_config_descriptor, s_kbd_only, with_msc, k_msc_iface_fs,
+    build_config_descriptor(s_fs_config_descriptor, s_kbd_only, s_pad, with_msc, k_msc_iface_fs,
                             sizeof(k_msc_iface_fs));
-    build_config_descriptor(s_hs_config_descriptor, s_kbd_only, with_msc, k_msc_iface_hs,
+    build_config_descriptor(s_hs_config_descriptor, s_kbd_only, s_pad, with_msc, k_msc_iface_hs,
                             sizeof(k_msc_iface_hs));
     if (s_kbd_only) {
         ESP_LOGI(TAG, "USB functions: old BIOS mode - keyboard only, full speed");
+    } else if (s_pad == PAD_ALONE) {
+        ESP_LOGI(TAG, "USB functions: %s gamepad only, full speed",
+                 s_pad_kind == PAD_XINPUT ? "XInput" : "HORI");
     } else {
-        ESP_LOGI(TAG, "USB functions: HID%s", with_msc ? " + mass storage" : " only");
+        ESP_LOGI(TAG, "USB functions: HID%s%s",
+                 s_pad != PAD_ADDED ? "" : s_pad_kind == PAD_XINPUT ? " + XInput gamepad" : " + HORI gamepad",
+                 with_msc ? " + mass storage" : "");
     }
 
     tinyusb_config_t tusb_cfg = TINYUSB_DEFAULT_CONFIG(tinyusb_on_event);
     tusb_cfg.descriptor.device = NULL;
+    static tusb_desc_device_t xinput_dev;
+    if (s_pad != PAD_OFF && s_pad_kind == PAD_HORI) {
+        tusb_cfg.descriptor.device = &k_pad_device_desc;
+        s_string_descriptor[1] = "HORI CO.,LTD.";
+        s_string_descriptor[2] = "POKKEN CONTROLLER";
+    } else if (s_pad != PAD_OFF) {
+        /* Beside the keyboard the device has to say "see the interfaces". */
+        xinput_dev = xinput_device_desc;
+        if (s_pad == PAD_ADDED) {
+            xinput_dev.bDeviceClass = 0;
+            xinput_dev.bDeviceSubClass = 0;
+            xinput_dev.bDeviceProtocol = 0;
+        }
+        tusb_cfg.descriptor.device = &xinput_dev;
+        s_string_descriptor[1] = "\xc2\xa9Microsoft Corporation";
+        s_string_descriptor[2] = "Controller";
+    }
     tusb_cfg.descriptor.full_speed_config = s_fs_config_descriptor;
     tusb_cfg.descriptor.string = s_string_descriptor;
     tusb_cfg.descriptor.string_count = sizeof(s_string_descriptor) / sizeof(s_string_descriptor[0]);
@@ -1344,10 +1699,11 @@ esp_err_t usb_hid_init(void)
 
     tud_disconnect();
 #if (TUD_OPT_HIGH_SPEED)
-    if (s_kbd_only) {
+    if (s_kbd_only || s_pad == PAD_ALONE) {
         /* Full speed (USB 1.1) on the high-speed port. TinyUSB always asks this
          * PHY for high speed, so set the controller's device speed ourselves
-         * while detached; nothing rewrites it later. 1 = full speed on a HS PHY. */
+         * while detached; nothing rewrites it later. 1 = full speed on a HS PHY.
+         * The pad alone runs at full speed because the real one does. */
         USB_DWC_HS.dcfg_reg.devspd = 1;
     }
 #endif

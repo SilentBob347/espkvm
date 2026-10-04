@@ -78,6 +78,8 @@ static const char *const s_display_choices[] = {
 };
 /* "auto" follows the OS guessed from USB enumeration; the rest force it. */
 static const char *const s_targetos_choices[] = {"auto", "windows", "macos", "linux", "android"};
+static const char *const s_pad_choices[] = {"off", "switch", "switch_alone", "xinput",
+                                            "xinput_alone"};
 static const char *const s_netmode_choices[] = {"ethernet", "wifi", "ap", "auto"};
 static const char *const s_fallback_choices[] = {"keep_trying", "hotspot"};
 
@@ -328,6 +330,19 @@ static const kvm_setting_t s_settings[] = {
                 "media keys and virtual media are off while this is on. Takes effect after "
                 "a restart.",
         .def = 0, .requires_cap = KVM_CAP_HID, .flags = KVM_SF_REBOOT,
+    },
+    {
+        .key = "usb_pad", .section = "input", .group = "Target", .type = KVM_VT_ENUM,
+        .title = "Gamepad",
+        .help = "A game controller for the target, and a gamepad panel in the console; a "
+                "controller plugged into your own computer works through it too. "
+                "\"switch\": a HORI Pokken pad, for a Nintendo Switch. \"xinput\": a "
+                "wired Xbox 360 pad, for Windows, a Steam Deck and Linux. The pad joins the "
+                "keyboard and mouse; the \"_alone\" choices show the pad and nothing else, "
+                "the way the real one looks - Windows needs that for the Xbox pad, and a "
+                "console may ignore a pad with company. Takes effect after a restart.",
+        .min = 0, .max = ENUM_MAX(s_pad_choices), .def = 0, .choices = s_pad_choices,
+        .requires_cap = KVM_CAP_HID, .flags = KVM_SF_REBOOT,
     },
     {
         .key = "scroll_inv", .section = "input", .group = "Pointer", .type = KVM_VT_BOOL,

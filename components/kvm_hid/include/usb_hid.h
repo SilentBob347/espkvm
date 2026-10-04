@@ -8,6 +8,8 @@
  *   0  keyboard, boot protocol compatible, no report IDs - firmware setup
  *      screens and legacy BIOSes only understand this shape
  *   1  pointer, report IDs for absolute, relative and consumer control
+ *   2  relative mouse
+ *   3  gamepad, when the usb_pad setting adds one (or it is the only one)
  *
  * The absolute pointer is what makes a KVM usable: it puts the target's cursor
  * exactly where the operator clicked, regardless of the pointer acceleration
@@ -36,6 +38,32 @@ enum {
     USB_HID_LED_COMPOSE = 1u << 3,
     USB_HID_LED_KANA = 1u << 4,
 };
+
+/**
+ * Gamepad buttons, as the HORI Pokken pad numbers them (Switch names). The face
+ * buttons are positions: B is the bottom one, which an Xbox pad calls A.
+ */
+enum {
+    USB_HID_PAD_Y = 1u << 0,
+    USB_HID_PAD_B = 1u << 1,
+    USB_HID_PAD_A = 1u << 2,
+    USB_HID_PAD_X = 1u << 3,
+    USB_HID_PAD_L = 1u << 4,
+    USB_HID_PAD_R = 1u << 5,
+    USB_HID_PAD_ZL = 1u << 6,
+    USB_HID_PAD_ZR = 1u << 7,
+    USB_HID_PAD_MINUS = 1u << 8,
+    USB_HID_PAD_PLUS = 1u << 9,
+    USB_HID_PAD_LSTICK = 1u << 10,
+    USB_HID_PAD_RSTICK = 1u << 11,
+    USB_HID_PAD_HOME = 1u << 12,
+    USB_HID_PAD_CAPTURE = 1u << 13,
+};
+
+/** Hat directions: 0 up, then clockwise in steps of 45 degrees to 7; 8 is none. */
+#define USB_HID_PAD_HAT_NONE 8
+/** Stick centre; 0 is left / up, 255 right / down. */
+#define USB_HID_PAD_CENTER 128
 
 /** Start TinyUSB and the background report task. */
 esp_err_t usb_hid_init(void);
@@ -132,6 +160,24 @@ void usb_hid_set_observer(void (*cb)(const usb_hid_obs_t *report));
  * cannot be left stuck on the target with no way to clear it.
  */
 void usb_hid_release_all(void);
+
+/** Is a gamepad part of the USB device (the usb_pad setting, from boot)? */
+bool usb_hid_pad_present(void);
+
+/** Which one: "switch" (HORI pad), "xinput" (Xbox 360 pad), "" for none. */
+const char *usb_hid_pad_kind(void);
+
+/** Set the whole gamepad state: buttons (USB_HID_PAD_*), hat, sticks. */
+void usb_hid_pad(uint16_t buttons, uint8_t hat, uint8_t lx, uint8_t ly, uint8_t rx, uint8_t ry);
+
+/** Press buttons and/or a hat direction, hold for @p hold_ms (max 2000), let go. */
+void usb_hid_pad_tap(uint16_t buttons, uint8_t hat, uint16_t hold_ms);
+
+/** Button bit for a name ("a", "zl", "home", or Xbox words "lb", "start" ...), 0 if unknown. */
+uint16_t usb_hid_pad_button(const char *name);
+
+/** Hat value for a direction name ("up", "down_left", ...), USB_HID_PAD_HAT_NONE if unknown. */
+uint8_t usb_hid_pad_hat(const char *name);
 
 /** Last LED state reported by the target; see USB_HID_LED_*. */
 uint8_t usb_hid_leds(void);

@@ -902,7 +902,7 @@ static esp_err_t api_system_info_get(httpd_req_t *req)
                      "\"wg\":{\"enabled\":%s,\"up\":%s,\"address\":\"%s\",\"publicKey\":\"%s\"},"
                      "\"ts\":{\"enabled\":%s,\"up\":%s,\"address\":\"%s\",\"peers\":%d,"
                      "\"keyExpiry\":%lld,\"keyExpired\":%s},"
-                     "\"jiggler\":{\"everyS\":%d,\"nudges\":%u},"
+                     "\"jiggler\":{\"everyS\":%d,\"nudges\":%u},\"usbPad\":\"%s\","
                      "\"coproc\":%s,\"rtc\":%s,\"rtcChip\":\"%s\",\"boardTempC\":%s,"
                      "\"crashDumpBytes\":%u}",
                      app->project_name, app->version, app->date, app->time, kvm_board_id(),
@@ -926,7 +926,8 @@ static esp_err_t api_system_info_get(httpd_req_t *req)
                      ts.enabled ? "true" : "false", ts.up ? "true" : "false", ts.address,
                      ts.peers, (long long)ts.key_expiry, ts.key_expired ? "true" : "false",
                      (int)kvm_setting_int("jiggle_s"),
-                     (unsigned)usb_hid_jiggler_nudges(), coproc_json,
+                     (unsigned)usb_hid_jiggler_nudges(), usb_hid_pad_kind(),
+                     coproc_json,
                      kvm_rtc_present() ? "true" : "false", kvm_rtc_name(), board_temp, dump_bytes);
     if (n <= 0 || n >= (int)sizeof(body)) {
         return send_json_error(req, "500 Internal Server Error", "system info too long");
@@ -2321,6 +2322,88 @@ static esp_err_t api_hid_key_post(httpd_req_t *req)
     return send_ok(req);
 }
 
+/*
+ * POST {press:["a"] | "a", hat:"up", ms:100} - tap gamepad buttons and/or a hat
+ * direction: press, hold (default 100 ms, at most 2 s), let go. Or {buttons, hat,
+ * lx, ly, rx, ry} as numbers to set the whole state and leave it held; send
+ * {buttons:0} to let go. Names are the Switch's: a b x y l r zl zr minus plus
+ * lstick rstick home capture; the face buttons are positions (b is the bottom
+ * one, an Xbox pad's A), and Xbox words (lb, rt, start, guide...) work too.
+ */
+static esp_err_t api_hid_pad_post(httpd_req_t *req)
+{
+    esp_err_t gate;
+    if (!agent_allowed(req, &gate)) {
+        return gate;
+    }
+    if (!usb_hid_pad_present()) {
+        return send_json_error(req, "409 Conflict", "no gamepad: set Settings -> Input -> Gamepad");
+    }
+    if (!usb_hid_ready()) {
+        return send_json_error(req, "409 Conflict", "no USB target attached");
+    }
+    cJSON *j = read_json_body(req);
+    if (!j) {
+        return send_json_error(req, "400 Bad Request", "expected JSON {press:[\"a\"]}");
+    }
+    const cJSON *press = cJSON_GetObjectItem(j, "press");
+    const cJSON *jhat = cJSON_GetObjectItem(j, "hat");
+    uint8_t hat = USB_HID_PAD_HAT_NONE;
+    if (cJSON_IsString(jhat)) {
+        hat = usb_hid_pad_hat(jhat->valuestring);
+        if (hat == USB_HID_PAD_HAT_NONE) {
+            cJSON_Delete(j);
+            return send_json_error(req, "400 Bad Request", "unknown hat direction");
+        }
+    } else if (cJSON_IsNumber(jhat)) {
+        hat = (uint8_t)jhat->valueint;
+    }
+    if (press || (cJSON_IsString(jhat) && !cJSON_GetObjectItem(j, "buttons"))) {
+        uint16_t bits = 0;
+        const char *bad = NULL;
+        if (cJSON_IsString(press)) {
+            bits = usb_hid_pad_button(press->valuestring);
+            bad = bits ? NULL : press->valuestring;
+        } else if (cJSON_IsArray(press)) {
+            const cJSON *e;
+            cJSON_ArrayForEach(e, press)
+            {
+                const uint16_t b = cJSON_IsString(e) ? usb_hid_pad_button(e->valuestring) : 0;
+                if (!b) {
+                    bad = cJSON_IsString(e) ? e->valuestring : "?";
+                    break;
+                }
+                bits |= b;
+            }
+        }
+        if (bad) {
+            char msg[64];
+            snprintf(msg, sizeof(msg), "unknown button '%.24s'", bad);
+            cJSON_Delete(j);
+            return send_json_error(req, "400 Bad Request", msg);
+        }
+        const cJSON *ms = cJSON_GetObjectItem(j, "ms");
+        const int hold = cJSON_IsNumber(ms) ? ms->valueint : 100;
+        cJSON_Delete(j);
+        usb_hid_pad_tap(bits, hat, (uint16_t)(hold < 1 ? 1 : (hold > 2000 ? 2000 : hold)));
+        return send_ok(req);
+    }
+    const cJSON *jb = cJSON_GetObjectItem(j, "buttons");
+    uint8_t axis[4] = {USB_HID_PAD_CENTER, USB_HID_PAD_CENTER, USB_HID_PAD_CENTER,
+                       USB_HID_PAD_CENTER};
+    static const char *const axis_names[4] = {"lx", "ly", "rx", "ry"};
+    for (int i = 0; i < 4; i++) {
+        const cJSON *a = cJSON_GetObjectItem(j, axis_names[i]);
+        if (cJSON_IsNumber(a)) {
+            axis[i] = (uint8_t)(a->valueint < 0 ? 0 : (a->valueint > 255 ? 255 : a->valueint));
+        }
+    }
+    const uint16_t buttons = cJSON_IsNumber(jb) ? (uint16_t)jb->valueint : 0;
+    cJSON_Delete(j);
+    usb_hid_pad(buttons, hat, axis[0], axis[1], axis[2], axis[3]);
+    return send_ok(req);
+}
+
 /* POST {text} - type a US-ASCII string. Capped to stay well within the HID
  * worker's queue (the handler enqueues two reports per character and returns);
  * longer text is sent in several calls. */
@@ -2605,6 +2688,7 @@ extern const char icon_512_end[] asm("_binary_icon_512_png_end");
  *     0x05 release all
  *     0x06 ping
  *     0x07 take control   (become the controlling client, demoting whoever held it)
+ *     0x08 gamepad     buttons:u16, hat:u8 (8 none), lx, ly, rx, ry:u8 (128 centre)
  *   device -> client
  *     0x81 status      flags:u8 (bit0 target attached), leds:u8
  *     0x82 pong
@@ -2618,6 +2702,7 @@ enum {
     WS_C2D_RELEASE_ALL = 0x05,
     WS_C2D_PING = 0x06,
     WS_C2D_TAKEOVER = 0x07,
+    WS_C2D_PAD = 0x08,
 
     WS_D2C_STATUS = 0x81,
     WS_D2C_PONG = 0x82,
@@ -2971,7 +3056,7 @@ static esp_err_t ws_input_handler(httpd_req_t *req)
     const int my_fd = httpd_req_to_sockfd(req);
     ctrl_client_add(my_fd);
     const uint8_t op = pkt.len ? buf[0] : 0;
-    const bool is_input = op >= WS_C2D_MOUSE_ABS && op <= WS_C2D_RELEASE_ALL;
+    const bool is_input = (op >= WS_C2D_MOUSE_ABS && op <= WS_C2D_RELEASE_ALL) || op == WS_C2D_PAD;
 
     /*
      * One controlling client at a time, held first-come rather than last-write:
@@ -3058,6 +3143,12 @@ static esp_err_t ws_input_handler(httpd_req_t *req)
     case WS_C2D_CONSUMER:
         if (pkt.len >= 3) {
             usb_hid_consumer((uint16_t)buf[1] | ((uint16_t)buf[2] << 8));
+        }
+        break;
+    case WS_C2D_PAD:
+        if (pkt.len >= 8) {
+            usb_hid_pad((uint16_t)buf[1] | ((uint16_t)buf[2] << 8), buf[3], buf[4], buf[5], buf[6],
+                        buf[7]);
         }
         break;
     case WS_C2D_RELEASE_ALL:
@@ -4670,6 +4761,7 @@ httpd_handle_t http_server_start(void)
         {.uri = "/api/v1/hid/click", .method = HTTP_POST, .handler = api_hid_click_post},
         {.uri = "/api/v1/hid/key", .method = HTTP_POST, .handler = api_hid_key_post},
         {.uri = "/api/v1/hid/type", .method = HTTP_POST, .handler = api_hid_type_post},
+        {.uri = "/api/v1/hid/pad", .method = HTTP_POST, .handler = api_hid_pad_post},
         {.uri = "/api/v1/hid/reattach", .method = HTTP_POST, .handler = api_hid_reattach_post},
         {.uri = "/api/v1/runbooks/status", .method = HTTP_GET, .handler = api_runbooks_status_get},
         {.uri = "/api/v1/runbooks/run", .method = HTTP_POST, .handler = api_runbooks_run_post},

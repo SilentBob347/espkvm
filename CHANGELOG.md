@@ -7,7 +7,17 @@ bumps the patch).
 
 ## [Unreleased]
 
+## [0.59.0] - 2026-10-04
+
 ### Added
+- **A gamepad.** Settings &rarr; Input &rarr; Gamepad makes the
+  device a game controller as well: a HORI Pokken pad for a Nintendo Switch,
+  or a wired Xbox 360 pad (XInput) for Windows, a Steam Deck and Linux. The
+  console gets a gamepad panel, or an overlay drawn over the picture like a
+  phone emulator, with button names in Nintendo, Xbox or PlayStation style. A
+  controller plugged into your own computer drives it too, and so does
+  `POST /api/v1/hid/pad`. Tried on a Switch with "switch_alone": the pad
+  plays Minecraft. The Xbox pad is not tried on hardware yet.
 - **Ethernet with WiFi as the backup.** A new choice under Connection:
   "Auto". The device uses the cable and keeps the WiFi network joined and
   waiting. Pull the cable and traffic moves to WiFi; plug it back and it
@@ -18,6 +28,14 @@ bumps the patch).
   15 s. IPv6 stays on the cable.
 - **EDID profile "480p".** Offers 720x480 and nothing bigger, for old
   consoles and TV boxes. Settings &rarr; Video.
+
+### Changed
+- **A narrow screen fits the bottom bar again.** Below 640 px the less used
+  buttons fold into a "..." menu; the menu glows red while a recording runs.
+- **Floating windows stay on the screen.** The remote, the gamepad and the
+  floating keyboard come back inside when the browser window shrinks.
+- **The version badge stays on one line.** On a phone it shows the release
+  part only; the full name is in its tooltip.
 
 ### Fixed
 - **No picture at 720x480 on rev 3 boards with a TC358743.**
